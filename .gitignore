@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.venv/
+*.pyc
+
+# Local env
+.env
+
+# Input assets
+data/input/videos/*
+!data/input/videos/.gitkeep
+data/input/audio/*
+!data/input/audio/.gitkeep
+data/input/reference/*
+!data/input/reference/.gitkeep
+
+# Intermediate and outputs
+data/intermediate/asr/*
+!data/intermediate/asr/.gitkeep
+data/intermediate/ocr/*
+!data/intermediate/ocr/.gitkeep
+data/intermediate/extracted_text/*
+!data/intermediate/extracted_text/.gitkeep
+data/intermediate/chunks/*
+!data/intermediate/chunks/.gitkeep
+data/intermediate/aligned/*
+!data/intermediate/aligned/.gitkeep
+data/output/review/*
+!data/output/review/.gitkeep
+data/output/final/*
+!data/output/final/.gitkeep
+data/output/logs/*
+!data/output/logs/.gitkeep
