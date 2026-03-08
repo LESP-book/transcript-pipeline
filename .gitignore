@@ -17,6 +17,8 @@ data/input/reference/*
 !data/input/reference/.gitkeep
 
 # Intermediate and outputs
+data/jobs/*
+!data/jobs/.gitkeep
 data/intermediate/asr/*
 !data/intermediate/asr/.gitkeep
 data/intermediate/ocr/*

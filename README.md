@@ -7,7 +7,7 @@
 - Ubuntu 24 本地开发环境，CPU 运行
 - Windows + WSL2 + NVIDIA 3060Ti 环境，后续可切换到 GPU 后端
 
-当前仓库已实现前七个阶段的最小可运行版本：
+当前仓库已实现前八个阶段的最小可运行版本：
 
 - 第一阶段：配置读取与音频抽取
 - 第二阶段：ASR 抽象接口与第一版转录
@@ -16,6 +16,7 @@
 - 第五阶段：块级内容候选分类（保留为辅助调试链路）
 - 第六阶段：本地 CLI 模型整篇整理，直接读取 `asr.txt + reference.txt` 产出最终 Markdown 草稿（`codex` / `gemini`，含保守降级后端）
 - 第七阶段：将阶段 6 的 Markdown 结果写入最终输出目录
+- 第八阶段：单任务 job 入口，支持显式指定视频、参考源和输出目录
 
 当前仍不包含 OCR、最终分类定稿或自动发布能力。
 
@@ -38,7 +39,7 @@
 - 基于 `asr.txt + extracted_text.txt + 提示词` 直接输出整篇 Markdown 草稿到 `data/intermediate/refined/`
 - 阶段 6 支持本地 `codex` 与 `gemini` CLI 双后端整篇比较后生成单一 `final_markdown`
 - 阶段 7 将阶段 6 的 `final_markdown` 写入 `data/output/final/`
-- 八个最小 CLI 入口
+- 九个最小 CLI 入口
 - 最基本单元测试
 
 ## 当前阶段未实现
@@ -68,6 +69,7 @@ transcript-pipeline/
 │   │   ├── videos/
 │   │   ├── audio/
 │   │   └── reference/
+│   ├── jobs/
 │   ├── intermediate/
 │   │   ├── asr/
 │   │   ├── ocr/
@@ -81,6 +83,7 @@ transcript-pipeline/
 │       ├── final/
 │       └── logs/
 ├── scripts/
+│   ├── 00_run_main_pipeline.py
 │   ├── 01_extract_audio.py
 │   ├── 02_transcribe.py
 │   ├── 03_prepare_reference.py
@@ -88,6 +91,7 @@ transcript-pipeline/
 │   ├── 05_classify.py
 │   ├── 06_refine.py
 │   ├── 07_export_markdown.py
+│   ├── 08_run_job.py
 │   └── run_pipeline.py
 ├── src/
 │   ├── __init__.py
@@ -96,6 +100,7 @@ transcript-pipeline/
 │   ├── classify_utils.py
 │   ├── config_loader.py
 │   ├── ffmpeg_utils.py
+│   ├── job_runner.py
 │   ├── refine_utils.py
 │   ├── reference_utils.py
 │   ├── runtime_utils.py
@@ -108,6 +113,7 @@ transcript-pipeline/
     ├── test_classify.py
     ├── test_export_markdown.py
     ├── test_refine.py
+    ├── test_job_runner.py
     ├── test_prepare_reference.py
     └── test_transcribe.py
 ```
@@ -278,6 +284,27 @@ pip install -r requirements.txt
 ```bash
 .venv/bin/python scripts/00_run_main_pipeline.py
 ```
+
+推荐的单任务运行方式：
+
+```bash
+.venv/bin/python scripts/08_run_job.py \
+  --video "/path/to/video.mp4" \
+  --reference "/path/to/reference.pdf" \
+  --output-dir "/path/to/output"
+```
+
+单任务入口说明：
+
+- 不再要求视频文件和参考文件同 basename
+- 每次运行都会创建独立的 `data/jobs/<job_id>/`
+- 参考源支持：
+  - 本地 `txt`
+  - 本地 `md`
+  - 本地 `pdf`
+  - 公开网页链接
+- 网页链接若目标是 PDF，会先下载 PDF，再按阶段 3 处理
+- 最终 Markdown 会额外复制到 `--output-dir`
 
 运行测试：
 
