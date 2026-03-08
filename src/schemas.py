@@ -40,6 +40,7 @@ class PathsSettings(AppBaseModel):
     extracted_text_dir: str
     chunks_dir: str
     aligned_dir: str
+    classified_dir: str
     review_dir: str
     final_dir: str
     logs_dir: str
@@ -110,6 +111,28 @@ class AlignmentSettings(AppBaseModel):
     use_normalization: bool = True
 
 
+class ClassificationSettings(AppBaseModel):
+    enabled: bool = True
+    allow_types: list[str] = Field(default_factory=lambda: ["quote", "lecture", "qa"])
+    default_type: str = "lecture"
+    qa_section_title: str = "提问环节"
+    enable_intro_candidate: bool = True
+    quote_score_threshold: float = 85.0
+    quote_like_min_score: float = 40.0
+    mixed_score_threshold: float = 60.0
+    quote_margin_threshold: float = 8.0
+    reference_focus_margin: float = 4.0
+    qa_keywords: list[str] = Field(
+        default_factory=lambda: ["为什么", "怎么", "请问", "是不是", "有没有", "能不能", "如何", "哪一个"]
+    )
+    intro_keywords: list[str] = Field(
+        default_factory=lambda: ["现在播送", "中央人民广播电台", "下面播送", "标题", "作者", "今天我们", "今天继续"]
+    )
+    lecture_markers: list[str] = Field(
+        default_factory=lambda: ["就是说", "我们看", "你看", "意思是", "说明", "比如", "所以", "这个地方", "这里"]
+    )
+
+
 class AppSettings(AppBaseModel):
     project: ProjectSettings
     runtime: RuntimeSettings
@@ -120,6 +143,7 @@ class AppSettings(AppBaseModel):
     reference: ReferenceSettings
     segmentation: SegmentationSettings
     alignment: AlignmentSettings
+    classification: ClassificationSettings
     prompts: PromptSettings | None = None
 
 

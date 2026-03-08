@@ -35,8 +35,8 @@ def relativize_path(path: Path, project_root: Path) -> str:
 
 def normalize_stage_name(stage_name: str) -> str:
     normalized = stage_name.strip().lower().replace("_", "-")
-    if normalized in {"extract-audio", "transcribe", "prepare-reference", "align"}:
+    if normalized in {"extract-audio", "transcribe", "prepare-reference", "align", "classify"}:
         return normalized
     raise ValueError(
-        f"当前阶段仅支持 extract-audio、transcribe、prepare-reference 或 align，收到: {stage_name}"
+        f"当前阶段仅支持 extract-audio、transcribe、prepare-reference、align 或 classify，收到: {stage_name}"
     )

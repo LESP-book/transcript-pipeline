@@ -7,12 +7,13 @@
 - Ubuntu 24 本地开发环境，CPU 运行
 - Windows + WSL2 + NVIDIA 3060Ti 环境，后续可切换到 GPU 后端
 
-当前仓库已实现前四个阶段的最小可运行版本：
+当前仓库已实现前五个阶段的最小可运行版本：
 
 - 第一阶段：配置读取与音频抽取
 - 第二阶段：ASR 抽象接口与第一版转录
 - 第三阶段：参考原文统一提取
 - 第四阶段：块级对齐与分段增强版
+- 第五阶段：块级内容候选分类
 
 当前仍不包含 OCR、LLM 调用、内容分类或最终 Markdown 拼装。
 
@@ -31,7 +32,8 @@
 - 输出 `data/intermediate/extracted_text/` 下的 JSON 和 TXT
 - 读取 ASR 与参考文本中间结果并生成 `data/intermediate/aligned/` 对齐结果
 - 对齐阶段支持更细粒度分段、文本 normalization 和 top-k 匹配候选
-- 五个最小 CLI 入口
+- 基于 aligned 结果输出保守的候选分类到 `data/intermediate/classified/`
+- 六个最小 CLI 入口
 - 最基本单元测试
 
 ## 当前阶段未实现
@@ -39,6 +41,7 @@
 - OCR
 - 参考原文结构化分析
 - 复杂对齐路径搜索
+- 最终分类定稿
 - `quote / lecture / qa` 分类
 - LLM 校订
 - 最终 Markdown 输出
@@ -76,11 +79,13 @@ transcript-pipeline/
 │   ├── 02_transcribe.py
 │   ├── 03_prepare_reference.py
 │   ├── 04_align.py
+│   ├── 05_classify.py
 │   └── run_pipeline.py
 ├── src/
 │   ├── __init__.py
 │   ├── align_utils.py
 │   ├── asr_utils.py
+│   ├── classify_utils.py
 │   ├── config_loader.py
 │   ├── ffmpeg_utils.py
 │   ├── reference_utils.py
@@ -91,6 +96,7 @@ transcript-pipeline/
     ├── test_config.py
     ├── test_extract_audio.py
     ├── test_align.py
+    ├── test_classify.py
     ├── test_prepare_reference.py
     └── test_transcribe.py
 ```
@@ -185,6 +191,18 @@ python3 scripts/04_align.py
 
 ```bash
 python3 scripts/run_pipeline.py --stage align
+```
+
+直接运行候选分类阶段：
+
+```bash
+python3 scripts/05_classify.py
+```
+
+通过统一入口运行候选分类阶段：
+
+```bash
+python3 scripts/run_pipeline.py --stage classify
 ```
 
 运行测试：
@@ -308,10 +326,51 @@ aligned JSON 至少包含：
 - 不做分类
 - 不做 LLM 校对
 
+## 候选分类行为
+
+- 读取目录：`data/intermediate/aligned/`
+- 输出目录：`data/intermediate/classified/`
+- 当前只做候选分类，不做最终定稿
+- 当前输出标签包括：
+  - `quote_candidate`
+  - `mixed_candidate`
+  - `lecture_candidate`
+  - `qa_candidate`
+  - `intro_candidate`
+
+分类主要依据：
+
+- `match_score`
+- `match_status`
+- top-1 与 top-2 的分差
+- 问答关键词
+- 讲解口语标记
+- 开场播报关键词
+
+每个 `classified_block` 至少包含：
+
+- `block_id`
+- `start`
+- `end`
+- `asr_text`
+- `matched_reference_text`
+- `match_score`
+- `match_status`
+- `top_matches`
+- `classification`
+- `classification_reason`
+- `confidence`
+
+当前能力边界：
+
+- 这只是候选分类层，不是最终分类结果
+- 不做 LLM 校对
+- 不做最终 Markdown 拼装
+
 ## 下一阶段建议
 
-下一步最适合优先做的事情是引入“内容分类阶段”：
+下一步最适合优先做的事情是引入“LLM 校对精修阶段”：
 
-- 基于 `data/intermediate/aligned/` 对块做 quote / lecture / qa 的保守分类
-- 继续保持中间结果可追踪，不急着接入 LLM 校对
-- 先把结构化判定做扎实，再进入文本修订阶段
+- 基于 `data/intermediate/classified/` 的候选分类结果做保守精修
+- 先只处理文本校对和分类确认，不急着做最终 Markdown 拼装
+- 继续保持中间结果可追踪，避免一步到位变成黑箱

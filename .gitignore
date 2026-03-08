@@ -27,6 +27,8 @@ data/intermediate/chunks/*
 !data/intermediate/chunks/.gitkeep
 data/intermediate/aligned/*
 !data/intermediate/aligned/.gitkeep
+data/intermediate/classified/*
+!data/intermediate/classified/.gitkeep
 data/output/review/*
 !data/output/review/.gitkeep
 data/output/final/*
