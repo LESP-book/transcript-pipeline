@@ -16,11 +16,25 @@ profiles:
     batch_size: 4
     temp_dir: /tmp/transcript-pipeline
     cache_dir: ~/.cache/transcript-pipeline
+  local_cpu_high_accuracy:
+    device: cpu
+    asr_compute_type: int8
+    asr_model_size: large-v3-turbo
+    batch_size: 1
+    temp_dir: /tmp/transcript-pipeline
+    cache_dir: ~/.cache/transcript-pipeline
   wsl2_gpu:
     device: cuda
     asr_compute_type: float16
     asr_model_size: medium
     batch_size: 8
+    temp_dir: /tmp/transcript-pipeline
+    cache_dir: ~/.cache/transcript-pipeline
+  wsl2_gpu_high_accuracy:
+    device: cuda
+    asr_compute_type: float16
+    asr_model_size: large-v3-turbo
+    batch_size: 4
     temp_dir: /tmp/transcript-pipeline
     cache_dir: ~/.cache/transcript-pipeline
 
@@ -34,6 +48,7 @@ paths:
   chunks_dir: data/intermediate/chunks
   aligned_dir: data/intermediate/aligned
   classified_dir: data/intermediate/classified
+  refined_dir: data/intermediate/refined
   review_dir: data/output/review
   final_dir: data/output/final
   logs_dir: data/output/logs
@@ -135,13 +150,24 @@ classification:
     - "这里"
 
 llm:
-  enabled: false
-  provider: openai
-  model: gpt-5.4
+  enabled: true
+  provider: local_cli
+  model: ""
+  gemini_model: gemini-3-flash-preview
+  gemini_fallback_model: gemini-3.1-pro-preview
+  backends:
+    - codex_cli
+    - gemini_cli
+  enable_fallback: true
+  block_batch_size: 2
+  prompt_style: web_like
+  top_matches_for_prompt: 3
+  max_asr_chars_for_prompt: 120
+  max_reference_chars_for_prompt: 120
   reasoning_effort: medium
   temperature: 0.1
   max_output_tokens: 4000
-  timeout_seconds: 180
+  timeout_seconds: 1800
 
 prompts:
   classify_and_correct: config/prompts/classify_and_correct.md
@@ -175,8 +201,8 @@ pipeline:
     - extract_audio
     - transcribe
     - prepare_reference
-    - align
-    - classify
+    - refine
+    - export_markdown
 
 dev:
   dry_run: false

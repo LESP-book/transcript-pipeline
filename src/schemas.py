@@ -41,6 +41,7 @@ class PathsSettings(AppBaseModel):
     chunks_dir: str
     aligned_dir: str
     classified_dir: str
+    refined_dir: str
     review_dir: str
     final_dir: str
     logs_dir: str
@@ -133,6 +134,40 @@ class ClassificationSettings(AppBaseModel):
     )
 
 
+class LLMSettings(AppBaseModel):
+    enabled: bool = True
+    provider: str = "local_cli"
+    model: str = ""
+    gemini_model: str = "gemini-3-flash-preview"
+    gemini_fallback_model: str = "gemini-3.1-pro-preview"
+    backends: list[str] = Field(default_factory=lambda: ["codex_cli", "gemini_cli"])
+    enable_fallback: bool = True
+    block_batch_size: int = 2
+    prompt_style: str = "web_like"
+    top_matches_for_prompt: int = 3
+    max_asr_chars_for_prompt: int = 120
+    max_reference_chars_for_prompt: int = 120
+    reasoning_effort: str = "medium"
+    temperature: float = 0.1
+    max_output_tokens: int = 4000
+    timeout_seconds: int = 1800
+
+
+class OutputSettings(AppBaseModel):
+    write_review_json: bool = True
+    write_final_markdown: bool = True
+    final_markdown_filename: str = "final.md"
+    review_json_filename: str = "review.json"
+    include_timestamps_in_final: bool = False
+    include_reference_in_final: bool = False
+    include_notes_in_final: bool = False
+
+
+class PipelineSettings(AppBaseModel):
+    stop_on_error: bool = True
+    stages: list[str] = Field(default_factory=list)
+
+
 class AppSettings(AppBaseModel):
     project: ProjectSettings
     runtime: RuntimeSettings
@@ -144,7 +179,10 @@ class AppSettings(AppBaseModel):
     segmentation: SegmentationSettings
     alignment: AlignmentSettings
     classification: ClassificationSettings
+    llm: LLMSettings
     prompts: PromptSettings | None = None
+    output: OutputSettings | None = None
+    pipeline: PipelineSettings | None = None
 
 
 @dataclass(frozen=True)

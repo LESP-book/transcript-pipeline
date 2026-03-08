@@ -12,9 +12,13 @@ def write_minimal_settings(
     reference_overrides: dict | None = None,
     segmentation_overrides: dict | None = None,
     alignment_overrides: dict | None = None,
+    llm_overrides: dict | None = None,
+    output_overrides: dict | None = None,
 ) -> Path:
     config_dir = project_root / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
+    prompts_dir = config_dir / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
 
     payload = {
         "project": {
@@ -47,6 +51,7 @@ def write_minimal_settings(
             "chunks_dir": "data/intermediate/chunks",
             "aligned_dir": "data/intermediate/aligned",
             "classified_dir": "data/intermediate/classified",
+            "refined_dir": "data/intermediate/refined",
             "review_dir": "data/output/review",
             "final_dir": "data/output/final",
             "logs_dir": "data/output/logs",
@@ -110,6 +115,41 @@ def write_minimal_settings(
             "intro_keywords": ["现在播送", "中央人民广播电台", "下面播送", "标题", "作者", "今天我们", "今天继续"],
             "lecture_markers": ["就是说", "我们看", "你看", "意思是", "说明", "比如", "所以", "这个地方", "这里"],
         },
+        "llm": {
+            "enabled": True,
+            "provider": "local_cli",
+            "model": "",
+            "gemini_model": "gemini-3-flash-preview",
+            "gemini_fallback_model": "gemini-3.1-pro-preview",
+            "backends": ["codex_cli", "gemini_cli"],
+            "enable_fallback": True,
+            "block_batch_size": 2,
+            "prompt_style": "web_like",
+            "top_matches_for_prompt": 3,
+            "max_asr_chars_for_prompt": 120,
+            "max_reference_chars_for_prompt": 120,
+            "reasoning_effort": "medium",
+            "temperature": 0.1,
+            "max_output_tokens": 4000,
+            "timeout_seconds": 1800,
+        },
+        "prompts": {
+            "classify_and_correct": "config/prompts/classify_and_correct.md",
+            "final_cleanup": "config/prompts/final_cleanup.md",
+        },
+        "output": {
+            "write_review_json": True,
+            "write_final_markdown": True,
+            "final_markdown_filename": "final.md",
+            "review_json_filename": "review.json",
+            "include_timestamps_in_final": False,
+            "include_reference_in_final": False,
+            "include_notes_in_final": False,
+        },
+        "pipeline": {
+            "stop_on_error": True,
+            "stages": ["extract_audio", "transcribe", "prepare_reference", "refine", "export_markdown"],
+        },
     }
 
     if reference_overrides:
@@ -118,8 +158,14 @@ def write_minimal_settings(
         payload["segmentation"].update(segmentation_overrides)
     if alignment_overrides:
         payload["alignment"].update(alignment_overrides)
+    if llm_overrides:
+        payload["llm"].update(llm_overrides)
+    if output_overrides:
+        payload["output"].update(output_overrides)
 
     settings_path = config_dir / "settings.yaml"
     with settings_path.open("w", encoding="utf-8") as file:
         yaml.safe_dump(payload, file, allow_unicode=True, sort_keys=False)
+    (prompts_dir / "classify_and_correct.md").write_text("# test prompt\n", encoding="utf-8")
+    (prompts_dir / "final_cleanup.md").write_text("# test final cleanup\n", encoding="utf-8")
     return settings_path

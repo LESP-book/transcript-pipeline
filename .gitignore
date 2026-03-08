@@ -29,6 +29,8 @@ data/intermediate/aligned/*
 !data/intermediate/aligned/.gitkeep
 data/intermediate/classified/*
 !data/intermediate/classified/.gitkeep
+data/intermediate/refined/*
+!data/intermediate/refined/.gitkeep
 data/output/review/*
 !data/output/review/.gitkeep
 data/output/final/*

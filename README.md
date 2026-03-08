@@ -7,15 +7,17 @@
 - Ubuntu 24 本地开发环境，CPU 运行
 - Windows + WSL2 + NVIDIA 3060Ti 环境，后续可切换到 GPU 后端
 
-当前仓库已实现前五个阶段的最小可运行版本：
+当前仓库已实现前七个阶段的最小可运行版本：
 
 - 第一阶段：配置读取与音频抽取
 - 第二阶段：ASR 抽象接口与第一版转录
 - 第三阶段：参考原文统一提取
-- 第四阶段：块级对齐与分段增强版
-- 第五阶段：块级内容候选分类
+- 第四阶段：块级对齐与分段增强版（保留为辅助调试链路）
+- 第五阶段：块级内容候选分类（保留为辅助调试链路）
+- 第六阶段：本地 CLI 模型整篇整理，直接读取 `asr.txt + reference.txt` 产出最终 Markdown 草稿（`codex` / `gemini`，含保守降级后端）
+- 第七阶段：将阶段 6 的 Markdown 结果写入最终输出目录
 
-当前仍不包含 OCR、LLM 调用、内容分类或最终 Markdown 拼装。
+当前仍不包含 OCR、最终分类定稿或自动发布能力。
 
 ## 当前阶段已实现
 
@@ -32,8 +34,11 @@
 - 输出 `data/intermediate/extracted_text/` 下的 JSON 和 TXT
 - 读取 ASR 与参考文本中间结果并生成 `data/intermediate/aligned/` 对齐结果
 - 对齐阶段支持更细粒度分段、文本 normalization 和 top-k 匹配候选
-- 基于 aligned 结果输出保守的候选分类到 `data/intermediate/classified/`
-- 六个最小 CLI 入口
+- 基于 aligned 结果输出保守的候选分类到 `data/intermediate/classified/`（可选辅助）
+- 基于 `asr.txt + extracted_text.txt + 提示词` 直接输出整篇 Markdown 草稿到 `data/intermediate/refined/`
+- 阶段 6 支持本地 `codex` 与 `gemini` CLI 双后端整篇比较后生成单一 `final_markdown`
+- 阶段 7 将阶段 6 的 `final_markdown` 写入 `data/output/final/`
+- 八个最小 CLI 入口
 - 最基本单元测试
 
 ## 当前阶段未实现
@@ -43,8 +48,7 @@
 - 复杂对齐路径搜索
 - 最终分类定稿
 - `quote / lecture / qa` 分类
-- LLM 校订
-- 最终 Markdown 输出
+- docx / html 等其他导出格式
 
 ## 目录结构
 
@@ -69,7 +73,9 @@ transcript-pipeline/
 │   │   ├── ocr/
 │   │   ├── extracted_text/
 │   │   ├── chunks/
-│   │   └── aligned/
+│   │   ├── aligned/
+│   │   ├── classified/
+│   │   └── refined/
 │   └── output/
 │       ├── review/
 │       ├── final/
@@ -80,6 +86,8 @@ transcript-pipeline/
 │   ├── 03_prepare_reference.py
 │   ├── 04_align.py
 │   ├── 05_classify.py
+│   ├── 06_refine.py
+│   ├── 07_export_markdown.py
 │   └── run_pipeline.py
 ├── src/
 │   ├── __init__.py
@@ -88,6 +96,7 @@ transcript-pipeline/
 │   ├── classify_utils.py
 │   ├── config_loader.py
 │   ├── ffmpeg_utils.py
+│   ├── refine_utils.py
 │   ├── reference_utils.py
 │   ├── runtime_utils.py
 │   └── schemas.py
@@ -97,6 +106,8 @@ transcript-pipeline/
     ├── test_extract_audio.py
     ├── test_align.py
     ├── test_classify.py
+    ├── test_export_markdown.py
+    ├── test_refine.py
     ├── test_prepare_reference.py
     └── test_transcribe.py
 ```
@@ -105,7 +116,8 @@ transcript-pipeline/
 
 - `config/settings.yaml` 是当前唯一运行配置入口
 - `data/` 目录下的叶子目录使用 `.gitkeep` 保留骨架
-- `config/prompts/` 已占位，但当前阶段不会读取或调用这些提示词
+- 第六阶段会读取 `config/prompts/classify_and_correct.md`
+- 第七阶段会直接写出 `data/intermediate/refined/*.json` 中的 `final_markdown`
 
 ## 运行要求
 
@@ -142,73 +154,135 @@ pip install -r requirements.txt
 直接运行音频抽取：
 
 ```bash
-python3 scripts/01_extract_audio.py
+.venv/bin/python scripts/01_extract_audio.py
 ```
 
 指定 profile：
 
 ```bash
-python3 scripts/01_extract_audio.py --profile local_cpu
+.venv/bin/python scripts/01_extract_audio.py --profile local_cpu
 ```
 
 通过统一入口运行音频抽取阶段：
 
 ```bash
-python3 scripts/run_pipeline.py --stage extract-audio
+.venv/bin/python scripts/run_pipeline.py --stage extract-audio
 ```
 
 直接运行转录阶段：
 
 ```bash
-python3 scripts/02_transcribe.py
+.venv/bin/python scripts/02_transcribe.py
 ```
 
 通过统一入口运行转录阶段：
 
 ```bash
-python3 scripts/run_pipeline.py --stage transcribe
+.venv/bin/python scripts/run_pipeline.py --stage transcribe
 ```
 
 直接运行参考原文准备阶段：
 
 ```bash
-python3 scripts/03_prepare_reference.py
+.venv/bin/python scripts/03_prepare_reference.py
 ```
 
 通过统一入口运行参考原文准备阶段：
 
 ```bash
-python3 scripts/run_pipeline.py --stage prepare-reference
+.venv/bin/python scripts/run_pipeline.py --stage prepare-reference
 ```
 
 直接运行对齐阶段：
 
 ```bash
-python3 scripts/04_align.py
+.venv/bin/python scripts/04_align.py
 ```
 
 通过统一入口运行对齐阶段：
 
 ```bash
-python3 scripts/run_pipeline.py --stage align
+.venv/bin/python scripts/run_pipeline.py --stage align
 ```
 
 直接运行候选分类阶段：
 
 ```bash
-python3 scripts/05_classify.py
+.venv/bin/python scripts/05_classify.py
 ```
 
 通过统一入口运行候选分类阶段：
 
 ```bash
-python3 scripts/run_pipeline.py --stage classify
+.venv/bin/python scripts/run_pipeline.py --stage classify
+```
+
+直接运行阶段 6 精修：
+
+```bash
+.venv/bin/python scripts/06_refine.py
+```
+
+通过统一入口运行阶段 6：
+
+```bash
+.venv/bin/python scripts/run_pipeline.py --stage refine
+```
+
+阶段 6 说明：
+
+- 默认使用本机 `codex` 与 `gemini` CLI 作为整篇整理后端
+- 主输入是 `data/intermediate/asr/*.txt` 和同 basename 的 `data/intermediate/extracted_text/*.txt`
+- 不再依赖 `classified.json` 作为阶段 6 的主输入
+- 提示词贴近网页端单轮整理模式，直接要求输出最终 Markdown
+- 对同一份整篇文本会比较两个后端结果，再输出单一 `final_markdown`
+- `final_markdown` 已直接包含：
+  - 原文朗读引用块 `>`
+  - 讲解普通段落
+  - `## 提问环节`
+- 如果两个后端都失败，会回退到本地保守整理逻辑
+
+直接运行阶段 7 写入最终 Markdown：
+
+```bash
+.venv/bin/python scripts/07_export_markdown.py
+```
+
+通过统一入口运行阶段 7：
+
+```bash
+.venv/bin/python scripts/run_pipeline.py --stage export-markdown
+```
+
+阶段 7 说明：
+
+- 输入为 `data/intermediate/refined/*.json`
+- 输出为 `data/output/final/*.md`
+- 当前生成的是最终 Markdown 校对稿，供人工最后通读和少量修字
+- 阶段 7 只负责把阶段 6 已生成的 `final_markdown` 落盘
+- 不再负责正文结构重组
+
+当前推荐主链：
+
+- `extract-audio`
+- `transcribe`
+- `prepare-reference`
+- `refine`
+- `export-markdown`
+
+`align` / `classify` 当前保留为辅助调试链路，不再是默认成稿主链。
+默认整链运行时，应优先按以上五个阶段串行执行，而不是把 `align` / `classify` 作为必经步骤。
+
+一键运行当前推荐主链：
+
+```bash
+.venv/bin/python scripts/00_run_main_pipeline.py
 ```
 
 运行测试：
 
 ```bash
-python3 -m pytest
+.venv/bin/python -m pytest
 ```
 
 ## 音频抽取行为
