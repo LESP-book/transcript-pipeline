@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -22,6 +25,10 @@ class ReferenceInputEmptyError(ReferencePreparationError):
 
 class PdfDependencyError(ReferencePreparationError):
     """Raised when PDF extraction dependencies are missing."""
+
+
+class GeminiOCRError(ReferencePreparationError):
+    """Raised when Gemini CLI OCR fails."""
 
 
 @dataclass(frozen=True)
@@ -113,6 +120,10 @@ def read_text_file(reference_path: Path) -> str:
         raise ReferencePreparationError(f"读取文件失败: {reference_path.name} | {exc}") from exc
 
 
+def is_effectively_empty_text(text: str) -> bool:
+    return len("".join(text.split())) < MIN_EXTRACTED_PDF_TEXT_LENGTH
+
+
 def import_pdf_reader() -> Callable[[str], object]:
     try:
         from pypdf import PdfReader
@@ -141,8 +152,144 @@ def extract_pdf_text(reference_path: Path) -> tuple[str, list[str]]:
             parts.append(page_text)
 
     text = "\n".join(parts).strip()
-    if not text or len(text.replace("\n", "").strip()) < MIN_EXTRACTED_PDF_TEXT_LENGTH:
+    if is_effectively_empty_text(text):
         warnings.append("PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。")
+
+    return text, warnings
+
+
+def get_ocr_language_code(loaded_settings: LoadedSettings) -> str:
+    languages = [language.strip() for language in loaded_settings.settings.reference.ocr_languages if language.strip()]
+    if not languages:
+        return "chi_sim+eng"
+    return "+".join(languages)
+
+
+def is_gemini_capacity_error(text: str) -> bool:
+    normalized = text.upper()
+    return "429" in normalized or "MODEL_CAPACITY_EXHAUSTED" in normalized or "RESOURCE_EXHAUSTED" in normalized
+
+
+def strip_fenced_text(text: str) -> str:
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", candidate)
+        candidate = re.sub(r"\n?```$", "", candidate)
+    return candidate.strip()
+
+
+def build_gemini_ocr_prompt(reference_path: Path) -> str:
+    return "\n".join(
+        [
+            "你现在要对一份中文 PDF 做 OCR 提取。",
+            "任务要求：",
+            "1. 只输出提取后的纯文本。",
+            "2. 不要解释，不要总结，不要添加说明。",
+            "3. 保留原文顺序，尽量保留自然段。",
+            "4. 不要输出 Markdown，不要输出 JSON。",
+            "5. 如果 PDF 中有页眉页码，允许保留，但不要编造内容。",
+            "",
+            f"请处理这个 PDF 文件：@{{{reference_path}}}",
+        ]
+    )
+
+
+def run_gemini_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
+    if shutil.which("gemini") is None:
+        raise GeminiOCRError("未找到 gemini CLI，无法执行 Gemini OCR。")
+
+    llm_settings = loaded_settings.settings.llm
+    models_to_try = [llm_settings.gemini_model]
+    fallback_model = llm_settings.gemini_fallback_model.strip()
+    if fallback_model and fallback_model not in models_to_try:
+        models_to_try.append(fallback_model)
+
+    prompt = build_gemini_ocr_prompt(reference_path)
+    last_error: str | None = None
+
+    for index, model_name in enumerate(models_to_try):
+        command = ["gemini", "-m", model_name, "-p", prompt]
+        try:
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                cwd=str(loaded_settings.project_root),
+                timeout=loaded_settings.settings.llm.timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise GeminiOCRError(f"Gemini OCR 超时: {reference_path.name}") from exc
+        except OSError as exc:
+            raise GeminiOCRError(f"Gemini OCR 启动失败: {reference_path.name} | {exc}") from exc
+
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip() or completed.stdout.strip()
+            last_error = stderr or f"gemini exited with code {completed.returncode}"
+            if is_gemini_capacity_error(last_error) and index < len(models_to_try) - 1:
+                continue
+            raise GeminiOCRError(f"Gemini OCR 失败: {reference_path.name} | {last_error}")
+
+        text = strip_fenced_text(completed.stdout)
+        if is_effectively_empty_text(text):
+            last_error = "Gemini OCR 返回为空或接近空"
+            continue
+
+        ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
+        sidecar_path = ocr_dir / f"{reference_path.stem}.gemini_ocr.txt"
+        sidecar_path.write_text(text, encoding="utf-8")
+        return text, [f"PDF 文字层为空，已使用 Gemini OCR fallback。model={model_name}"]
+
+    raise GeminiOCRError(f"Gemini OCR 未返回有效文本: {reference_path.name} | {last_error or 'unknown error'}")
+
+
+def run_tesseract_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
+    if shutil.which("ocrmypdf") is None:
+        raise ReferencePreparationError("未找到 ocrmypdf，无法对扫描版 PDF 执行 OCR。")
+    if shutil.which("tesseract") is None:
+        raise ReferencePreparationError("未找到 tesseract，无法对扫描版 PDF 执行 OCR。")
+
+    ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
+    ocr_pdf_path = ocr_dir / f"{reference_path.stem}.ocr.pdf"
+    sidecar_path = ocr_dir / f"{reference_path.stem}.ocr.txt"
+
+    if ocr_pdf_path.exists():
+        ocr_pdf_path.unlink()
+    if sidecar_path.exists():
+        sidecar_path.unlink()
+
+    command = [
+        "ocrmypdf",
+        "--skip-text",
+        "--sidecar",
+        str(sidecar_path),
+        "-l",
+        get_ocr_language_code(loaded_settings),
+        str(reference_path),
+        str(ocr_pdf_path),
+    ]
+
+    try:
+        completed = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise ReferencePreparationError(f"OCR 命令执行失败: {reference_path.name} | {exc}") from exc
+
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip() or completed.stdout.strip()
+        raise ReferencePreparationError(f"OCR 处理失败: {reference_path.name} | {stderr}")
+
+    if not sidecar_path.exists():
+        raise ReferencePreparationError(f"OCR 未生成 sidecar 文本: {reference_path.name}")
+
+    text = read_text_file(sidecar_path).strip()
+    warnings = ["PDF 文字层为空，已使用 OCR fallback。backend=ocrmypdf_tesseract"]
+    if is_effectively_empty_text(text):
+        warnings.append("OCR 结果为空或接近空，当前 PDF 可能质量较差。")
 
     return text, warnings
 
@@ -155,9 +302,32 @@ def read_md_reference(reference_path: Path) -> tuple[str, str, list[str]]:
     return read_text_file(reference_path), "direct_markdown_read", []
 
 
-def read_pdf_reference(reference_path: Path) -> tuple[str, str, list[str]]:
-    extracted_text, warnings = extract_pdf_text(reference_path)
-    return extracted_text, "pypdf_text_extract", warnings
+def read_pdf_reference(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, str, list[str]]:
+    try:
+        ocr_text, ocr_warnings = run_gemini_pdf_ocr(reference_path, loaded_settings)
+        return ocr_text, "gemini_cli_pdf_ocr", ocr_warnings
+    except GeminiOCRError as exc:
+        extracted_text, warnings = extract_pdf_text(reference_path)
+        if not is_effectively_empty_text(extracted_text):
+            return (
+                extracted_text,
+                "pypdf_text_extract",
+                [f"Gemini OCR 失败，已回退到 PDF 文字层提取。reason={exc}"] + warnings,
+            )
+
+        if not loaded_settings.settings.reference.run_ocr_when_needed:
+            return (
+                extracted_text,
+                "pypdf_text_extract",
+                [f"Gemini OCR 失败，且当前未启用 OCR fallback。reason={exc}"] + warnings,
+            )
+
+        ocr_text, ocr_warnings = run_tesseract_pdf_ocr(reference_path, loaded_settings)
+        return (
+            ocr_text,
+            "ocrmypdf_tesseract",
+            [f"Gemini OCR 失败，已回退到 ocrmypdf。reason={exc}"] + warnings + ocr_warnings,
+        )
 
 
 def prepare_reference_file(
@@ -169,15 +339,17 @@ def prepare_reference_file(
     handlers: dict[str, Callable[[Path], tuple[str, str, list[str]]]] = {
         "txt": read_txt_reference,
         "md": read_md_reference,
-        "pdf": read_pdf_reference,
     }
     handler = handlers.get(source_type)
-    if handler is None:
+    if source_type == "pdf":
+        extracted_text, extraction_method, warnings = read_pdf_reference(reference_path, loaded_settings)
+    elif handler is None:
         raise ReferencePreparationError(f"不支持的参考文件类型: {reference_path.name}")
-    extracted_text, extraction_method, warnings = handler(reference_path)
+    else:
+        extracted_text, extraction_method, warnings = handler(reference_path)
 
     success = True
-    if source_type == "pdf" and warnings and not extracted_text.strip():
+    if source_type == "pdf" and is_effectively_empty_text(extracted_text):
         success = False
 
     if logger:

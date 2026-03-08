@@ -352,9 +352,11 @@ JSON 中间结果至少包含：
 
 PDF 支持边界：
 
-- 仅支持可提取文本的 PDF
-- 当前阶段不支持 OCR
-- 如果 PDF 提取结果为空或接近空，会提示可能是扫描版 PDF
+- 当前 PDF 默认优先尝试 `gemini` CLI OCR
+- 如果 Gemini OCR 失败，但 PDF 自带文字层可提取，则回退到文字层提取
+- 如果 Gemini OCR 失败，且文字层为空或接近空，并且 `reference.run_ocr_when_needed = true`，会回退到 `ocrmypdf + tesseract`
+- 当前 OCR 路线面向中文扫描版 PDF
+- 如果 OCR 结果仍为空或接近空，会提示当前 PDF 质量可能较差
 
 ## 对齐与分段行为
 
