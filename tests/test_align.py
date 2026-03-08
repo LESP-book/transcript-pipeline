@@ -86,10 +86,11 @@ def test_split_reference_text_keeps_poem_structure_as_multiple_blocks(tmp_path: 
 
     blocks = split_reference_text(text, loaded_settings)
 
-    assert len(blocks) == 3
-    assert blocks[0].startswith("水调歌头")
-    assert blocks[1].startswith("久有凌云志")
-    assert blocks[2].startswith("风雷动")
+    assert len(blocks) > 3
+    assert blocks[0] == "水调歌头•重上井冈山"
+    assert blocks[1] == "久有凌云志，重上井冈山。"
+    assert blocks[2] == "千里来寻故地，旧貌变新颜。"
+    assert blocks[-1] == "世上无难事，只要肯登攀。"
 
 
 def test_normalize_text_for_matching_unifies_spaces_symbols_and_width() -> None:
@@ -143,8 +144,8 @@ def test_align_batch_uses_real_reference_blocks_in_output(tmp_path: Path) -> Non
     (asr_dir / "poem.json").write_text(__import__("json").dumps(asr_payload, ensure_ascii=False), encoding="utf-8")
     reference_text = (
         "水调歌头•重上井冈山\n"
-        "久有凌云志，重上井冈山。千里来寻故地，旧貌变新颜。\n\n"
-        "风雷动，旌旗奋，是人寰。三十八年过去，弹指一挥间。\n"
+        "久有凌云志，重上井冈山。千里来寻故地，旧貌变新颜。到处莺歌燕舞，更有潺潺流水，高路入云端。过了黄洋界，险处不须看。\n\n"
+        "风雷动，旌旗奋，是人寰。三十八年过去，弹指一挥间。可上九天揽月，可下五洋捉鳖，谈笑凯歌还。世上无难事，只要肯登攀。\n"
     )
     (reference_dir / "poem.txt").write_text(reference_text, encoding="utf-8")
 
@@ -157,7 +158,7 @@ def test_align_batch_uses_real_reference_blocks_in_output(tmp_path: Path) -> Non
 
     split_blocks = split_reference_text(reference_text, loaded_settings)
     assert payload["total_reference_blocks"] == len(split_blocks)
-    assert payload["total_reference_blocks"] > 1
+    assert payload["total_reference_blocks"] > 3
     assert len(payload["blocks"][0]["top_matches"]) > 1
 
 

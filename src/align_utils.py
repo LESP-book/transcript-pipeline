@@ -214,6 +214,21 @@ def split_text_by_punctuation(text: str, max_chars_per_block: int) -> list[str]:
     return chunks
 
 
+def split_reference_paragraph_into_sentence_blocks(text: str, max_chars_per_block: int) -> list[str]:
+    sentences = re.split(r"(?<=[。！？!?；;])", text)
+    parts = [sentence.strip() for sentence in sentences if sentence.strip()]
+    blocks: list[str] = []
+
+    for part in parts:
+        if len(part) <= max_chars_per_block:
+            blocks.append(part)
+            continue
+
+        blocks.extend(split_text_by_punctuation(part, max_chars_per_block))
+
+    return [block for block in blocks if block.strip()]
+
+
 def split_reference_text(reference_text: str, loaded_settings: LoadedSettings) -> list[str]:
     segmentation = loaded_settings.settings.segmentation
     reference_settings = loaded_settings.settings.reference
@@ -232,11 +247,21 @@ def split_reference_text(reference_text: str, loaded_settings: LoadedSettings) -
             if not remaining_text:
                 continue
             if reference_settings.sentence_split_enabled:
-                split_parts.extend(split_text_by_punctuation(remaining_text, segmentation.max_chars_per_block))
+                split_parts.extend(
+                    split_reference_paragraph_into_sentence_blocks(
+                        remaining_text,
+                        segmentation.max_chars_per_block,
+                    )
+                )
             else:
                 split_parts.append(remaining_text)
         elif reference_settings.sentence_split_enabled:
-            split_parts.extend(split_text_by_punctuation(part, segmentation.max_chars_per_block))
+            split_parts.extend(
+                split_reference_paragraph_into_sentence_blocks(
+                    part,
+                    segmentation.max_chars_per_block,
+                )
+            )
         else:
             split_parts.append(part)
 
