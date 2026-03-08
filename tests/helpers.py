@@ -10,6 +10,8 @@ def write_minimal_settings(
     *,
     supported_audio_ext: list[str] | None = None,
     reference_overrides: dict | None = None,
+    segmentation_overrides: dict | None = None,
+    alignment_overrides: dict | None = None,
 ) -> Path:
     config_dir = project_root / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -74,12 +76,32 @@ def write_minimal_settings(
             "allow_docx": False,
             "prefer_existing_text": True,
             "run_ocr_when_needed": False,
+            "sentence_split_enabled": True,
             "ocr_languages": ["chi_sim", "eng"],
+        },
+        "segmentation": {
+            "enabled": True,
+            "min_chars_per_block": 60,
+            "max_chars_per_block": 500,
+            "max_seconds_per_block": 30,
+            "split_on_empty_line": True,
+            "merge_short_lines": True,
+        },
+        "alignment": {
+            "method": "rapidfuzz_ratio",
+            "top_k": 3,
+            "matched_threshold": 80,
+            "weak_match_threshold": 55,
+            "use_normalization": True,
         },
     }
 
     if reference_overrides:
         payload["reference"].update(reference_overrides)
+    if segmentation_overrides:
+        payload["segmentation"].update(segmentation_overrides)
+    if alignment_overrides:
+        payload["alignment"].update(alignment_overrides)
 
     settings_path = config_dir / "settings.yaml"
     with settings_path.open("w", encoding="utf-8") as file:

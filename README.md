@@ -7,11 +7,12 @@
 - Ubuntu 24 本地开发环境，CPU 运行
 - Windows + WSL2 + NVIDIA 3060Ti 环境，后续可切换到 GPU 后端
 
-当前仓库已实现前三个阶段的最小可运行版本：
+当前仓库已实现前四个阶段的最小可运行版本：
 
 - 第一阶段：配置读取与音频抽取
 - 第二阶段：ASR 抽象接口与第一版转录
 - 第三阶段：参考原文统一提取
+- 第四阶段：块级对齐与分段增强版
 
 当前仍不包含 OCR、LLM 调用、内容分类或最终 Markdown 拼装。
 
@@ -28,13 +29,16 @@
 - 扫描 `data/input/reference/` 下的参考原文文件
 - 支持 `.txt` / `.md` / 可提取文本的 `.pdf`
 - 输出 `data/intermediate/extracted_text/` 下的 JSON 和 TXT
-- 四个最小 CLI 入口
+- 读取 ASR 与参考文本中间结果并生成 `data/intermediate/aligned/` 对齐结果
+- 对齐阶段支持更细粒度分段、文本 normalization 和 top-k 匹配候选
+- 五个最小 CLI 入口
 - 最基本单元测试
 
 ## 当前阶段未实现
 
 - OCR
 - 参考原文结构化分析
+- 复杂对齐路径搜索
 - `quote / lecture / qa` 分类
 - LLM 校订
 - 最终 Markdown 输出
@@ -71,9 +75,11 @@ transcript-pipeline/
 │   ├── 01_extract_audio.py
 │   ├── 02_transcribe.py
 │   ├── 03_prepare_reference.py
+│   ├── 04_align.py
 │   └── run_pipeline.py
 ├── src/
 │   ├── __init__.py
+│   ├── align_utils.py
 │   ├── asr_utils.py
 │   ├── config_loader.py
 │   ├── ffmpeg_utils.py
@@ -84,6 +90,7 @@ transcript-pipeline/
     ├── helpers.py
     ├── test_config.py
     ├── test_extract_audio.py
+    ├── test_align.py
     ├── test_prepare_reference.py
     └── test_transcribe.py
 ```
@@ -168,6 +175,18 @@ python3 scripts/03_prepare_reference.py
 python3 scripts/run_pipeline.py --stage prepare-reference
 ```
 
+直接运行对齐阶段：
+
+```bash
+python3 scripts/04_align.py
+```
+
+通过统一入口运行对齐阶段：
+
+```bash
+python3 scripts/run_pipeline.py --stage align
+```
+
 运行测试：
 
 ```bash
@@ -245,10 +264,54 @@ PDF 支持边界：
 - 当前阶段不支持 OCR
 - 如果 PDF 提取结果为空或接近空，会提示可能是扫描版 PDF
 
+## 对齐与分段行为
+
+- 读取目录：`data/intermediate/asr/` 与 `data/intermediate/extracted_text/`
+- 当前只处理同 basename 可配对的文件
+- ASR 分段：按相邻 segments 保守合并，受最小/最大字符数和时长阈值控制
+- reference 分段：优先按空行切段，再按句号、问号、叹号、分号等细分
+- 匹配前会做轻量 normalization：
+  - 统一空白
+  - 统一全角半角
+  - 统一常见分隔符与标点差异
+- 对齐方法：基于 `rapidfuzz` 的轻量组合评分
+- 输出目录：`data/intermediate/aligned/`
+- 每个配对文件输出：
+  - `<basename>.json`
+
+aligned JSON 至少包含：
+
+- `source_asr_file`
+- `source_reference_file`
+- `alignment_method`
+- `total_asr_blocks`
+- `total_reference_blocks`
+- `blocks`
+
+每个 `block` 现在至少包含：
+
+- `block_id`
+- `source_segment_ids`
+- `start`
+- `end`
+- `asr_text`
+- `matched_reference_text`
+- `match_score`
+- `match_status`
+- `top_matches`
+
+当前能力边界：
+
+- 仍然只是块级对齐增强版
+- 不做一对多 / 多对一复杂对齐
+- 不做全局最优路径搜索
+- 不做分类
+- 不做 LLM 校对
+
 ## 下一阶段建议
 
-下一步最适合优先做的事情是引入“对齐与分段阶段”：
+下一步最适合优先做的事情是引入“内容分类阶段”：
 
-- 基于 `data/intermediate/asr/` 和 `data/intermediate/extracted_text/` 做最小对齐
-- 先输出结构化块级中间结果，不急着做分类和 LLM
-- 继续保持阶段边界清晰，避免把后处理一次性做完
+- 基于 `data/intermediate/aligned/` 对块做 quote / lecture / qa 的保守分类
+- 继续保持中间结果可追踪，不急着接入 LLM 校对
+- 先把结构化判定做扎实，再进入文本修订阶段

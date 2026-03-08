@@ -26,8 +26,17 @@ def ensure_directory(path: Path) -> Path:
     return path
 
 
+def relativize_path(path: Path, project_root: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(project_root))
+    except ValueError:
+        return str(path.resolve())
+
+
 def normalize_stage_name(stage_name: str) -> str:
     normalized = stage_name.strip().lower().replace("_", "-")
-    if normalized in {"extract-audio", "transcribe", "prepare-reference"}:
+    if normalized in {"extract-audio", "transcribe", "prepare-reference", "align"}:
         return normalized
-    raise ValueError(f"当前阶段仅支持 extract-audio、transcribe 或 prepare-reference，收到: {stage_name}")
+    raise ValueError(
+        f"当前阶段仅支持 extract-audio、transcribe、prepare-reference 或 align，收到: {stage_name}"
+    )

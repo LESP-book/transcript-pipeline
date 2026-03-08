@@ -78,6 +78,7 @@ class ReferenceSettings(AppBaseModel):
     allow_docx: bool = False
     prefer_existing_text: bool = True
     run_ocr_when_needed: bool = False
+    sentence_split_enabled: bool = True
     ocr_languages: list[str] = Field(default_factory=list)
 
 
@@ -92,6 +93,23 @@ class AsrSettings(AppBaseModel):
     model_cache_subdir: str = "faster-whisper"
 
 
+class SegmentationSettings(AppBaseModel):
+    enabled: bool = True
+    min_chars_per_block: int = 60
+    max_chars_per_block: int = 500
+    max_seconds_per_block: float = 30.0
+    split_on_empty_line: bool = True
+    merge_short_lines: bool = True
+
+
+class AlignmentSettings(AppBaseModel):
+    method: str = "rapidfuzz_ratio"
+    top_k: int = 3
+    matched_threshold: float = 80.0
+    weak_match_threshold: float = 55.0
+    use_normalization: bool = True
+
+
 class AppSettings(AppBaseModel):
     project: ProjectSettings
     runtime: RuntimeSettings
@@ -100,6 +118,8 @@ class AppSettings(AppBaseModel):
     audio: AudioSettings
     asr: AsrSettings
     reference: ReferenceSettings
+    segmentation: SegmentationSettings
+    alignment: AlignmentSettings
     prompts: PromptSettings | None = None
 
 

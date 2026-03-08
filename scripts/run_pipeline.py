@@ -9,6 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config_loader import ConfigLoadError, load_settings
+from src.align_utils import AlignmentError, align_batch, summarize_alignment_results
 from src.asr_utils import AsrTranscriptionError, summarize_transcription_results, transcribe_batch
 from src.ffmpeg_utils import AudioExtractionError, extract_audio_batch, summarize_extraction_results
 from src.reference_utils import (
@@ -24,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stage",
         required=True,
-        help="当前支持 extract-audio、transcribe 或 prepare-reference",
+        help="当前支持 extract-audio、transcribe、prepare-reference 或 align",
     )
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
@@ -81,6 +82,16 @@ def main() -> int:
             return 1
 
         logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_reference_results(summary))
+        return 0
+
+    if stage_name == "align":
+        try:
+            summary = align_batch(loaded_settings, logger=logger)
+        except AlignmentError as exc:
+            logger.error("%s", exc)
+            return 1
+
+        logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_alignment_results(summary))
         return 0
 
     logger.error("未实现的阶段: %s", stage_name)
