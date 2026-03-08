@@ -70,12 +70,36 @@ class PromptSettings(AppBaseModel):
     final_cleanup: str
 
 
+class ReferenceSettings(AppBaseModel):
+    enabled: bool = True
+    allow_pdf: bool = True
+    allow_txt: bool = True
+    allow_md: bool = True
+    allow_docx: bool = False
+    prefer_existing_text: bool = True
+    run_ocr_when_needed: bool = False
+    ocr_languages: list[str] = Field(default_factory=list)
+
+
+class AsrSettings(AppBaseModel):
+    engine: str
+    language: str
+    beam_size: int = 5
+    vad_filter: bool = False
+    condition_on_previous_text: bool = True
+    word_timestamps: bool = False
+    initial_prompt: str = ""
+    model_cache_subdir: str = "faster-whisper"
+
+
 class AppSettings(AppBaseModel):
     project: ProjectSettings
     runtime: RuntimeSettings
     profiles: dict[str, ProfileSettings]
     paths: PathsSettings
     audio: AudioSettings
+    asr: AsrSettings
+    reference: ReferenceSettings
     prompts: PromptSettings | None = None
 
 

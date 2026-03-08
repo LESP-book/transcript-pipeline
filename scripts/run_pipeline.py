@@ -9,7 +9,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config_loader import ConfigLoadError, load_settings
+from src.asr_utils import AsrTranscriptionError, summarize_transcription_results, transcribe_batch
 from src.ffmpeg_utils import AudioExtractionError, extract_audio_batch, summarize_extraction_results
+from src.reference_utils import (
+    ReferencePreparationError,
+    prepare_reference_batch,
+    summarize_reference_results,
+)
 from src.runtime_utils import normalize_stage_name, setup_logging
 
 
@@ -18,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stage",
         required=True,
-        help="当前仅支持 extract-audio",
+        help="当前支持 extract-audio、transcribe 或 prepare-reference",
     )
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
@@ -55,6 +61,26 @@ def main() -> int:
             return 1
 
         logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_extraction_results(results))
+        return 0
+
+    if stage_name == "transcribe":
+        try:
+            outputs = transcribe_batch(loaded_settings, logger=logger)
+        except AsrTranscriptionError as exc:
+            logger.error("%s", exc)
+            return 1
+
+        logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_transcription_results(outputs))
+        return 0
+
+    if stage_name == "prepare-reference":
+        try:
+            summary = prepare_reference_batch(loaded_settings, logger=logger)
+        except ReferencePreparationError as exc:
+            logger.error("%s", exc)
+            return 1
+
+        logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_reference_results(summary))
         return 0
 
     logger.error("未实现的阶段: %s", stage_name)
