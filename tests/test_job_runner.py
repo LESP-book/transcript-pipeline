@@ -9,6 +9,7 @@ from src.config_loader import load_settings
 from src.job_runner import (
     CANONICAL_INPUT_BASENAME,
     build_job_paths,
+    build_job_initial_prompt,
     detect_reference_source_type,
     fetch_reference_from_url,
     prepare_job_inputs,
@@ -93,10 +94,14 @@ def test_fetch_reference_from_url_extracts_html_to_txt(
 
 def test_write_job_settings_rewrites_paths_into_job_workspace(tmp_path: Path) -> None:
     write_minimal_settings(tmp_path)
+    glossary_dir = tmp_path / "config/glossaries"
+    glossary_dir.mkdir(parents=True, exist_ok=True)
+    (glossary_dir / "marxism_common.txt").write_text("马克思\n恩格斯\n", encoding="utf-8")
     loaded_settings = load_settings(project_root=tmp_path)
     job_paths = build_job_paths(tmp_path, "job-settings")
 
     settings_path = write_job_settings(
+        project_root=tmp_path,
         loaded_settings=loaded_settings,
         job_paths=job_paths,
         profile_name="local_cpu",
@@ -109,6 +114,46 @@ def test_write_job_settings_rewrites_paths_into_job_workspace(tmp_path: Path) ->
     assert payload["paths"]["asr_dir"] == str(job_paths.intermediate_asr_dir)
     assert payload["paths"]["final_dir"] == str(job_paths.output_final_dir)
     assert payload["runtime"]["profile"] == "local_cpu"
+    assert payload["asr"]["initial_prompt"]
+
+
+def test_build_job_initial_prompt_includes_title_and_extra_glossary(tmp_path: Path) -> None:
+    glossary_dir = tmp_path / "config/glossaries"
+    glossary_dir.mkdir(parents=True, exist_ok=True)
+    (glossary_dir / "marxism_common.txt").write_text("马克思\n恩格斯\n", encoding="utf-8")
+    extra_glossary = tmp_path / "chapter_terms.txt"
+    extra_glossary.write_text("摩尔根\n氏族\n", encoding="utf-8")
+
+    prompt = build_job_initial_prompt(
+        project_root=tmp_path,
+        glossary_file=str(extra_glossary),
+        book_name="家庭、私有制和国家的起源",
+        chapter="第八章",
+        max_chars=200,
+    )
+
+    assert "家庭、私有制和国家的起源" in prompt
+    assert "第八章" in prompt
+    assert "马克思" in prompt
+    assert "摩尔根" in prompt
+
+
+def test_build_job_initial_prompt_prioritizes_job_specific_terms_before_common_terms(tmp_path: Path) -> None:
+    glossary_dir = tmp_path / "config/glossaries"
+    glossary_dir.mkdir(parents=True, exist_ok=True)
+    (glossary_dir / "marxism_common.txt").write_text("马克思\n恩格斯\n列宁\n斯大林\n", encoding="utf-8")
+    extra_glossary = tmp_path / "chapter_terms.txt"
+    extra_glossary.write_text("摩尔根\n氏族\n", encoding="utf-8")
+
+    prompt = build_job_initial_prompt(
+        project_root=tmp_path,
+        glossary_file=str(extra_glossary),
+        book_name="家庭、私有制和国家的起源",
+        chapter="第八章",
+        max_chars=22,
+    )
+
+    assert prompt == "家庭、私有制和国家的起源，第八章，摩尔根"
 
 
 def test_run_single_job_copies_final_markdown_to_output_dir(

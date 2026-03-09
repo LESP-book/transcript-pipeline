@@ -294,6 +294,18 @@ pip install -r requirements.txt
   --output-dir "/path/to/output"
 ```
 
+可选附加术语词表：
+
+```bash
+.venv/bin/python scripts/08_run_job.py \
+  --video "/path/to/video.mp4" \
+  --reference "/path/to/reference.pdf" \
+  --book-name "家庭、私有制和国家的起源" \
+  --chapter "第八章" \
+  --glossary-file "/path/to/chapter_terms.txt" \
+  --output-dir "/path/to/output"
+```
+
 单任务入口说明：
 
 - 不再要求视频文件和参考文件同 basename
@@ -305,6 +317,9 @@ pip install -r requirements.txt
   - 公开网页链接
 - 网页链接若目标是 PDF，会先下载 PDF，再按阶段 3 处理
 - 最终 Markdown 会额外复制到 `--output-dir`
+- `config/glossaries/marxism_common.txt` 会默认参与构造本次任务的 `asr.initial_prompt`
+- `--book-name`、`--chapter`、`--glossary-file` 会追加到本次任务的 `initial_prompt`
+- 附加词表文件格式为一行一个词条
 
 运行测试：
 

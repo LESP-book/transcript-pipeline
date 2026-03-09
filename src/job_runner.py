@@ -16,6 +16,7 @@ import yaml
 
 from scripts.run_pipeline import run_stage
 from src.config_loader import ConfigLoadError, load_settings
+from src.glossary_utils import build_initial_prompt, load_glossary_terms, merge_glossary_terms
 from src.runtime_utils import ensure_directory, normalize_stage_name, relativize_path, setup_logging
 from src.schemas import LoadedSettings
 
@@ -57,6 +58,10 @@ class JobResult:
     generated_settings_path: Path
     final_markdown_path: Path
     copied_output_path: Path
+
+
+def resolve_common_glossary_path(project_root: Path) -> Path:
+    return project_root / "config/glossaries/marxism_common.txt"
 
 
 class HTMLTextExtractor(HTMLParser):
@@ -227,15 +232,41 @@ def load_raw_settings(loaded_settings: LoadedSettings) -> dict[str, Any]:
     return payload
 
 
+def build_job_initial_prompt(
+    *,
+    project_root: Path,
+    glossary_file: str | None,
+    book_name: str | None,
+    chapter: str | None,
+    max_chars: int = 400,
+) -> str:
+    common_terms = load_glossary_terms(resolve_common_glossary_path(project_root))
+    extra_terms = load_glossary_terms(Path(glossary_file).expanduser().resolve()) if glossary_file else []
+    title_terms = [term for term in [book_name or "", chapter or ""] if term.strip()]
+    merged_terms = merge_glossary_terms(title_terms, extra_terms, common_terms)
+    return build_initial_prompt(merged_terms, max_chars=max_chars)
+
+
 def write_job_settings(
     *,
+    project_root: Path,
     loaded_settings: LoadedSettings,
     job_paths: JobPaths,
     profile_name: str,
+    glossary_file: str | None = None,
+    book_name: str | None = None,
+    chapter: str | None = None,
 ) -> Path:
     payload = load_raw_settings(loaded_settings)
     payload.setdefault("runtime", {})
     payload["runtime"]["profile"] = profile_name
+    payload.setdefault("asr", {})
+    payload["asr"]["initial_prompt"] = build_job_initial_prompt(
+        project_root=project_root,
+        glossary_file=glossary_file,
+        book_name=book_name,
+        chapter=chapter,
+    )
 
     payload["paths"] = {
         "videos_dir": str(job_paths.input_videos_dir),
@@ -281,6 +312,7 @@ def write_job_manifest(
     profile_name: str,
     book_name: str | None,
     chapter: str | None,
+    glossary_file: str | None,
 ) -> None:
     payload = {
         "job_id": job_paths.job_id,
@@ -293,6 +325,7 @@ def write_job_manifest(
         "output_dir": str(output_dir.resolve()),
         "book_name": book_name or "",
         "chapter": chapter or "",
+        "glossary_file": str(Path(glossary_file).expanduser().resolve()) if glossary_file else "",
         "generated_settings_path": relativize_path(job_paths.settings_path, loaded_settings.project_root),
     }
     job_paths.manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -344,6 +377,7 @@ def run_single_job(
     profile: str | None = None,
     book_name: str | None = None,
     chapter: str | None = None,
+    glossary_file: str | None = None,
 ) -> JobResult:
     video_source = Path(video).expanduser().resolve()
     output_path = Path(output_dir).expanduser().resolve()
@@ -357,9 +391,13 @@ def run_single_job(
     )
 
     generated_settings_path = write_job_settings(
+        project_root=project_root,
         loaded_settings=base_loaded_settings,
         job_paths=job_paths,
         profile_name=profile_name,
+        glossary_file=glossary_file,
+        book_name=book_name,
+        chapter=chapter,
     )
     write_job_manifest(
         loaded_settings=base_loaded_settings,
@@ -371,6 +409,7 @@ def run_single_job(
         profile_name=profile_name,
         book_name=book_name,
         chapter=chapter,
+        glossary_file=glossary_file,
     )
 
     try:

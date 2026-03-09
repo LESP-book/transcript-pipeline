@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
     parser.add_argument("--book-name", help="可选书名，用于输出文件命名")
     parser.add_argument("--chapter", help="可选章节名，用于输出文件命名")
+    parser.add_argument("--glossary-file", help="可选附加术语词表文件，一行一个词条")
     return parser
 
 
@@ -47,6 +48,7 @@ def main() -> int:
             profile=args.profile,
             book_name=args.book_name,
             chapter=args.chapter,
+            glossary_file=args.glossary_file,
         )
     except JobRunnerError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
