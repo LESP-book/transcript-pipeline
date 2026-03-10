@@ -138,6 +138,152 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## WSL2 Debian GPU 部署清单
+
+下面这份清单面向“全新 Debian WSL2 + NVIDIA 3060Ti”环境，目标是把当前项目跑到 `wsl2_gpu` / `wsl2_gpu_max_accuracy` profile。
+
+### 1. Windows 宿主机准备
+
+在 Windows PowerShell 中执行：
+
+```powershell
+wsl --install -d Debian
+wsl --update
+wsl --shutdown
+wsl -l -v
+```
+
+如果 Debian 还不是 WSL2，继续执行：
+
+```powershell
+wsl --set-version Debian 2
+```
+
+然后处理显卡侧：
+
+- 在 Windows 宿主机安装最新 NVIDIA Windows 驱动
+- 不要在 WSL 里的 Debian 再安装 Linux NVIDIA 显卡驱动
+- 更新完成后重新进入 Debian
+
+### 2. Debian 基础环境
+
+建议把仓库放在 Linux 文件系统中，例如 `~/code/transcript-pipeline`，不要放在 `/mnt/c/...`。
+
+在 Debian 中执行：
+
+```bash
+sudo apt update
+sudo apt install -y git ffmpeg python3 python3-venv python3-pip
+```
+
+检查 Python 版本：
+
+```bash
+python3 --version
+```
+
+如果这里不是 `Python 3.12.x`，建议先补齐 3.12 再继续，因为项目当前运行要求是 Python 3.12。
+
+### 3. 克隆项目并创建虚拟环境
+
+```bash
+git clone <你的仓库地址> ~/code/transcript-pipeline
+cd ~/code/transcript-pipeline
+
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip wheel
+pip install -r requirements.txt
+```
+
+### 4. 安装 GPU 运行库
+
+`faster-whisper` 当前 GPU 运行依赖 `CUDA 12 + cuDNN 9` 对应的运行库。对这个项目，最直接的方式是在虚拟环境里安装 Python wheels：
+
+```bash
+. .venv/bin/activate
+pip install nvidia-cublas-cu12 "nvidia-cudnn-cu12==9.*"
+```
+
+然后为当前 shell 设置动态库路径：
+
+```bash
+export LD_LIBRARY_PATH="$(".venv/bin/python" -c 'import os, nvidia.cublas.lib, nvidia.cudnn.lib; print(os.path.dirname(nvidia.cublas.lib.__file__) + ":" + os.path.dirname(nvidia.cudnn.lib.__file__))')${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+```
+
+如果你希望以后登录 Debian 自动生效，可以把上面这行追加到 `~/.bashrc`。
+
+### 5. 先验证 WSL GPU 是否通
+
+先看 WSL 是否已经识别到 3060Ti：
+
+```bash
+nvidia-smi
+```
+
+如果 `nvidia-smi` 不在默认 PATH，可以尝试：
+
+```bash
+/usr/lib/wsl/lib/nvidia-smi
+```
+
+如果这一步失败，先回到 Windows 宿主机检查 WSL 更新和 NVIDIA 驱动，不要继续折腾项目依赖。
+
+### 6. 运行项目测试
+
+```bash
+.venv/bin/python -m pytest
+```
+
+### 7. 做一次 faster-whisper GPU 冒烟测试
+
+```bash
+.venv/bin/python - <<'PY'
+from faster_whisper import WhisperModel
+
+model = WhisperModel("small", device="cuda", compute_type="float16")
+print("GPU model load OK")
+PY
+```
+
+如果这里输出 `GPU model load OK`，说明 WSL2 + CUDA runtime + `faster-whisper` 这条链已经打通。
+
+### 8. 开始跑项目
+
+平衡档：
+
+```bash
+.venv/bin/python "scripts/08_run_job.py" \
+  --video "/path/to/video.mp4" \
+  --reference "/path/to/reference.pdf" \
+  --output-dir "/path/to/output" \
+  --profile "wsl2_gpu"
+```
+
+最高精度档：
+
+```bash
+.venv/bin/python "scripts/08_run_job.py" \
+  --video "/path/to/video.mp4" \
+  --reference "/path/to/reference.pdf" \
+  --output-dir "/path/to/output" \
+  --profile "wsl2_gpu_max_accuracy"
+```
+
+### 9. 常见问题
+
+- `nvidia-smi` 不通：优先检查 Windows 驱动和 `wsl --update`
+- 报 `libcublas.so` / `libcudnn.so` 找不到：通常是 `LD_LIBRARY_PATH` 没生效
+- `pytest` 通过但 GPU 仍跑不动：用上面的 GPU 冒烟测试单独排查
+- 不要在 `/mnt/c/...` 下长期跑项目，I/O 会明显更慢
+
+### 10. 官方参考
+
+- Microsoft WSL 安装: https://learn.microsoft.com/en-us/windows/wsl/install
+- Microsoft WSL 基本命令: https://learn.microsoft.com/en-us/windows/wsl/basic-commands
+- NVIDIA CUDA on WSL User Guide: https://docs.nvidia.com/cuda/wsl-user-guide/index.html
+- faster-whisper README: https://github.com/SYSTRAN/faster-whisper
+
 ## 配置
 
 默认配置文件为 `config/settings.yaml`。
