@@ -142,10 +142,13 @@ pip install -r requirements.txt
 
 默认配置文件为 `config/settings.yaml`。
 
-当前支持两个 profile：
+当前支持五个 profile：
 
 - `local_cpu`
+- `local_cpu_high_accuracy`
 - `wsl2_gpu`
+- `wsl2_gpu_high_accuracy`
+- `wsl2_gpu_max_accuracy`
 
 可以通过以下方式切换：
 
@@ -294,6 +297,16 @@ pip install -r requirements.txt
   --output-dir "/path/to/output"
 ```
 
+使用新的更激进 GPU 高精度预设：
+
+```bash
+.venv/bin/python scripts/08_run_job.py \
+  --video "/path/to/video.mp4" \
+  --reference "/path/to/reference.pdf" \
+  --output-dir "/path/to/output" \
+  --profile "wsl2_gpu_max_accuracy"
+```
+
 可选附加术语词表：
 
 ```bash
@@ -320,6 +333,9 @@ pip install -r requirements.txt
 - `config/glossaries/marxism_common.txt` 会默认参与构造本次任务的 `asr.initial_prompt`
 - `--book-name`、`--chapter`、`--glossary-file` 会追加到本次任务的 `initial_prompt`
 - 附加词表文件格式为一行一个词条
+- `local_cpu` 与 `wsl2_gpu` 使用 `beam_size = 5`
+- `local_cpu_high_accuracy` 与 `wsl2_gpu_high_accuracy` 使用 `beam_size = 8`
+- `wsl2_gpu_max_accuracy` 使用 `large-v3`，并将 `beam_size` 提高到 `10`
 
 运行测试：
 
@@ -348,7 +364,8 @@ pip install -r requirements.txt
 - 扫描目录：`data/input/audio/`
 - 支持扩展名：`.wav`、`.mp3`、`.m4a`、`.flac`
 - 使用 `faster-whisper`
-- 从 profile 读取 `device`、`asr_compute_type`、`asr_model_size`
+- 从 profile 读取 `device`、`asr_compute_type`、`asr_model_size`、`beam_size`
+- 若 profile 未显式配置 `beam_size`，会回退到全局 `asr.beam_size`
 - 输出目录：`data/intermediate/asr/`
 - 每个音频输出：
   - `<basename>.json`

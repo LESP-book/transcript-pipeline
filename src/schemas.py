@@ -27,6 +27,7 @@ class ProfileSettings(AppBaseModel):
     asr_compute_type: str
     asr_model_size: str
     batch_size: int
+    beam_size: int | None = None
     temp_dir: str
     cache_dir: str
 

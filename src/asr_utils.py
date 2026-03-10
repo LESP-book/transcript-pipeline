@@ -176,12 +176,13 @@ def transcribe_audio_file(
 ) -> AsrFileResult:
     profile = loaded_settings.active_profile
     settings = loaded_settings.settings
+    beam_size = profile.beam_size if profile.beam_size is not None else settings.asr.beam_size
 
     try:
         raw_segments, info = model.transcribe(
             str(audio_path),
             language=settings.asr.language,
-            beam_size=settings.asr.beam_size,
+            beam_size=beam_size,
             vad_filter=settings.asr.vad_filter,
             condition_on_previous_text=settings.asr.condition_on_previous_text,
             word_timestamps=settings.asr.word_timestamps,

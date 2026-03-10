@@ -37,6 +37,7 @@ def write_minimal_settings(
                 "asr_compute_type": "int8",
                 "asr_model_size": "small",
                 "batch_size": 1,
+                "beam_size": 5,
                 "temp_dir": "/tmp/transcript-pipeline",
                 "cache_dir": "~/.cache/transcript-pipeline",
             }

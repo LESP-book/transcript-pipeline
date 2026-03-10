@@ -14,6 +14,7 @@ profiles:
     asr_compute_type: int8
     asr_model_size: small
     batch_size: 4
+    beam_size: 5
     temp_dir: /tmp/transcript-pipeline
     cache_dir: ~/.cache/transcript-pipeline
   local_cpu_high_accuracy:
@@ -21,6 +22,7 @@ profiles:
     asr_compute_type: int8
     asr_model_size: large-v3-turbo
     batch_size: 1
+    beam_size: 8
     temp_dir: /tmp/transcript-pipeline
     cache_dir: ~/.cache/transcript-pipeline
   wsl2_gpu:
@@ -28,6 +30,7 @@ profiles:
     asr_compute_type: float16
     asr_model_size: medium
     batch_size: 8
+    beam_size: 5
     temp_dir: /tmp/transcript-pipeline
     cache_dir: ~/.cache/transcript-pipeline
   wsl2_gpu_high_accuracy:
@@ -35,6 +38,15 @@ profiles:
     asr_compute_type: float16
     asr_model_size: large-v3-turbo
     batch_size: 4
+    beam_size: 8
+    temp_dir: /tmp/transcript-pipeline
+    cache_dir: ~/.cache/transcript-pipeline
+  wsl2_gpu_max_accuracy:
+    device: cuda
+    asr_compute_type: float16
+    asr_model_size: large-v3
+    batch_size: 2
+    beam_size: 10
     temp_dir: /tmp/transcript-pipeline
     cache_dir: ~/.cache/transcript-pipeline
 
@@ -72,7 +84,7 @@ audio:
 asr:
   engine: faster-whisper
   language: zh
-  beam_size: 5
+  beam_size: 8
   vad_filter: true
   condition_on_previous_text: true
   word_timestamps: false

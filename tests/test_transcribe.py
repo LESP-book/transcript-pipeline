@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from src.asr_utils import AudioInputEmptyError, build_asr_output_paths, iter_audio_files, transcribe_batch
+from src.asr_utils import (
+    AudioInputEmptyError,
+    build_asr_output_paths,
+    iter_audio_files,
+    transcribe_audio_file,
+    transcribe_batch,
+)
 from src.config_loader import load_settings
 from tests.helpers import write_minimal_settings
 
@@ -38,3 +45,25 @@ def test_build_asr_output_paths_uses_audio_basename(tmp_path: Path) -> None:
 
     assert output_paths.json_path == output_dir / "meeting-session.json"
     assert output_paths.txt_path == output_dir / "meeting-session.txt"
+
+
+def test_transcribe_audio_file_prefers_profile_beam_size(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path)
+    audio_path = tmp_path / "sample.wav"
+    audio_path.write_text("placeholder", encoding="utf-8")
+
+    loaded_settings = load_settings(project_root=tmp_path)
+    loaded_settings.active_profile.beam_size = 9
+
+    calls: dict[str, object] = {}
+
+    class FakeModel:
+        def transcribe(self, source: str, **kwargs):
+            calls["source"] = source
+            calls["kwargs"] = kwargs
+            return iter([SimpleNamespace(id=0, start=0.0, end=1.0, text="测试")]), SimpleNamespace(language="zh")
+
+    result = transcribe_audio_file(audio_path, FakeModel(), loaded_settings)
+
+    assert result.full_text == "测试"
+    assert calls["kwargs"]["beam_size"] == 9
