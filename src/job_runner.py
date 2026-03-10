@@ -52,6 +52,14 @@ class JobPreparedInputs:
 
 
 @dataclass(frozen=True)
+class ServerRefinePreparedInputs:
+    asr_json_path: Path
+    asr_text_path: Path
+    reference_path: Path
+    reference_type: str
+
+
+@dataclass(frozen=True)
 class JobResult:
     job_id: str
     job_root: Path
@@ -256,6 +264,7 @@ def write_job_settings(
     glossary_file: str | None = None,
     book_name: str | None = None,
     chapter: str | None = None,
+    pipeline_stages: list[str] | None = None,
 ) -> Path:
     payload = load_raw_settings(loaded_settings)
     payload.setdefault("runtime", {})
@@ -290,6 +299,10 @@ def write_job_settings(
             prompts[key] = str(loaded_settings.resolve_path(str(value)))
         payload["prompts"] = prompts
 
+    if pipeline_stages is not None:
+        payload.setdefault("pipeline", {})
+        payload["pipeline"]["stages"] = pipeline_stages
+
     try:
         job_paths.settings_path.write_text(
             yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
@@ -316,11 +329,46 @@ def write_job_manifest(
 ) -> None:
     payload = {
         "job_id": job_paths.job_id,
+        "job_kind": "full_pipeline",
         "profile": profile_name,
         "video_source": str(video_source.resolve()),
         "reference_source": reference_source,
         "reference_type": prepared_inputs.reference_type,
         "prepared_video": relativize_path(prepared_inputs.video_path, loaded_settings.project_root),
+        "prepared_reference": relativize_path(prepared_inputs.reference_path, loaded_settings.project_root),
+        "output_dir": str(output_dir.resolve()),
+        "book_name": book_name or "",
+        "chapter": chapter or "",
+        "glossary_file": str(Path(glossary_file).expanduser().resolve()) if glossary_file else "",
+        "generated_settings_path": relativize_path(job_paths.settings_path, loaded_settings.project_root),
+    }
+    job_paths.manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def write_server_refine_job_manifest(
+    *,
+    loaded_settings: LoadedSettings,
+    job_paths: JobPaths,
+    prepared_inputs: ServerRefinePreparedInputs,
+    asr_json_source: Path,
+    asr_text_source: Path,
+    reference_source: str,
+    output_dir: Path,
+    profile_name: str,
+    book_name: str | None,
+    chapter: str | None,
+    glossary_file: str | None,
+) -> None:
+    payload = {
+        "job_id": job_paths.job_id,
+        "job_kind": "server_refine",
+        "profile": profile_name,
+        "asr_json_source": str(asr_json_source.resolve()),
+        "asr_text_source": str(asr_text_source.resolve()),
+        "reference_source": reference_source,
+        "reference_type": prepared_inputs.reference_type,
+        "prepared_asr_json": relativize_path(prepared_inputs.asr_json_path, loaded_settings.project_root),
+        "prepared_asr_text": relativize_path(prepared_inputs.asr_text_path, loaded_settings.project_root),
         "prepared_reference": relativize_path(prepared_inputs.reference_path, loaded_settings.project_root),
         "output_dir": str(output_dir.resolve()),
         "book_name": book_name or "",
@@ -339,6 +387,47 @@ def build_final_output_filename(video_source: Path, *, book_name: str | None, ch
     if chapter:
         return f"{sanitize_filename_stem(chapter)}.md"
     return f"{sanitize_filename_stem(video_source.stem)}.md"
+
+
+def prepare_existing_asr_artifacts(
+    *,
+    asr_json_source: Path,
+    asr_text_source: Path,
+    reference_source: str,
+    job_paths: JobPaths,
+) -> ServerRefinePreparedInputs:
+    if not asr_json_source.exists():
+        raise JobRunnerError(f"ASR JSON 不存在: {asr_json_source}")
+    if not asr_text_source.exists():
+        raise JobRunnerError(f"ASR 文本不存在: {asr_text_source}")
+
+    asr_json_destination = job_paths.intermediate_asr_dir / f"{CANONICAL_INPUT_BASENAME}.json"
+    asr_text_destination = job_paths.intermediate_asr_dir / f"{CANONICAL_INPUT_BASENAME}.txt"
+    shutil.copy2(asr_json_source, asr_json_destination)
+    shutil.copy2(asr_text_source, asr_text_destination)
+
+    reference_type = detect_reference_source_type(reference_source)
+    if reference_type == "url":
+        reference_destination, resolved_reference_type = fetch_reference_from_url(
+            reference_source,
+            job_paths.input_reference_dir,
+            CANONICAL_INPUT_BASENAME,
+        )
+        return ServerRefinePreparedInputs(
+            asr_json_path=asr_json_destination,
+            asr_text_path=asr_text_destination,
+            reference_path=reference_destination,
+            reference_type=resolved_reference_type,
+        )
+
+    local_reference_path = Path(reference_source)
+    reference_destination = job_paths.input_reference_dir / f"{CANONICAL_INPUT_BASENAME}{local_reference_path.suffix.lower()}"
+    return ServerRefinePreparedInputs(
+        asr_json_path=asr_json_destination,
+        asr_text_path=asr_text_destination,
+        reference_path=copy_local_reference(local_reference_path, reference_destination),
+        reference_type=reference_type,
+    )
 
 
 def copy_final_output(job_paths: JobPaths, output_dir: Path, final_filename: str) -> tuple[Path, Path]:
@@ -431,6 +520,85 @@ def run_single_job(
         build_final_output_filename(video_source, book_name=book_name, chapter=chapter),
     )
     logger.info("job 完成 | job_id=%s | final=%s", job_id, copied_output_path)
+
+    return JobResult(
+        job_id=job_id,
+        job_root=job_paths.job_root,
+        generated_settings_path=generated_settings_path,
+        final_markdown_path=final_source_path,
+        copied_output_path=copied_output_path,
+    )
+
+
+def run_server_refine_job(
+    *,
+    project_root: Path,
+    base_loaded_settings: LoadedSettings,
+    asr_json: str,
+    asr_text: str,
+    reference: str,
+    output_dir: str,
+    profile: str | None = None,
+    book_name: str | None = None,
+    chapter: str | None = None,
+    glossary_file: str | None = None,
+) -> JobResult:
+    asr_json_source = Path(asr_json).expanduser().resolve()
+    asr_text_source = Path(asr_text).expanduser().resolve()
+    output_path = Path(output_dir).expanduser().resolve()
+    profile_name = profile or base_loaded_settings.active_profile_name
+    job_id = create_job_id()
+    job_paths = build_job_paths(project_root, job_id)
+    prepared_inputs = prepare_existing_asr_artifacts(
+        asr_json_source=asr_json_source,
+        asr_text_source=asr_text_source,
+        reference_source=reference,
+        job_paths=job_paths,
+    )
+
+    generated_settings_path = write_job_settings(
+        project_root=project_root,
+        loaded_settings=base_loaded_settings,
+        job_paths=job_paths,
+        profile_name=profile_name,
+        glossary_file=glossary_file,
+        book_name=book_name,
+        chapter=chapter,
+        pipeline_stages=["prepare_reference", "refine", "export_markdown"],
+    )
+    write_server_refine_job_manifest(
+        loaded_settings=base_loaded_settings,
+        job_paths=job_paths,
+        prepared_inputs=prepared_inputs,
+        asr_json_source=asr_json_source,
+        asr_text_source=asr_text_source,
+        reference_source=reference,
+        output_dir=output_path,
+        profile_name=profile_name,
+        book_name=book_name,
+        chapter=chapter,
+        glossary_file=glossary_file,
+    )
+
+    try:
+        job_loaded_settings = load_settings(
+            settings_path=generated_settings_path,
+            profile_name=profile_name,
+            project_root=project_root,
+        )
+    except ConfigLoadError as exc:
+        raise JobRunnerError(f"job 配置加载失败: {generated_settings_path} | {exc}") from exc
+
+    logger = setup_logging(job_loaded_settings.settings.runtime.log_level)
+    logger.info("server refine job 启动 | job_id=%s | reference_type=%s", job_id, prepared_inputs.reference_type)
+    run_job_pipeline(job_loaded_settings, logger)
+
+    final_source_path, copied_output_path = copy_final_output(
+        job_paths,
+        output_path,
+        build_final_output_filename(asr_text_source, book_name=book_name, chapter=chapter),
+    )
+    logger.info("server refine job 完成 | job_id=%s | final=%s", job_id, copied_output_path)
 
     return JobResult(
         job_id=job_id,

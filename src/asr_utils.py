@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from src.runtime_utils import ensure_directory
-from src.schemas import LoadedSettings
+from src.schemas import LoadedSettings, ResolvedAsrRuntime
 
 
 class AsrTranscriptionError(RuntimeError):
@@ -97,9 +97,9 @@ def build_asr_output_paths(audio_path: Path, output_dir: Path) -> AsrOutputPaths
     )
 
 
-def validate_asr_runtime(loaded_settings: LoadedSettings) -> None:
+def validate_asr_runtime(loaded_settings: LoadedSettings, runtime: ResolvedAsrRuntime) -> None:
     engine = loaded_settings.settings.asr.engine.strip().lower()
-    device = loaded_settings.active_profile.device.strip().lower()
+    device = runtime.device
 
     if engine != "faster-whisper":
         raise UnsupportedAsrEngineError(
@@ -129,16 +129,19 @@ def looks_like_cuda_error(message: str) -> bool:
     return any(keyword in normalized for keyword in keywords)
 
 
-def load_faster_whisper_model(loaded_settings: LoadedSettings) -> Any:
-    validate_asr_runtime(loaded_settings)
+def load_faster_whisper_model(
+    loaded_settings: LoadedSettings,
+    quality_tier_name: str | None = None,
+) -> tuple[Any, ResolvedAsrRuntime]:
+    runtime = loaded_settings.resolve_asr_runtime(quality_tier_name)
+    validate_asr_runtime(loaded_settings, runtime)
     WhisperModel = import_whisper_model_class()
 
-    profile = loaded_settings.active_profile
     settings = loaded_settings.settings
-    model_size = profile.asr_model_size
-    device = profile.device.lower()
-    compute_type = profile.asr_compute_type
-    download_root = loaded_settings.resolve_path(profile.cache_dir) / settings.asr.model_cache_subdir
+    model_size = runtime.model_size
+    device = runtime.device
+    compute_type = runtime.compute_type
+    download_root = loaded_settings.resolve_path(loaded_settings.active_profile.cache_dir) / settings.asr.model_cache_subdir
 
     try:
         return WhisperModel(
@@ -146,7 +149,7 @@ def load_faster_whisper_model(loaded_settings: LoadedSettings) -> Any:
             device=device,
             compute_type=compute_type,
             download_root=str(download_root),
-        )
+        ), runtime
     except Exception as exc:
         message = str(exc)
         if device == "cuda" and looks_like_cuda_error(message):
@@ -172,19 +175,19 @@ def transcribe_audio_file(
     audio_path: Path,
     model: Any,
     loaded_settings: LoadedSettings,
+    runtime: ResolvedAsrRuntime,
     logger: logging.Logger | None = None,
 ) -> AsrFileResult:
-    profile = loaded_settings.active_profile
     settings = loaded_settings.settings
 
     try:
         raw_segments, info = model.transcribe(
             str(audio_path),
             language=settings.asr.language,
-            beam_size=settings.asr.beam_size,
-            vad_filter=settings.asr.vad_filter,
-            condition_on_previous_text=settings.asr.condition_on_previous_text,
-            word_timestamps=settings.asr.word_timestamps,
+            beam_size=runtime.beam_size,
+            vad_filter=runtime.vad_filter,
+            condition_on_previous_text=runtime.condition_on_previous_text,
+            word_timestamps=runtime.word_timestamps,
             initial_prompt=settings.asr.initial_prompt or None,
         )
         segments = [
@@ -197,7 +200,7 @@ def transcribe_audio_file(
             for segment in list(raw_segments)
         ]
     except Exception as exc:
-        if profile.device.lower() == "cuda" and looks_like_cuda_error(str(exc)):
+        if runtime.device == "cuda" and looks_like_cuda_error(str(exc)):
             raise CudaUnavailableError(f"CUDA 转录失败: {audio_path.name} | {exc}") from exc
         raise AsrTranscriptionError(f"转录失败: {audio_path.name} | {exc}") from exc
 
@@ -210,9 +213,9 @@ def transcribe_audio_file(
     return AsrFileResult(
         source_file=build_source_file_label(audio_path, loaded_settings),
         engine=settings.asr.engine,
-        model_size=profile.asr_model_size,
-        device=profile.device,
-        compute_type=profile.asr_compute_type,
+        model_size=runtime.model_size,
+        device=runtime.device,
+        compute_type=runtime.compute_type,
         language=language,
         segments=segments,
         full_text=full_text,
@@ -243,6 +246,7 @@ def write_asr_result(result: AsrFileResult, output_paths: AsrOutputPaths) -> Non
 def transcribe_batch(
     loaded_settings: LoadedSettings,
     logger: logging.Logger | None = None,
+    quality_tier_name: str | None = None,
 ) -> list[AsrBatchItem]:
     audio_dir = loaded_settings.path_for("audio_dir")
     output_dir = ensure_directory(loaded_settings.path_for("asr_dir"))
@@ -254,11 +258,11 @@ def transcribe_batch(
             f"输入目录中没有可处理的音频文件: {audio_dir}。支持扩展名: {supported_ext}"
         )
 
-    model = load_faster_whisper_model(loaded_settings)
+    model, runtime = load_faster_whisper_model(loaded_settings, quality_tier_name=quality_tier_name)
     output_files: list[AsrBatchItem] = []
 
     for audio_path in audio_files:
-        result = transcribe_audio_file(audio_path, model, loaded_settings, logger=logger)
+        result = transcribe_audio_file(audio_path, model, loaded_settings, runtime, logger=logger)
         output_paths = build_asr_output_paths(audio_path, output_dir)
         write_asr_result(result, output_paths)
         output_files.append(

@@ -93,6 +93,28 @@ class AsrSettings(AppBaseModel):
     word_timestamps: bool = False
     initial_prompt: str = ""
     model_cache_subdir: str = "faster-whisper"
+    quality_tier: str = "general"
+    quality_tiers: dict[str, "AsrQualityTierSettings"] = Field(default_factory=dict)
+
+
+class AsrQualityTierSettings(AppBaseModel):
+    label: str = ""
+    beam_size: int | None = None
+    model_size_overrides: dict[str, str] = Field(default_factory=dict)
+    compute_type_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResolvedAsrRuntime:
+    quality_tier_name: str
+    label: str
+    device: str
+    model_size: str
+    compute_type: str
+    beam_size: int
+    vad_filter: bool
+    condition_on_previous_text: bool
+    word_timestamps: bool
 
 
 class SegmentationSettings(AppBaseModel):
@@ -204,3 +226,29 @@ class LoadedSettings:
         if field_name not in paths:
             raise KeyError(f"未知路径字段: {field_name}")
         return self.resolve_path(paths[field_name])
+
+    def resolve_asr_runtime(self, quality_tier_name: str | None = None) -> ResolvedAsrRuntime:
+        asr_settings = self.settings.asr
+        selected_tier = (quality_tier_name or asr_settings.quality_tier or "general").strip()
+        tier_settings = asr_settings.quality_tiers.get(selected_tier)
+        if tier_settings is None:
+            available = ", ".join(sorted(asr_settings.quality_tiers.keys()))
+            raise KeyError(f"未知 ASR 质量档位: {selected_tier}. 可用档位: {available}")
+
+        device = self.active_profile.device.strip().lower()
+        model_size = tier_settings.model_size_overrides.get(device) or self.active_profile.asr_model_size
+        compute_type = tier_settings.compute_type_overrides.get(device) or self.active_profile.asr_compute_type
+        beam_size = tier_settings.beam_size or asr_settings.beam_size
+        label = tier_settings.label or selected_tier
+
+        return ResolvedAsrRuntime(
+            quality_tier_name=selected_tier,
+            label=label,
+            device=device,
+            model_size=model_size,
+            compute_type=compute_type,
+            beam_size=beam_size,
+            vad_filter=asr_settings.vad_filter,
+            condition_on_previous_text=asr_settings.condition_on_previous_text,
+            word_timestamps=asr_settings.word_timestamps,
+        )

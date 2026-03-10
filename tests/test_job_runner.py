@@ -13,6 +13,7 @@ from src.job_runner import (
     detect_reference_source_type,
     fetch_reference_from_url,
     prepare_job_inputs,
+    run_server_refine_job,
     run_single_job,
     write_job_settings,
 )
@@ -193,3 +194,47 @@ def test_run_single_job_copies_final_markdown_to_output_dir(
     assert result.copied_output_path.read_text(encoding="utf-8") == "# 最终稿\n\n正文"
     manifest_path = tmp_path / "data/jobs/job-fixed-id/manifest.json"
     assert manifest_path.exists()
+
+
+def test_run_server_refine_job_uses_existing_asr_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    asr_json_path = tmp_path / "meeting.json"
+    asr_txt_path = tmp_path / "meeting.txt"
+    reference_path = tmp_path / "chapter.txt"
+    output_dir = tmp_path / "deliverables"
+
+    asr_json_path.write_text('{"full_text":"转写正文"}', encoding="utf-8")
+    asr_txt_path.write_text("转写正文", encoding="utf-8")
+    reference_path.write_text("参考原文", encoding="utf-8")
+
+    monkeypatch.setattr("src.job_runner.create_job_id", lambda: "job-refine-id")
+
+    def fake_run_job_pipeline(job_loaded_settings, logger) -> None:
+        _ = logger
+        asr_dir = job_loaded_settings.path_for("asr_dir")
+        assert (asr_dir / f"{CANONICAL_INPUT_BASENAME}.json").read_text(encoding="utf-8") == '{"full_text":"转写正文"}'
+        assert (asr_dir / f"{CANONICAL_INPUT_BASENAME}.txt").read_text(encoding="utf-8") == "转写正文"
+
+        final_dir = job_loaded_settings.path_for("final_dir")
+        final_dir.mkdir(parents=True, exist_ok=True)
+        (final_dir / f"{CANONICAL_INPUT_BASENAME}.md").write_text("# 最终稿\n\n服务端精修", encoding="utf-8")
+
+    monkeypatch.setattr("src.job_runner.run_job_pipeline", fake_run_job_pipeline)
+
+    result = run_server_refine_job(
+        project_root=tmp_path,
+        base_loaded_settings=loaded_settings,
+        asr_json=str(asr_json_path),
+        asr_text=str(asr_txt_path),
+        reference=str(reference_path),
+        output_dir=str(output_dir),
+    )
+
+    assert result.job_id == "job-refine-id"
+    assert result.copied_output_path == output_dir / "meeting.md"
+    assert result.copied_output_path.read_text(encoding="utf-8") == "# 最终稿\n\n服务端精修"

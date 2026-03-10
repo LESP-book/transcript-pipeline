@@ -146,6 +146,8 @@ pip install -r requirements.txt
 
 - `local_cpu`
 - `wsl2_gpu`
+- `windows_cpu`
+- `windows_gpu`
 
 可以通过以下方式切换：
 
@@ -154,6 +156,27 @@ pip install -r requirements.txt
 - CLI 参数 `--profile`
 
 优先级从高到低依次为：CLI 参数、环境变量、配置文件默认值。
+
+### ASR 质量档位
+
+当前支持三个 ASR 质量档位：
+
+- `general`：一般精度
+- `high`：高精度
+- `max`：最高精度
+
+默认档位通过 `asr.quality_tier` 控制。
+
+当前内置映射为：
+
+- `general`
+  - CPU: `small`
+  - CUDA: `medium`
+- `high`
+  - CPU/CUDA: `large-v3-turbo`
+- `max`
+  - CPU/CUDA: `large-v3-turbo`
+  - 使用更高 `beam_size`
 
 ## 运行方式
 
@@ -258,6 +281,38 @@ pip install -r requirements.txt
 
 ```bash
 .venv/bin/python scripts/run_pipeline.py --stage export-markdown
+```
+
+启动远程协调 API：
+
+```bash
+.venv/bin/python scripts/11_run_remote_api.py --host 127.0.0.1 --port 8000
+```
+
+启动本地助手 localhost API：
+
+```bash
+.venv/bin/python scripts/12_run_local_helper_api.py \
+  --host 127.0.0.1 \
+  --port 28010 \
+  --remote-api-base-url http://127.0.0.1:8000 \
+  --profile windows_gpu
+```
+
+执行本地前处理主链（抽音频 + ASR）：
+
+```bash
+.venv/bin/python scripts/10_run_local_preprocess_job.py --quality-tier high
+```
+
+执行服务端精修主链（基于已有 ASR 工件继续跑 reference/refine/export）：
+
+```bash
+.venv/bin/python scripts/09_run_server_refine_job.py \
+  --asr-json data/intermediate/asr/source.json \
+  --asr-text data/intermediate/asr/source.txt \
+  --reference data/input/reference/source.pdf \
+  --output-dir data/output/final
 ```
 
 阶段 7 说明：

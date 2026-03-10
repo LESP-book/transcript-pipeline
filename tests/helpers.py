@@ -9,6 +9,9 @@ def write_minimal_settings(
     project_root: Path,
     *,
     supported_audio_ext: list[str] | None = None,
+    profiles_overrides: dict | None = None,
+    runtime_overrides: dict | None = None,
+    asr_overrides: dict | None = None,
     reference_overrides: dict | None = None,
     segmentation_overrides: dict | None = None,
     alignment_overrides: dict | None = None,
@@ -73,6 +76,33 @@ def write_minimal_settings(
             "word_timestamps": False,
             "initial_prompt": "",
             "model_cache_subdir": "faster-whisper",
+            "quality_tier": "general",
+            "quality_tiers": {
+                "general": {
+                    "label": "一般精度",
+                    "beam_size": 5,
+                    "model_size_overrides": {
+                        "cpu": "small",
+                        "cuda": "medium",
+                    },
+                },
+                "high": {
+                    "label": "高精度",
+                    "beam_size": 5,
+                    "model_size_overrides": {
+                        "cpu": "large-v3-turbo",
+                        "cuda": "large-v3-turbo",
+                    },
+                },
+                "max": {
+                    "label": "最高精度",
+                    "beam_size": 8,
+                    "model_size_overrides": {
+                        "cpu": "large-v3-turbo",
+                        "cuda": "large-v3-turbo",
+                    },
+                },
+            },
         },
         "reference": {
             "enabled": True,
@@ -152,6 +182,12 @@ def write_minimal_settings(
         },
     }
 
+    if profiles_overrides:
+        payload["profiles"].update(profiles_overrides)
+    if runtime_overrides:
+        payload["runtime"].update(runtime_overrides)
+    if asr_overrides:
+        payload["asr"].update(asr_overrides)
     if reference_overrides:
         payload["reference"].update(reference_overrides)
     if segmentation_overrides:

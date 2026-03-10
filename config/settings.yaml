@@ -37,6 +37,20 @@ profiles:
     batch_size: 4
     temp_dir: /tmp/transcript-pipeline
     cache_dir: ~/.cache/transcript-pipeline
+  windows_cpu:
+    device: cpu
+    asr_compute_type: int8
+    asr_model_size: small
+    batch_size: 2
+    temp_dir: /tmp/transcript-pipeline
+    cache_dir: ~/.cache/transcript-pipeline
+  windows_gpu:
+    device: cuda
+    asr_compute_type: float16
+    asr_model_size: medium
+    batch_size: 4
+    temp_dir: /tmp/transcript-pipeline
+    cache_dir: ~/.cache/transcript-pipeline
 
 paths:
   videos_dir: data/input/videos
@@ -78,6 +92,26 @@ asr:
   word_timestamps: false
   initial_prompt: ""
   model_cache_subdir: faster-whisper
+  quality_tier: general
+  quality_tiers:
+    general:
+      label: 一般精度
+      beam_size: 5
+      model_size_overrides:
+        cpu: small
+        cuda: medium
+    high:
+      label: 高精度
+      beam_size: 5
+      model_size_overrides:
+        cpu: large-v3-turbo
+        cuda: large-v3-turbo
+    max:
+      label: 最高精度
+      beam_size: 8
+      model_size_overrides:
+        cpu: large-v3-turbo
+        cuda: large-v3-turbo
 
 reference:
   enabled: true
