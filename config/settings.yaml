@@ -44,7 +44,7 @@ profiles:
   wsl2_gpu_max_accuracy:
     device: cuda
     asr_compute_type: float16
-    asr_model_size: large-v3
+    asr_model_size: large-v3-turbo
     batch_size: 2
     beam_size: 10
     temp_dir: /tmp/transcript-pipeline

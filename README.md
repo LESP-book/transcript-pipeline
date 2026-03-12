@@ -493,7 +493,7 @@ PY
 - 附加词表文件格式为一行一个词条
 - `local_cpu` 与 `wsl2_gpu` 使用 `beam_size = 5`
 - `local_cpu_high_accuracy` 与 `wsl2_gpu_high_accuracy` 使用 `beam_size = 8`
-- `wsl2_gpu_max_accuracy` 使用 `large-v3`，并将 `beam_size` 提高到 `10`
+- `wsl2_gpu_max_accuracy` 使用 `large-v3-turbo`，并将 `beam_size` 提高到 `10`
 
 运行测试：
 

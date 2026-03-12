@@ -46,7 +46,7 @@ def test_load_settings_wsl2_gpu_max_accuracy_profile() -> None:
 
     assert loaded_settings.active_profile_name == "wsl2_gpu_max_accuracy"
     assert loaded_settings.active_profile.device == "cuda"
-    assert loaded_settings.active_profile.asr_model_size == "large-v3"
+    assert loaded_settings.active_profile.asr_model_size == "large-v3-turbo"
     assert loaded_settings.active_profile.asr_compute_type == "float16"
     assert loaded_settings.active_profile.beam_size == 10
 
