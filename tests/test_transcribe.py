@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,8 +8,13 @@ import pytest
 
 from src.asr_utils import (
     AudioInputEmptyError,
+    CudaUnavailableError,
     build_asr_output_paths,
+    build_cuda_runtime_fix_hint,
+    configure_cuda_runtime_from_venv,
+    discover_cuda_runtime_library_dirs,
     iter_audio_files,
+    load_faster_whisper_model,
     transcribe_audio_file,
     transcribe_batch,
 )
@@ -67,3 +73,104 @@ def test_transcribe_audio_file_prefers_profile_beam_size(tmp_path: Path) -> None
 
     assert result.full_text == "测试"
     assert calls["kwargs"]["beam_size"] == 9
+
+
+def test_discover_cuda_runtime_library_dirs_supports_namespace_packages(monkeypatch) -> None:
+    class FakeSpec:
+        def __init__(self, directories: list[str]) -> None:
+            self.origin = None
+            self.submodule_search_locations = directories
+
+    specs = {
+        "nvidia.cublas.lib": FakeSpec(["/tmp/cublas"]),
+        "nvidia.cudnn.lib": FakeSpec(["/tmp/cudnn"]),
+    }
+
+    monkeypatch.setattr(
+        "src.asr_utils.importlib.util.find_spec",
+        lambda name: specs.get(name),
+    )
+    monkeypatch.setattr(Path, "exists", lambda self: str(self) in {"/tmp/cublas", "/tmp/cudnn"})
+
+    discovered = discover_cuda_runtime_library_dirs()
+
+    assert discovered == [Path("/tmp/cublas"), Path("/tmp/cudnn")]
+
+
+def test_configure_cuda_runtime_from_venv_prepends_env_and_preloads_libs(tmp_path: Path, monkeypatch) -> None:
+    cublas_dir = tmp_path / "cublas"
+    cudnn_dir = tmp_path / "cudnn"
+    cublas_dir.mkdir()
+    cudnn_dir.mkdir()
+    for filename in ("libcublas.so.12", "libcublasLt.so.12"):
+        (cublas_dir / filename).write_text("", encoding="utf-8")
+    (cudnn_dir / "libcudnn.so.9").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "src.asr_utils.discover_cuda_runtime_library_dirs",
+        lambda: [cublas_dir, cudnn_dir],
+    )
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/lib/wsl/lib")
+
+    loaded_paths: list[str] = []
+
+    class FakeCtypes:
+        RTLD_GLOBAL = 0
+
+        @staticmethod
+        def CDLL(path: str, mode: int) -> None:
+            _ = mode
+            loaded_paths.append(path)
+
+    monkeypatch.setattr("src.asr_utils.ctypes", FakeCtypes)
+
+    configured_dirs = configure_cuda_runtime_from_venv()
+
+    assert configured_dirs == [cublas_dir, cudnn_dir]
+    assert os.environ["LD_LIBRARY_PATH"] == f"{cublas_dir}:{cudnn_dir}:/usr/lib/wsl/lib"
+    assert loaded_paths == [
+        str(cublas_dir / "libcublas.so.12"),
+        str(cublas_dir / "libcublasLt.so.12"),
+        str(cudnn_dir / "libcudnn.so.9"),
+    ]
+
+
+def test_build_cuda_runtime_fix_hint_mentions_export_when_runtime_dirs_exist(tmp_path: Path, monkeypatch) -> None:
+    cublas_dir = tmp_path / "cublas"
+    cudnn_dir = tmp_path / "cudnn"
+
+    monkeypatch.setattr(
+        "src.asr_utils.discover_cuda_runtime_library_dirs",
+        lambda: [cublas_dir, cudnn_dir],
+    )
+
+    hint = build_cuda_runtime_fix_hint()
+
+    assert "LD_LIBRARY_PATH" in hint
+    assert str(cublas_dir) in hint
+    assert str(cudnn_dir) in hint
+
+
+def test_load_faster_whisper_model_surfaces_cuda_hint_on_library_error(tmp_path: Path, monkeypatch) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    loaded_settings.active_profile.device = "cuda"
+    loaded_settings.active_profile.asr_compute_type = "float16"
+    loaded_settings.active_profile.asr_model_size = "large-v3"
+
+    monkeypatch.setattr("src.asr_utils.configure_cuda_runtime_from_venv", lambda: [])
+    monkeypatch.setattr(
+        "src.asr_utils.build_cuda_runtime_fix_hint",
+        lambda: "HINT: export LD_LIBRARY_PATH=...",
+    )
+
+    class FakeWhisperModel:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+
+    monkeypatch.setattr("src.asr_utils.import_whisper_model_class", lambda: FakeWhisperModel)
+
+    with pytest.raises(CudaUnavailableError) as exc_info:
+        load_faster_whisper_model(loaded_settings)
+
+    assert "HINT: export LD_LIBRARY_PATH=..." in str(exc_info.value)

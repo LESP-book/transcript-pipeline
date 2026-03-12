@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ctypes
+import importlib.util
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -71,6 +74,14 @@ class AsrBatchItem:
     segment_count: int
 
 
+CUDA_RUNTIME_PACKAGE_NAMES = ("nvidia.cublas.lib", "nvidia.cudnn.lib")
+CUDA_RUNTIME_LIBRARY_FILENAMES = (
+    "libcublas.so.12",
+    "libcublasLt.so.12",
+    "libcudnn.so.9",
+)
+
+
 def normalize_extension(extension: str) -> str:
     normalized = extension.strip().lower()
     if not normalized.startswith("."):
@@ -123,6 +134,89 @@ def import_whisper_model_class() -> Any:
     return WhisperModel
 
 
+def find_python_package_dirs(package_name: str) -> list[Path]:
+    spec = importlib.util.find_spec(package_name)
+    if spec is None:
+        return []
+
+    if spec.submodule_search_locations:
+        return [Path(location).resolve() for location in spec.submodule_search_locations]
+
+    if spec.origin:
+        return [Path(spec.origin).resolve().parent]
+
+    return []
+
+
+def discover_cuda_runtime_library_dirs() -> list[Path]:
+    library_dirs: list[Path] = []
+    seen: set[Path] = set()
+
+    for package_name in CUDA_RUNTIME_PACKAGE_NAMES:
+        for directory in find_python_package_dirs(package_name):
+            if directory.exists() and directory not in seen:
+                library_dirs.append(directory)
+                seen.add(directory)
+
+    return library_dirs
+
+
+def prepend_ld_library_path(library_dirs: Iterable[Path]) -> str:
+    existing_value = os.environ.get("LD_LIBRARY_PATH", "")
+    existing_parts = [part for part in existing_value.split(":") if part]
+    combined_parts: list[str] = []
+
+    for directory in library_dirs:
+        candidate = str(directory)
+        if candidate not in combined_parts and candidate not in existing_parts:
+            combined_parts.append(candidate)
+
+    combined_parts.extend(existing_parts)
+    if combined_parts:
+        os.environ["LD_LIBRARY_PATH"] = ":".join(combined_parts)
+
+    return os.environ.get("LD_LIBRARY_PATH", "")
+
+
+def preload_cuda_runtime_libraries(library_dirs: Iterable[Path]) -> None:
+    for library_name in CUDA_RUNTIME_LIBRARY_FILENAMES:
+        for directory in library_dirs:
+            candidate = directory / library_name
+            if not candidate.exists():
+                continue
+            ctypes.CDLL(str(candidate), mode=ctypes.RTLD_GLOBAL)
+            break
+
+
+def configure_cuda_runtime_from_venv() -> list[Path]:
+    library_dirs = discover_cuda_runtime_library_dirs()
+    if not library_dirs:
+        return []
+
+    prepend_ld_library_path(library_dirs)
+    preload_cuda_runtime_libraries(library_dirs)
+    return library_dirs
+
+
+def build_cuda_runtime_fix_hint() -> str:
+    library_dirs = discover_cuda_runtime_library_dirs()
+    if library_dirs:
+        joined_dirs = ":".join(str(path) for path in library_dirs)
+        return (
+            "检测到当前 .venv 已安装 NVIDIA CUDA runtime wheels。"
+            f" 若仍失败，请先执行 `export LD_LIBRARY_PATH=\"{joined_dirs}"
+            "${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"` 后重试；"
+            "如果当前机器没有可用 GPU，也可以改用 `--profile local_cpu_high_accuracy`。"
+        )
+
+    return (
+        "当前未发现可用的 NVIDIA CUDA runtime wheels。"
+        " 如需继续使用 GPU，请在 .venv 中安装 "
+        "`nvidia-cublas-cu12` 和 `nvidia-cudnn-cu12==9.*`，"
+        "或改用 `--profile local_cpu_high_accuracy`。"
+    )
+
+
 def looks_like_cuda_error(message: str) -> bool:
     normalized = message.lower()
     keywords = ("cuda", "cublas", "cudnn", "driver", "gpu", "curand")
@@ -131,14 +225,25 @@ def looks_like_cuda_error(message: str) -> bool:
 
 def load_faster_whisper_model(loaded_settings: LoadedSettings) -> Any:
     validate_asr_runtime(loaded_settings)
-    WhisperModel = import_whisper_model_class()
-
     profile = loaded_settings.active_profile
     settings = loaded_settings.settings
     model_size = profile.asr_model_size
     device = profile.device.lower()
     compute_type = profile.asr_compute_type
     download_root = loaded_settings.resolve_path(profile.cache_dir) / settings.asr.model_cache_subdir
+    cuda_runtime_hint = build_cuda_runtime_fix_hint()
+
+    if device == "cuda":
+        try:
+            configure_cuda_runtime_from_venv()
+        except OSError as exc:
+            raise CudaUnavailableError(
+                "CUDA runtime 预加载失败。"
+                f" model_size={model_size}, compute_type={compute_type} | {exc}. "
+                f"{cuda_runtime_hint}"
+            ) from exc
+
+    WhisperModel = import_whisper_model_class()
 
     try:
         return WhisperModel(
@@ -152,7 +257,8 @@ def load_faster_whisper_model(loaded_settings: LoadedSettings) -> Any:
         if device == "cuda" and looks_like_cuda_error(message):
             raise CudaUnavailableError(
                 "当前 profile 配置为 cuda，但运行环境不可用。"
-                f" model_size={model_size}, compute_type={compute_type} | {message}"
+                f" model_size={model_size}, compute_type={compute_type} | {message}. "
+                f"{cuda_runtime_hint}"
             ) from exc
 
         raise AsrModelLoadError(
@@ -199,7 +305,9 @@ def transcribe_audio_file(
         ]
     except Exception as exc:
         if profile.device.lower() == "cuda" and looks_like_cuda_error(str(exc)):
-            raise CudaUnavailableError(f"CUDA 转录失败: {audio_path.name} | {exc}") from exc
+            raise CudaUnavailableError(
+                f"CUDA 转录失败: {audio_path.name} | {exc}. {build_cuda_runtime_fix_hint()}"
+            ) from exc
         raise AsrTranscriptionError(f"转录失败: {audio_path.name} | {exc}") from exc
 
     language = getattr(info, "language", settings.asr.language) or settings.asr.language

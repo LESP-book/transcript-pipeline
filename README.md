@@ -208,7 +208,19 @@ pip install nvidia-cublas-cu12 "nvidia-cudnn-cu12==9.*"
 然后为当前 shell 设置动态库路径：
 
 ```bash
-export LD_LIBRARY_PATH="$(".venv/bin/python" -c 'import os, nvidia.cublas.lib, nvidia.cudnn.lib; print(os.path.dirname(nvidia.cublas.lib.__file__) + ":" + os.path.dirname(nvidia.cudnn.lib.__file__))')${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$(
+  .venv/bin/python - <<'PY'
+import importlib.util
+
+paths = []
+for name in ("nvidia.cublas.lib", "nvidia.cudnn.lib"):
+    spec = importlib.util.find_spec(name)
+    if spec and spec.submodule_search_locations:
+        paths.extend(spec.submodule_search_locations)
+
+print(":".join(paths), end="")
+PY
+)${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
 如果你希望以后登录 Debian 自动生效，可以把上面这行追加到 `~/.bashrc`。
