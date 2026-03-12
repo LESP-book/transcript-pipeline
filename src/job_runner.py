@@ -4,7 +4,9 @@ import json
 import logging
 import re
 import shutil
+import socket
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -157,15 +159,71 @@ def copy_local_reference(reference_path: Path, destination_path: Path) -> Path:
     return destination_path
 
 
+def is_network_unreachable_error(exc: OSError) -> bool:
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        error_no = getattr(current, "errno", None)
+        if error_no in {101, 65}:
+            return True
+        if "network is unreachable" in str(current).lower():
+            return True
+        reason = getattr(current, "reason", None)
+        current = reason if isinstance(reason, BaseException) else None
+    return False
+
+
+@contextmanager
+def force_ipv4_resolution():
+    original_getaddrinfo = socket.getaddrinfo
+
+    def ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        resolved = original_getaddrinfo(host, port, family, type, proto, flags)
+        ipv4_only = [item for item in resolved if item[0] == socket.AF_INET]
+        return ipv4_only or resolved
+
+    socket.getaddrinfo = ipv4_only_getaddrinfo
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = original_getaddrinfo
+
+
+def read_url_payload(
+    request: Request,
+    *,
+    prefer_ipv4: bool = False,
+) -> tuple[str, str, bytes]:
+    if prefer_ipv4:
+        with force_ipv4_resolution():
+            with urlopen(request, timeout=WEB_REQUEST_TIMEOUT_SECONDS) as response:
+                return (
+                    response.headers.get_content_type(),
+                    response.headers.get_content_charset() or "utf-8",
+                    response.read(),
+                )
+
+    with urlopen(request, timeout=WEB_REQUEST_TIMEOUT_SECONDS) as response:
+        return (
+            response.headers.get_content_type(),
+            response.headers.get_content_charset() or "utf-8",
+            response.read(),
+        )
+
+
 def fetch_reference_from_url(reference_url: str, destination_dir: Path, basename: str) -> tuple[Path, str]:
     request = Request(reference_url, headers={"User-Agent": "transcript-pipeline/0.1"})
     try:
-        with urlopen(request, timeout=WEB_REQUEST_TIMEOUT_SECONDS) as response:
-            content_type = response.headers.get_content_type()
-            charset = response.headers.get_content_charset() or "utf-8"
-            payload = response.read()
+        content_type, charset, payload = read_url_payload(request)
     except OSError as exc:
-        raise JobRunnerError(f"网页参考抓取失败: {reference_url} | {exc}") from exc
+        if is_network_unreachable_error(exc):
+            try:
+                content_type, charset, payload = read_url_payload(request, prefer_ipv4=True)
+            except OSError as retry_exc:
+                raise JobRunnerError(f"网页参考抓取失败: {reference_url} | {retry_exc}") from retry_exc
+        else:
+            raise JobRunnerError(f"网页参考抓取失败: {reference_url} | {exc}") from exc
 
     if content_type == "application/pdf" or reference_url.lower().endswith(".pdf"):
         output_path = destination_dir / f"{basename}.pdf"

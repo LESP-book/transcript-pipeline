@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 from email.message import Message
 from pathlib import Path
 
@@ -90,6 +91,39 @@ def test_fetch_reference_from_url_extracts_html_to_txt(
     assert "标题" in content
     assert "第一段" in content
     assert "第二段" in content
+
+
+def test_fetch_reference_from_url_retries_with_ipv4_when_network_is_unreachable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    destination_dir = tmp_path / "input/reference"
+    destination_dir.mkdir(parents=True, exist_ok=True)
+
+    html = b"""
+    <html><body><article><p>\xe5\x9b\x9e\xe9\x80\x80\xe6\x88\x90\xe5\x8a\x9f</p></article></body></html>
+    """
+    calls: list[str] = []
+
+    def fake_urlopen(*_args, **_kwargs):
+        if not calls:
+            calls.append("first_attempt")
+            raise OSError(errno.ENETUNREACH, "Network is unreachable")
+        calls.append("retry_attempt")
+        return FakeHTTPResponse(html, "text/html; charset=utf-8")
+
+    monkeypatch.setattr("src.job_runner.urlopen", fake_urlopen)
+
+    output_path, reference_type = fetch_reference_from_url(
+        "https://example.com/article",
+        destination_dir,
+        CANONICAL_INPUT_BASENAME,
+    )
+
+    assert reference_type == "url_text"
+    assert output_path == destination_dir / f"{CANONICAL_INPUT_BASENAME}.txt"
+    assert output_path.read_text(encoding="utf-8") == "回退成功"
+    assert calls == ["first_attempt", "retry_attempt"]
 
 
 def test_write_job_settings_rewrites_paths_into_job_workspace(tmp_path: Path) -> None:
