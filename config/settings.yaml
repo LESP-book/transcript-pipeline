@@ -169,7 +169,6 @@ llm:
   gemini_fallback_model: gemini-3.1-pro-preview
   backends:
     - codex_cli
-    - gemini_cli
   enable_fallback: true
   block_batch_size: 2
   prompt_style: web_like

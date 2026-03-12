@@ -273,8 +273,8 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     assert result["prompt_mode"] == "fulltext_final_markdown"
     assert result["source_asr_file"] == "data/intermediate/asr/demo.txt"
     assert result["source_reference_file"] == "data/intermediate/extracted_text/demo.txt"
+    assert result["refinement_backends"] == [BACKEND_CODEX]
     assert result["backend_status"]["codex_cli"] == "returned_fulltext:model=codex_default"
-    assert result["backend_status"]["gemini_cli"] == "returned_fulltext:model=gemini-3.1-pro-preview"
     assert result["selected_backend"] == BACKEND_CODEX
     assert "final_markdown" in result
     assert result["final_markdown"].startswith("# demo")
@@ -299,7 +299,8 @@ def test_refine_batch_uses_fallback_when_all_backends_fail(
     result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
 
     assert summary.success == 1
+    assert result["refinement_backends"] == [BACKEND_CODEX]
     assert result["backend_status"]["codex_cli"] == "failed_on_file"
-    assert result["backend_status"]["gemini_cli"] == "failed_on_file"
+    assert "gemini_cli" not in result["backend_status"]
     assert result["backend_status"]["fallback"] == "used"
     assert result["selected_backend"] == BACKEND_FALLBACK

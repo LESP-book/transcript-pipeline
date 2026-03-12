@@ -122,7 +122,7 @@ def write_minimal_settings(
             "model": "",
             "gemini_model": "gemini-3-flash-preview",
             "gemini_fallback_model": "gemini-3.1-pro-preview",
-            "backends": ["codex_cli", "gemini_cli"],
+            "backends": ["codex_cli"],
             "enable_fallback": True,
             "block_batch_size": 2,
             "prompt_style": "web_like",

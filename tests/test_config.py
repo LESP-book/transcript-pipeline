@@ -13,6 +13,7 @@ def test_load_settings_success() -> None:
 
     assert loaded_settings.settings.project.name == "transcript-pipeline"
     assert loaded_settings.settings_path == (PROJECT_ROOT / "config/settings.yaml").resolve()
+    assert loaded_settings.settings.llm.backends == ["codex_cli"]
 
 
 def test_load_settings_local_cpu_profile() -> None:

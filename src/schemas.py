@@ -141,7 +141,7 @@ class LLMSettings(AppBaseModel):
     model: str = ""
     gemini_model: str = "gemini-3-flash-preview"
     gemini_fallback_model: str = "gemini-3.1-pro-preview"
-    backends: list[str] = Field(default_factory=lambda: ["codex_cli", "gemini_cli"])
+    backends: list[str] = Field(default_factory=lambda: ["codex_cli"])
     enable_fallback: bool = True
     block_batch_size: int = 2
     prompt_style: str = "web_like"
