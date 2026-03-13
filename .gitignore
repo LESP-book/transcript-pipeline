@@ -50,3 +50,5 @@ data/output/logs/*
 # Temporary debug artifacts
 tmp_*
 *.tmp
+
+.serena/*
