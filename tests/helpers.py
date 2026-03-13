@@ -119,7 +119,7 @@ def write_minimal_settings(
         "llm": {
             "enabled": True,
             "provider": "local_cli",
-            "model": "",
+            "model": "gpt-5.4",
             "gemini_model": "gemini-3-flash-preview",
             "gemini_fallback_model": "gemini-3.1-pro-preview",
             "backends": ["codex_cli"],
@@ -129,7 +129,7 @@ def write_minimal_settings(
             "top_matches_for_prompt": 3,
             "max_asr_chars_for_prompt": 120,
             "max_reference_chars_for_prompt": 120,
-            "reasoning_effort": "medium",
+            "reasoning_effort": "high",
             "temperature": 0.1,
             "max_output_tokens": 4000,
             "timeout_seconds": 1800,

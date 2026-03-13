@@ -326,7 +326,10 @@ def parse_backend_document_result(backend: str, payload: dict[str, Any]) -> Back
 
 
 def run_codex_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
-    timeout_seconds = loaded_settings.settings.llm.timeout_seconds
+    llm_settings = loaded_settings.settings.llm
+    timeout_seconds = llm_settings.timeout_seconds
+    configured_model = llm_settings.model.strip()
+    configured_reasoning_effort = llm_settings.reasoning_effort.strip()
     with tempfile.NamedTemporaryFile("r+", encoding="utf-8", suffix=".txt", delete=True) as output_file:
         command = [
             "codex",
@@ -335,10 +338,12 @@ def run_codex_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocume
             str(loaded_settings.project_root),
             "-s",
             "read-only",
-            "-o",
-            output_file.name,
-            "-",
         ]
+        if configured_model:
+            command.extend(["-m", configured_model])
+        if configured_reasoning_effort:
+            command.extend(["-c", f'model_reasoning_effort="{configured_reasoning_effort}"'])
+        command.extend(["-o", output_file.name, "-"])
         run_subprocess(command, prompt=prompt, cwd=loaded_settings.project_root, timeout_seconds=timeout_seconds)
         output_file.seek(0)
         payload = extract_json_payload(output_file.read())
@@ -348,7 +353,7 @@ def run_codex_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocume
         return result
     return BackendDocumentRefinementResult(
         backend=result.backend,
-        model_name="codex_default",
+        model_name=configured_model or "codex_default",
         final_markdown=result.final_markdown,
         refinement_strategy=result.refinement_strategy,
         refinement_reason=result.refinement_reason,

@@ -22,6 +22,7 @@ from src.refine_utils import (
     parse_backend_document_result,
     refine_batch,
     resolve_refinement_input_paths,
+    run_codex_cli,
     run_gemini_cli,
 )
 from tests.helpers import write_minimal_settings
@@ -145,6 +146,66 @@ def test_run_gemini_cli_uses_configured_model(tmp_path: Path, monkeypatch: pytes
     assert result.model_name == "gemini-2.5-flash"
     assert seen["command"] == ["gemini", "-m", "gemini-2.5-flash", "-p", "prompt"]
     assert seen["prompt"] == ""
+    assert seen["cwd"] == tmp_path
+    assert seen["timeout_seconds"] == 1800
+
+
+def test_run_codex_cli_uses_configured_model_and_reasoning_effort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(
+        tmp_path,
+        llm_overrides={"model": "gpt-5.4", "reasoning_effort": "medium", "timeout_seconds": 1800},
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_run_subprocess(command: list[str], *, prompt: str, cwd: Path, timeout_seconds: int) -> str:
+        seen["command"] = command
+        seen["prompt"] = prompt
+        seen["cwd"] = cwd
+        seen["timeout_seconds"] = timeout_seconds
+        output_path = Path(command[command.index("-o") + 1])
+        output_path.write_text(
+            json.dumps(
+                {
+                    "final_markdown": "# 标题\n\n完整精修文本",
+                    "refinement_strategy": "final_markdown_cleanup",
+                    "refinement_reason": "ok",
+                    "needs_review_sections": [],
+                    "refinement_notes": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return ""
+
+    monkeypatch.setattr("src.refine_utils.run_subprocess", fake_run_subprocess)
+
+    result = run_codex_cli("prompt", loaded_settings)
+    command = seen["command"]
+    assert isinstance(command, list)
+    output_index = command.index("-o") + 1
+
+    assert "完整精修文本" in result.final_markdown
+    assert result.model_name == "gpt-5.4"
+    assert command[:10] == [
+        "codex",
+        "exec",
+        "-C",
+        str(tmp_path),
+        "-s",
+        "read-only",
+        "-m",
+        "gpt-5.4",
+        "-c",
+        'model_reasoning_effort="medium"',
+    ]
+    assert command[output_index - 1] == "-o"
+    assert command[-1] == "-"
+    assert seen["prompt"] == "prompt"
     assert seen["cwd"] == tmp_path
     assert seen["timeout_seconds"] == 1800
 
