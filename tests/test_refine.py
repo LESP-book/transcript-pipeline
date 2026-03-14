@@ -13,8 +13,12 @@ from src.refine_utils import (
     BackendDocumentRefinementResult,
     CLIBackendError,
     CLIBackendRetryableError,
+    RefinementBlock,
     RefinementInputEmptyError,
     build_fallback_document_result,
+    build_markdown_assemble_prompt,
+    build_minimal_edit_prompt,
+    build_refinement_blocks,
     build_fulltext_refine_prompt,
     build_refinement_output_path,
     compare_backend_documents,
@@ -24,6 +28,7 @@ from src.refine_utils import (
     resolve_refinement_input_paths,
     run_codex_cli,
     run_gemini_cli,
+    validate_minimal_edit_result,
 )
 from tests.helpers import write_minimal_settings
 
@@ -97,6 +102,82 @@ def test_build_fulltext_refine_prompt_contains_fulltext_context(tmp_path: Path) 
     assert "分类摘要" not in prompt
     assert "高置信原文提示" not in prompt
     assert "重点复核块提示" not in prompt
+
+
+def test_build_refinement_blocks_includes_adjacent_context() -> None:
+    blocks = build_refinement_blocks(
+        "第一段。\n\n第二段。\n\n第三段。",
+        chunk_paragraphs=1,
+        anchor_paragraphs=1,
+    )
+
+    assert len(blocks) == 3
+    assert blocks[1] == RefinementBlock(
+        index=1,
+        current_text="第二段。",
+        previous_anchor="第一段。",
+        next_anchor="第三段。",
+    )
+
+
+def test_build_minimal_edit_prompt_contains_context_and_hard_guards(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path)
+    asr_path = write_refine_inputs(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    prompt_text = load_refinement_prompt(loaded_settings)
+    input_paths = resolve_refinement_input_paths(loaded_settings, asr_path)
+
+    prompt = build_minimal_edit_prompt(
+        prompt_text,
+        input_paths,
+        RefinementBlock(
+            index=0,
+            current_text="久有零云志 重上敬岗山",
+            previous_anchor="前文锚点",
+            next_anchor="后文锚点",
+        ),
+        reference_full_text="久有凌云志，重上井冈山。",
+    )
+
+    assert "你现在只允许编辑“当前块”文本" in prompt
+    assert "当前块正文" in prompt
+    assert "前文锚点" in prompt
+    assert "后文锚点" in prompt
+    assert "绝对禁止" in prompt
+    assert "不得总结压缩" in prompt
+    assert "删除噪音必须记录" in prompt
+    assert "参考原文" in prompt
+
+
+def test_validate_minimal_edit_result_rejects_summary_style_compression() -> None:
+    report = validate_minimal_edit_result(
+        source_text="这个地方他其实不是单纯抒情，而是说革命在低潮以后重新起来，所以情绪往上走。",
+        edited_text="这里主要是表达革命重新高涨。",
+        deletion_candidates=[],
+    )
+
+    assert report["passed"] is False
+    assert "summary_phrase_detected" in report["reasons"]
+    assert "length_ratio_too_low" in report["reasons"]
+
+
+def test_build_markdown_assemble_prompt_restricts_to_structure_only(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path)
+    asr_path = write_refine_inputs(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    input_paths = resolve_refinement_input_paths(loaded_settings, asr_path)
+
+    prompt = build_markdown_assemble_prompt(
+        "# test final cleanup",
+        input_paths,
+        edited_plain_text="久有凌云志，重上井冈山。\n\n这里的意思是作者在说明情绪变化。",
+        reference_full_text="久有凌云志，重上井冈山。",
+    )
+
+    assert "只负责 Markdown 结构整理" in prompt
+    assert "不得改写 edited_plain_text 的措辞" in prompt
+    assert "edited_plain_text" in prompt
+    assert "参考原文" in prompt
 
 
 def test_parse_backend_document_result_requires_fulltext() -> None:
@@ -299,46 +380,59 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write_minimal_settings(tmp_path)
+    write_minimal_settings(tmp_path, llm_overrides={"block_batch_size": 1})
     asr_path = write_refine_inputs(tmp_path)
     loaded_settings = load_settings(project_root=tmp_path)
 
-    def fake_run_backend_cli(backend: str, _prompt: str, _loaded_settings) -> BackendDocumentRefinementResult:
-        if backend == BACKEND_CODEX:
-            return BackendDocumentRefinementResult(
-                backend=BACKEND_CODEX,
-                model_name="codex_default",
-                final_markdown="# demo\n\n> 久有凌云志，重上井冈山。\n\n这里的意思是作者在说明情绪变化。",
-                refinement_strategy="final_markdown_cleanup",
-                refinement_reason="codex_fulltext",
-                needs_review_sections=[],
-                refinement_notes=["codex_note"],
-            )
-        return BackendDocumentRefinementResult(
-            backend=BACKEND_GEMINI,
-            model_name="gemini-3.1-pro-preview",
-            final_markdown="# demo\n\n久有凌云志重上井冈山\n\n这里的意思是作者在说明情绪变化",
-            refinement_strategy="final_markdown_cleanup",
-            refinement_reason="gemini_fulltext",
-            needs_review_sections=[{"excerpt": "久有凌云志重上井冈山", "reason": "punctuation"}],
-            refinement_notes=["gemini_note"],
-        )
+    call_state = {"minimal": 0}
 
-    monkeypatch.setattr("src.refine_utils.run_backend_cli", fake_run_backend_cli)
+    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+        if "当前块正文" in prompt:
+            block_index = call_state["minimal"]
+            call_state["minimal"] += 1
+            if block_index == 0:
+                return {
+                    "edited_text": "久有凌云志，重上井冈山。",
+                    "deletion_candidates": [],
+                    "edit_notes": ["fix_typos"],
+                    "needs_review_sections": [],
+                }
+            return {
+                "edited_text": "这里主要是表达作者情绪变化。",
+                "deletion_candidates": [],
+                "edit_notes": ["summary_bad"],
+                "needs_review_sections": [],
+            }
+
+        return {
+            "final_markdown": "# demo\n\n> 久有凌云志，重上井冈山。\n\n这里 的意思 是 作者在说明情绪变化。",
+            "section_map": [{"section": "quote", "source_blocks": [0]}],
+            "refinement_notes": ["codex_note"],
+            "needs_review_sections": [],
+            "refinement_strategy": "two_step_markdown_assemble",
+            "refinement_reason": "codex_two_step",
+        }
+
+    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
 
     summary = refine_batch(loaded_settings)
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
     result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
 
     assert summary.success == 1
-    assert result["prompt_mode"] == "fulltext_final_markdown"
+    assert result["prompt_mode"] == "two_step_conservative_refine"
     assert result["source_asr_file"] == "data/intermediate/asr/demo.txt"
     assert result["source_reference_file"] == "data/intermediate/extracted_text/demo.txt"
     assert result["refinement_backends"] == [BACKEND_CODEX]
-    assert result["backend_status"]["codex_cli"] == "returned_fulltext:model=codex_default"
+    assert result["backend_status"]["codex_cli"] == "returned_two_step:model=gpt-5.4"
     assert result["selected_backend"] == BACKEND_CODEX
     assert "final_markdown" in result
     assert result["final_markdown"].startswith("# demo")
+    assert result["edited_plain_text"].startswith("久有凌云志，重上井冈山。")
+    assert "这里 的意思 是 作者在说明情绪变化" in result["edited_plain_text"]
+    assert result["deletion_candidates"] == []
+    assert result["fidelity_report"]["passed"] is True
+    assert "block_validation_failed" in result["refinement_notes"]
     assert "classification_summary" not in result
 
 
@@ -350,10 +444,10 @@ def test_refine_batch_uses_fallback_when_all_backends_fail(
     asr_path = write_refine_inputs(tmp_path)
     loaded_settings = load_settings(project_root=tmp_path)
 
-    def fail_backend(_backend: str, _prompt: str, _loaded_settings) -> BackendDocumentRefinementResult:
+    def fail_backend(**_kwargs) -> BackendDocumentRefinementResult:
         raise CLIBackendError("backend failed")
 
-    monkeypatch.setattr("src.refine_utils.run_backend_cli", fail_backend)
+    monkeypatch.setattr("src.refine_utils.run_two_step_backend_refinement", fail_backend)
 
     summary = refine_batch(loaded_settings)
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")

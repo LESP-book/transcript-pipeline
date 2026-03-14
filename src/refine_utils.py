@@ -5,7 +5,7 @@ import logging
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +48,14 @@ class RefinementInputPaths:
 
 
 @dataclass(frozen=True)
+class RefinementBlock:
+    index: int
+    current_text: str
+    previous_anchor: str
+    next_anchor: str
+
+
+@dataclass(frozen=True)
 class BackendDocumentRefinementResult:
     backend: str
     model_name: str
@@ -56,6 +64,11 @@ class BackendDocumentRefinementResult:
     refinement_reason: str
     needs_review_sections: list[dict[str, Any]]
     refinement_notes: list[str]
+    edited_plain_text: str = ""
+    edit_operations: list[str] = field(default_factory=list)
+    deletion_candidates: list[dict[str, Any]] = field(default_factory=list)
+    fidelity_report: dict[str, Any] = field(default_factory=dict)
+    section_map: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -219,6 +232,42 @@ def load_text_file(path: Path, label: str) -> str:
     return text
 
 
+def split_text_into_paragraphs(text: str) -> list[str]:
+    single_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(single_lines) > 1 and not re.search(r"\n\s*\n", text):
+        return single_lines
+    paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", text) if paragraph.strip()]
+    return paragraphs or single_lines
+
+
+def build_refinement_blocks(
+    text: str,
+    *,
+    chunk_paragraphs: int,
+    anchor_paragraphs: int,
+) -> list[RefinementBlock]:
+    paragraphs = split_text_into_paragraphs(text)
+    if not paragraphs:
+        return []
+
+    chunk_size = max(1, chunk_paragraphs)
+    anchor_size = max(0, anchor_paragraphs)
+    blocks: list[RefinementBlock] = []
+    for block_index, start in enumerate(range(0, len(paragraphs), chunk_size)):
+        current_chunk = paragraphs[start : start + chunk_size]
+        previous_chunk = paragraphs[max(0, start - anchor_size) : start]
+        next_chunk = paragraphs[start + chunk_size : start + chunk_size + anchor_size]
+        blocks.append(
+            RefinementBlock(
+                index=block_index,
+                current_text="\n\n".join(current_chunk).strip(),
+                previous_anchor="\n\n".join(previous_chunk).strip(),
+                next_anchor="\n\n".join(next_chunk).strip(),
+            )
+        )
+    return blocks
+
+
 def build_fulltext_refine_prompt(
     prompt_text: str,
     input_paths: RefinementInputPaths,
@@ -243,6 +292,152 @@ def build_fulltext_refine_prompt(
         ]
     )
     return "\n".join(sections).strip()
+
+
+def load_markdown_assemble_prompt(loaded_settings: LoadedSettings) -> str:
+    prompts = loaded_settings.settings.prompts
+    if prompts is None or not prompts.final_cleanup:
+        raise PromptLoadError("缺少阶段 6 Markdown 组装提示词配置，请检查 prompts.final_cleanup")
+
+    prompt_path = loaded_settings.resolve_path(prompts.final_cleanup)
+    if not prompt_path.exists():
+        raise PromptLoadError(f"阶段 6 Markdown 组装提示词文件不存在: {prompt_path}")
+
+    try:
+        return prompt_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise PromptLoadError(f"无法读取阶段 6 Markdown 组装提示词文件: {prompt_path} | {exc}") from exc
+
+
+def build_minimal_edit_prompt(
+    prompt_text: str,
+    input_paths: RefinementInputPaths,
+    block: RefinementBlock,
+    *,
+    reference_full_text: str,
+) -> str:
+    sections = [
+        prompt_text.strip(),
+        "",
+        "你现在只允许编辑“当前块”文本，不得改写前后文锚点。",
+        "你的任务仅限于：",
+        "1. 添加标点与断句。",
+        "2. 修正明显错字、别字、同音误识别。",
+        "3. 统一为简体中文。",
+        "4. 删除你判断为无意义的口语噪音，但删除噪音必须记录。",
+        "",
+        "绝对禁止：",
+        "1. 不得总结压缩。",
+        "2. 不得把多句合并成抽象概括句。",
+        "3. 不得改写讲话风格为书面总结。",
+        "4. 不得增加原文没有表达出的信息。",
+        "5. 无法确认时保留 ASR 原文，不得猜测。",
+        "",
+        "请只返回 JSON，字段必须包含：edited_text、deletion_candidates、edit_notes、needs_review_sections。",
+        "",
+        f"当前文件: {input_paths.basename}.txt",
+        f"当前块序号: {block.index}",
+        "",
+        "前文锚点：",
+        block.previous_anchor or "（无）",
+        "",
+        "当前块正文：",
+        block.current_text,
+        "",
+        "后文锚点：",
+        block.next_anchor or "（无）",
+        "",
+        "参考原文：",
+        reference_full_text or "（无）",
+    ]
+    return "\n".join(sections).strip()
+
+
+def build_markdown_assemble_prompt(
+    prompt_text: str,
+    input_paths: RefinementInputPaths,
+    *,
+    edited_plain_text: str,
+    reference_full_text: str,
+) -> str:
+    sections = [
+        prompt_text.strip(),
+        "",
+        "你现在只负责 Markdown 结构整理。",
+        "你的任务仅限于：识别引用块、普通讲解段落和提问环节，并输出最终 Markdown。",
+        "不得改写 edited_plain_text 的措辞，不得总结，不得压缩，不得新增说明。",
+        "若无法判断结构，保留原顺序和原文措辞。",
+        "请只返回 JSON，字段必须包含：final_markdown、section_map、refinement_notes、needs_review_sections。",
+        "",
+        f"当前文件: {input_paths.basename}.txt",
+        "",
+        "edited_plain_text：",
+        edited_plain_text,
+        "",
+        "参考原文：",
+        reference_full_text or "（无）",
+    ]
+    return "\n".join(sections).strip()
+
+
+def normalize_deletion_candidates(raw_candidates: Any) -> list[dict[str, str]]:
+    deletion_candidates: list[dict[str, str]] = []
+    if not isinstance(raw_candidates, list):
+        return deletion_candidates
+    for item in raw_candidates:
+        if not isinstance(item, dict):
+            continue
+        source_excerpt = normalize_inline_text(str(item.get("source_excerpt", "")).strip())
+        deleted_text = normalize_inline_text(str(item.get("deleted_text", "")).strip())
+        reason = normalize_inline_text(str(item.get("reason", "")).strip())
+        if not source_excerpt and not deleted_text and not reason:
+            continue
+        deletion_candidates.append(
+            {
+                "source_excerpt": source_excerpt,
+                "deleted_text": deleted_text,
+                "reason": reason or "model_deleted_noise",
+            }
+        )
+    return deletion_candidates
+
+
+def validate_minimal_edit_result(
+    *,
+    source_text: str,
+    edited_text: str,
+    deletion_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source_inline = normalize_inline_text(source_text)
+    edited_inline = normalize_inline_text(edited_text)
+    deleted_chars = sum(len(normalize_inline_text(str(item.get("deleted_text", "")))) for item in deletion_candidates)
+    allowed_removed_chars = deleted_chars + 8
+    length_ratio = round(len(edited_inline) / len(source_inline), 4) if source_inline else 1.0
+    removed_chars = max(0, len(source_inline) - len(edited_inline))
+    reasons: list[str] = []
+
+    if source_inline and edited_inline and removed_chars > allowed_removed_chars and length_ratio < 0.85:
+        reasons.append("length_ratio_too_low")
+
+    summary_phrases = [
+        "主要是",
+        "表达了",
+        "作者想说明",
+        "总体来说",
+        "这段的意思是",
+        "主要讲的是",
+        "这里是在说",
+    ]
+    if any(phrase in edited_inline for phrase in summary_phrases):
+        reasons.append("summary_phrase_detected")
+
+    return {
+        "passed": not reasons,
+        "reasons": reasons,
+        "length_ratio": length_ratio,
+        "removed_chars": removed_chars,
+        "deletion_count": len(deletion_candidates),
+    }
 
 
 def run_subprocess(command: list[str], *, prompt: str, cwd: Path, timeout_seconds: int) -> str:
@@ -322,10 +517,29 @@ def parse_backend_document_result(backend: str, payload: dict[str, Any]) -> Back
         refinement_reason=str(payload.get("refinement_reason", f"{backend}_refinement")),
         needs_review_sections=needs_review_sections,
         refinement_notes=refinement_notes,
+        section_map=payload.get("section_map", []) if isinstance(payload.get("section_map", []), list) else [],
     )
 
 
-def run_codex_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
+def parse_minimal_edit_result(payload: dict[str, Any]) -> dict[str, Any]:
+    edited_text = str(payload.get("edited_text", "")).strip()
+    if not edited_text:
+        raise CLIBackendError("CLI 返回结构无效：缺少 edited_text。")
+    raw_notes = payload.get("edit_notes", [])
+    edit_notes = [
+        normalize_inline_text(str(item).strip())
+        for item in raw_notes
+        if normalize_inline_text(str(item).strip())
+    ] if isinstance(raw_notes, list) else []
+    return {
+        "edited_text": edited_text,
+        "deletion_candidates": normalize_deletion_candidates(payload.get("deletion_candidates", [])),
+        "edit_notes": edit_notes,
+        "needs_review_sections": payload.get("needs_review_sections", []) if isinstance(payload.get("needs_review_sections", []), list) else [],
+    }
+
+
+def run_codex_cli_payload(prompt: str, loaded_settings: LoadedSettings) -> dict[str, Any]:
     llm_settings = loaded_settings.settings.llm
     timeout_seconds = llm_settings.timeout_seconds
     configured_model = llm_settings.model.strip()
@@ -346,8 +560,13 @@ def run_codex_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocume
         command.extend(["-o", output_file.name, "-"])
         run_subprocess(command, prompt=prompt, cwd=loaded_settings.project_root, timeout_seconds=timeout_seconds)
         output_file.seek(0)
-        payload = extract_json_payload(output_file.read())
+        return extract_json_payload(output_file.read())
 
+
+def run_codex_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
+    llm_settings = loaded_settings.settings.llm
+    configured_model = llm_settings.model.strip()
+    payload = run_codex_cli_payload(prompt, loaded_settings)
     result = parse_backend_document_result(BACKEND_CODEX, payload)
     if result.model_name:
         return result
@@ -359,10 +578,11 @@ def run_codex_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocume
         refinement_reason=result.refinement_reason,
         needs_review_sections=result.needs_review_sections,
         refinement_notes=result.refinement_notes,
+        section_map=result.section_map,
     )
 
 
-def run_gemini_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
+def run_gemini_cli_payload(prompt: str, loaded_settings: LoadedSettings) -> dict[str, Any]:
     llm_settings = loaded_settings.settings.llm
     models_to_try = [llm_settings.gemini_model]
     fallback_model = llm_settings.gemini_fallback_model.strip()
@@ -380,18 +600,9 @@ def run_gemini_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocum
                 timeout_seconds=llm_settings.timeout_seconds,
             )
             payload = extract_json_payload(output)
-            result = parse_backend_document_result(BACKEND_GEMINI, payload)
-            if result.model_name:
-                return result
-            return BackendDocumentRefinementResult(
-                backend=result.backend,
-                model_name=model_name,
-                final_markdown=result.final_markdown,
-                refinement_strategy=result.refinement_strategy,
-                refinement_reason=result.refinement_reason,
-                needs_review_sections=result.needs_review_sections,
-                refinement_notes=result.refinement_notes,
-            )
+            if not str(payload.get("model_name", "")).strip():
+                payload["model_name"] = model_name
+            return payload
         except CLIBackendRetryableError as exc:
             last_error = exc
             if index == len(models_to_try) - 1:
@@ -406,12 +617,183 @@ def run_gemini_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocum
     raise CLIBackendError("Gemini CLI 调用失败，未获得可用结果。")
 
 
+def run_gemini_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
+    payload = run_gemini_cli_payload(prompt, loaded_settings)
+    return parse_backend_document_result(BACKEND_GEMINI, payload)
+
+
 def run_backend_cli(backend: str, prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
     if backend == BACKEND_CODEX:
         return run_codex_cli(prompt, loaded_settings)
     if backend == BACKEND_GEMINI:
         return run_gemini_cli(prompt, loaded_settings)
     raise CLIBackendError(f"未知阶段 6 后端: {backend}")
+
+
+def run_backend_payload(backend: str, prompt: str, loaded_settings: LoadedSettings) -> dict[str, Any]:
+    if backend == BACKEND_CODEX:
+        return run_codex_cli_payload(prompt, loaded_settings)
+    if backend == BACKEND_GEMINI:
+        return run_gemini_cli_payload(prompt, loaded_settings)
+    raise CLIBackendError(f"未知阶段 6 后端: {backend}")
+
+
+def build_simple_markdown(title: str, text: str) -> str:
+    normalized_text = normalize_multiline_text(text)
+    return f"# {title}\n\n{normalized_text}".strip()
+
+
+def run_two_step_backend_refinement(
+    *,
+    backend: str,
+    input_paths: RefinementInputPaths,
+    loaded_settings: LoadedSettings,
+    minimal_edit_prompt_text: str,
+    markdown_prompt_text: str,
+    asr_full_text: str,
+    reference_full_text: str,
+) -> BackendDocumentRefinementResult:
+    llm_settings = loaded_settings.settings.llm
+    blocks = build_refinement_blocks(
+        asr_full_text,
+        chunk_paragraphs=max(1, llm_settings.block_batch_size),
+        anchor_paragraphs=1,
+    )
+    if not blocks:
+        raise CLIBackendError(f"阶段 6 无法切分可处理文本块: {input_paths.basename}.txt")
+
+    block_outputs: list[str] = []
+    edit_operations: list[str] = []
+    deletion_candidates: list[dict[str, Any]] = []
+    needs_review_sections: list[dict[str, Any]] = []
+    refinement_notes: list[str] = []
+    model_name = llm_settings.model.strip() if backend == BACKEND_CODEX else llm_settings.gemini_model
+
+    for block in blocks:
+        prompt = build_minimal_edit_prompt(
+            minimal_edit_prompt_text,
+            input_paths,
+            block,
+            reference_full_text=reference_full_text,
+        )
+        try:
+            payload = run_backend_payload(backend, prompt, loaded_settings)
+            parsed = parse_minimal_edit_result(payload)
+            model_name = str(payload.get("model_name", "")).strip() or model_name
+        except CLIBackendError:
+            block_outputs.append(block.current_text)
+            needs_review_sections.append(
+                {
+                    "excerpt": truncate_for_prompt(block.current_text, 80),
+                    "reason": "block_backend_failed",
+                }
+            )
+            refinement_notes.append("block_backend_failed")
+            continue
+
+        fidelity_report = validate_minimal_edit_result(
+            source_text=block.current_text,
+            edited_text=parsed["edited_text"],
+            deletion_candidates=parsed["deletion_candidates"],
+        )
+        if not fidelity_report["passed"]:
+            block_outputs.append(block.current_text)
+            needs_review_sections.append(
+                {
+                    "excerpt": truncate_for_prompt(block.current_text, 80),
+                    "reason": "block_validation_failed",
+                }
+            )
+            refinement_notes.append("block_validation_failed")
+            continue
+
+        block_outputs.append(parsed["edited_text"].strip())
+        edit_operations.extend(parsed["edit_notes"])
+        deletion_candidates.extend(parsed["deletion_candidates"])
+        for item in parsed["needs_review_sections"]:
+            if isinstance(item, dict):
+                excerpt = normalize_inline_text(str(item.get("excerpt", "")).strip())
+                reason = normalize_inline_text(str(item.get("reason", "")).strip())
+                if excerpt or reason:
+                    needs_review_sections.append(
+                        {
+                            "excerpt": excerpt or truncate_for_prompt(parsed["edited_text"], 80),
+                            "reason": reason or "minimal_edit_needs_review",
+                        }
+                    )
+
+    edited_plain_text = "\n\n".join(item.strip() for item in block_outputs if item.strip()).strip()
+    fidelity_report = validate_minimal_edit_result(
+        source_text=asr_full_text,
+        edited_text=edited_plain_text,
+        deletion_candidates=deletion_candidates,
+    )
+    if not fidelity_report["passed"]:
+        refinement_notes.append("document_validation_failed")
+        edited_plain_text = normalize_multiline_text(asr_full_text)
+        deletion_candidates = []
+        fidelity_report = {
+            "passed": True,
+            "reasons": ["fallback_to_original_asr_after_document_validation"],
+        }
+
+    assemble_prompt = build_markdown_assemble_prompt(
+        markdown_prompt_text,
+        input_paths,
+        edited_plain_text=edited_plain_text,
+        reference_full_text=reference_full_text,
+    )
+    try:
+        assemble_payload = run_backend_payload(backend, assemble_prompt, loaded_settings)
+        document_result = parse_backend_document_result(backend, assemble_payload)
+        model_name = document_result.model_name or str(assemble_payload.get("model_name", "")).strip() or model_name
+    except CLIBackendError:
+        refinement_notes.append("markdown_assemble_failed_use_programmatic_fallback")
+        document_result = BackendDocumentRefinementResult(
+            backend=backend,
+            model_name=model_name or backend,
+            final_markdown=build_simple_markdown(input_paths.basename, edited_plain_text),
+            refinement_strategy="programmatic_markdown_fallback",
+            refinement_reason="markdown_assemble_failed",
+            needs_review_sections=[],
+            refinement_notes=[],
+        )
+
+    markdown_fidelity = validate_minimal_edit_result(
+        source_text=edited_plain_text,
+        edited_text=markdown_to_plain_text(document_result.final_markdown),
+        deletion_candidates=[],
+    )
+    final_markdown = document_result.final_markdown
+    if not markdown_fidelity["passed"]:
+        refinement_notes.append("markdown_content_changed_use_programmatic_fallback")
+        final_markdown = build_simple_markdown(input_paths.basename, edited_plain_text)
+        document_result = BackendDocumentRefinementResult(
+            backend=backend,
+            model_name=model_name or backend,
+            final_markdown=final_markdown,
+            refinement_strategy="programmatic_markdown_fallback",
+            refinement_reason="markdown_content_changed",
+            needs_review_sections=document_result.needs_review_sections,
+            refinement_notes=document_result.refinement_notes,
+            section_map=[],
+        )
+
+    all_notes = [item for item in refinement_notes + document_result.refinement_notes if item]
+    return BackendDocumentRefinementResult(
+        backend=backend,
+        model_name=model_name or document_result.model_name or backend,
+        final_markdown=document_result.final_markdown if document_result.final_markdown == final_markdown else final_markdown,
+        refinement_strategy=document_result.refinement_strategy or "two_step_conservative_refine",
+        refinement_reason=document_result.refinement_reason or f"{backend}_two_step_refine",
+        needs_review_sections=needs_review_sections + document_result.needs_review_sections,
+        refinement_notes=all_notes,
+        edited_plain_text=edited_plain_text,
+        edit_operations=edit_operations,
+        deletion_candidates=deletion_candidates,
+        fidelity_report=fidelity_report,
+        section_map=document_result.section_map,
+    )
 
 
 def build_fallback_document_result(title: str, asr_full_text: str) -> BackendDocumentRefinementResult:
@@ -432,6 +814,8 @@ def build_fallback_document_result(title: str, asr_full_text: str) -> BackendDoc
         refinement_reason="preserve_original_wording_for_safe_fallback",
         needs_review_sections=review_sections,
         refinement_notes=["all_cli_backends_failed_use_fallback"],
+        edited_plain_text=normalize_multiline_text(asr_full_text),
+        fidelity_report={"passed": True, "reasons": ["fallback_from_cli_failure"]},
     )
 
 
@@ -492,15 +876,20 @@ def write_refinement_result(
         "source_reference_file": relativize_path(input_paths.reference_text_path, loaded_settings.project_root),
         "refinement_backends": list(loaded_settings.settings.llm.backends),
         "backend_status": backend_status,
-        "prompt_mode": "fulltext_final_markdown",
+        "prompt_mode": "two_step_conservative_refine",
         "selected_backend": selected_result.backend,
         "comparison_summary": comparison_summary,
         "final_markdown": selected_result.final_markdown,
+        "edited_plain_text": selected_result.edited_plain_text,
         "refined_full_text": markdown_to_plain_text(selected_result.final_markdown),
         "refinement_strategy": selected_result.refinement_strategy,
         "refinement_reason": selected_result.refinement_reason,
         "needs_review_sections": selected_result.needs_review_sections,
         "refinement_notes": selected_result.refinement_notes,
+        "edit_operations": selected_result.edit_operations,
+        "deletion_candidates": selected_result.deletion_candidates,
+        "fidelity_report": selected_result.fidelity_report,
+        "section_map": selected_result.section_map,
     }
     with output_path.json_path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False, indent=2)
@@ -517,7 +906,8 @@ def refine_batch(
     if not asr_files:
         raise RefinementInputEmptyError(f"ASR 输入目录中没有可处理的 TXT 文件: {asr_dir}")
 
-    prompt_text = load_refinement_prompt(loaded_settings)
+    minimal_edit_prompt_text = load_refinement_prompt(loaded_settings)
+    markdown_prompt_text = load_markdown_assemble_prompt(loaded_settings)
     items: list[RefinementBatchItem] = []
     success_count = 0
 
@@ -525,19 +915,20 @@ def refine_batch(
         input_paths = resolve_refinement_input_paths(loaded_settings, asr_text_path)
         asr_full_text = load_text_file(input_paths.asr_text_path, "ASR")
         reference_full_text = load_text_file(input_paths.reference_text_path, "参考原文")
-        prompt = build_fulltext_refine_prompt(
-            prompt_text,
-            input_paths,
-            asr_full_text=asr_full_text,
-            reference_full_text=reference_full_text,
-        )
-
         backend_results: list[BackendDocumentRefinementResult] = []
         backend_status: dict[str, str] = {}
         document_title = input_paths.basename
         for backend in loaded_settings.settings.llm.backends:
             try:
-                result = run_backend_cli(backend, prompt, loaded_settings)
+                result = run_two_step_backend_refinement(
+                    backend=backend,
+                    input_paths=input_paths,
+                    loaded_settings=loaded_settings,
+                    minimal_edit_prompt_text=minimal_edit_prompt_text,
+                    markdown_prompt_text=markdown_prompt_text,
+                    asr_full_text=asr_full_text,
+                    reference_full_text=reference_full_text,
+                )
             except CLIBackendError as exc:
                 backend_status[backend] = "failed_on_file"
                 if logger:
@@ -545,7 +936,7 @@ def refine_batch(
                 continue
 
             backend_results.append(result)
-            status = "returned_fulltext"
+            status = "returned_two_step"
             if result.model_name:
                 status = f"{status}:model={result.model_name}"
             backend_status[backend] = status
@@ -584,7 +975,7 @@ def refine_batch(
         success_count += 1
         if logger:
             logger.info(
-                "精修完成 | %s | prompt_mode=fulltext_final_markdown | needs_review=%s | selected_backend=%s",
+                "精修完成 | %s | prompt_mode=two_step_conservative_refine | needs_review=%s | selected_backend=%s",
                 input_paths.basename,
                 len(selected_result.needs_review_sections),
                 selected_result.backend,
