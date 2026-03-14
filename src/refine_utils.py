@@ -69,6 +69,16 @@ class MinimalEditBlockResult:
 
 
 @dataclass(frozen=True)
+class PreReplacementSegment:
+    segment_type: str
+    text: str
+    source_text: str
+    reference_text: str
+    start_sentence_index: int
+    end_sentence_index: int
+
+
+@dataclass(frozen=True)
 class BackendDocumentRefinementResult:
     backend: str
     model_name: str
@@ -253,6 +263,205 @@ def split_text_into_paragraphs(text: str) -> list[str]:
     return paragraphs or single_lines
 
 
+def split_text_into_sentences(text: str) -> list[str]:
+    units: list[str] = []
+    for paragraph in split_text_into_paragraphs(text):
+        parts = re.split(r"(?<=[。！？!?；;])", paragraph)
+        normalized_parts = [normalize_inline_text(part) for part in parts if normalize_inline_text(part)]
+        if normalized_parts:
+            units.extend(normalized_parts)
+        elif paragraph.strip():
+            units.append(normalize_inline_text(paragraph))
+    return units
+
+
+def normalize_for_match(text: str) -> str:
+    return re.sub(r"[\W_]+", "", normalize_inline_text(text)).lower()
+
+
+def contains_any_keyword(text: str, keywords: list[str]) -> bool:
+    return any(keyword and keyword in text for keyword in keywords)
+
+
+def compute_extra_content_ratio(source_text: str, reference_text: str) -> float:
+    source_length = len(normalize_for_match(source_text))
+    reference_length = len(normalize_for_match(reference_text))
+    if source_length <= 0:
+        return 0.0
+    return round(max(0, source_length - reference_length) / source_length, 4)
+
+
+def get_safe_replace_settings(loaded_settings: LoadedSettings) -> dict[str, float]:
+    llm_settings = loaded_settings.settings.llm
+    return {
+        "min_score": float(getattr(llm_settings, "safe_replace_min_score", 88.0)),
+        "min_margin": float(getattr(llm_settings, "safe_replace_min_margin", 6.0)),
+        "length_ratio_min": float(getattr(llm_settings, "safe_replace_length_ratio_min", 0.8)),
+        "length_ratio_max": float(getattr(llm_settings, "safe_replace_length_ratio_max", 1.2)),
+        "max_extra_content_ratio": float(getattr(llm_settings, "safe_replace_max_extra_content_ratio", 0.12)),
+        "min_run_length": max(1, int(getattr(llm_settings, "safe_replace_min_run_length", 2))),
+    }
+
+
+def find_best_reference_match(sentence_text: str, reference_sentences: list[str]) -> tuple[int | None, str, float, float]:
+    normalized_source = normalize_for_match(sentence_text)
+    if not normalized_source or not reference_sentences:
+        return None, "", 0.0, 0.0
+
+    scored = [
+        (index, reference_sentence, float(fuzz.ratio(normalized_source, normalize_for_match(reference_sentence))))
+        for index, reference_sentence in enumerate(reference_sentences)
+        if normalize_for_match(reference_sentence)
+    ]
+    if not scored:
+        return None, "", 0.0, 0.0
+    scored.sort(key=lambda item: item[2], reverse=True)
+    best_index, best_text, best_score = scored[0]
+    second_score = scored[1][2] if len(scored) > 1 else 0.0
+    return best_index, best_text, best_score, round(best_score - second_score, 2)
+
+
+def is_safe_replace_candidate(
+    sentence_text: str,
+    reference_text: str,
+    *,
+    best_score: float,
+    margin: float,
+    loaded_settings: LoadedSettings,
+) -> bool:
+    settings = get_safe_replace_settings(loaded_settings)
+    classification_settings = loaded_settings.settings.classification
+    normalized_source = normalize_for_match(sentence_text)
+    normalized_reference = normalize_for_match(reference_text)
+    if not normalized_source or not normalized_reference:
+        return False
+    if contains_any_keyword(sentence_text, classification_settings.lecture_markers):
+        return False
+    if contains_any_keyword(sentence_text, classification_settings.qa_keywords):
+        return False
+    if contains_any_keyword(sentence_text, classification_settings.intro_keywords):
+        return False
+
+    source_length = len(normalized_source)
+    reference_length = len(normalized_reference)
+    length_ratio = round(source_length / max(reference_length, 1), 4)
+    extra_content_ratio = compute_extra_content_ratio(sentence_text, reference_text)
+    return (
+        best_score >= settings["min_score"]
+        and margin >= settings["min_margin"]
+        and settings["length_ratio_min"] <= length_ratio <= settings["length_ratio_max"]
+        and extra_content_ratio <= settings["max_extra_content_ratio"]
+    )
+
+
+def build_pre_replaced_document(
+    *,
+    asr_full_text: str,
+    reference_full_text: str,
+    loaded_settings: LoadedSettings,
+) -> list[PreReplacementSegment]:
+    source_sentences = split_text_into_sentences(asr_full_text)
+    reference_sentences = split_text_into_sentences(reference_full_text)
+    settings = get_safe_replace_settings(loaded_settings)
+
+    sentence_states: list[dict[str, Any]] = []
+    for index, source_sentence in enumerate(source_sentences):
+        ref_index, ref_text, best_score, margin = find_best_reference_match(source_sentence, reference_sentences)
+        sentence_states.append(
+            {
+                "index": index,
+                "source_text": source_sentence,
+                "reference_text": ref_text,
+                "reference_index": ref_index,
+                "safe_candidate": ref_index is not None
+                and is_safe_replace_candidate(
+                    source_sentence,
+                    ref_text,
+                    best_score=best_score,
+                    margin=margin,
+                    loaded_settings=loaded_settings,
+                ),
+            }
+        )
+
+    locked_ranges: list[tuple[int, int]] = []
+    start: int | None = None
+    last_reference_index: int | None = None
+    for state in sentence_states:
+        current_reference_index = state["reference_index"]
+        is_continuation = (
+            start is not None
+            and state["safe_candidate"]
+            and last_reference_index is not None
+            and current_reference_index is not None
+            and current_reference_index == last_reference_index + 1
+        )
+        if start is None and state["safe_candidate"]:
+            start = state["index"]
+            last_reference_index = current_reference_index
+            continue
+        if is_continuation:
+            last_reference_index = current_reference_index
+            continue
+        if start is not None and last_reference_index is not None:
+            end = sentence_states[state["index"] - 1]["index"]
+            if end - start + 1 >= settings["min_run_length"]:
+                locked_ranges.append((start, end))
+        start = state["index"] if state["safe_candidate"] else None
+        last_reference_index = current_reference_index if state["safe_candidate"] else None
+    if start is not None and last_reference_index is not None:
+        end = sentence_states[-1]["index"]
+        if end - start + 1 >= settings["min_run_length"]:
+            locked_ranges.append((start, end))
+
+    locked_sentence_indexes = {
+        sentence_index
+        for range_start, range_end in locked_ranges
+        for sentence_index in range(range_start, range_end + 1)
+    }
+
+    segments: list[PreReplacementSegment] = []
+    current_type: str | None = None
+    current_source: list[str] = []
+    current_text: list[str] = []
+    current_reference: list[str] = []
+    segment_start = 0
+
+    def flush_segment(segment_end: int) -> None:
+        nonlocal current_type, current_source, current_text, current_reference, segment_start
+        if current_type is None or not current_text:
+            return
+        segments.append(
+            PreReplacementSegment(
+                segment_type=current_type,
+                text="\n\n".join(current_text).strip(),
+                source_text="\n\n".join(current_source).strip(),
+                reference_text="".join(current_reference).strip(),
+                start_sentence_index=segment_start,
+                end_sentence_index=segment_end,
+            )
+        )
+        current_type = None
+        current_source = []
+        current_text = []
+        current_reference = []
+
+    for state in sentence_states:
+        segment_type = "locked_quote" if state["index"] in locked_sentence_indexes else "unlocked_text"
+        segment_text = state["reference_text"] if segment_type == "locked_quote" else state["source_text"]
+        segment_reference_text = state["reference_text"] if segment_type == "locked_quote" else ""
+        if current_type != segment_type:
+            flush_segment(state["index"] - 1)
+            current_type = segment_type
+            segment_start = state["index"]
+        current_source.append(state["source_text"])
+        current_text.append(segment_text)
+        if segment_reference_text:
+            current_reference.append(segment_reference_text)
+    flush_segment(len(sentence_states) - 1)
+    return segments
+
+
 def resolve_chunk_paragraphs(paragraph_count: int, configured_chunk_paragraphs: int) -> int:
     base_chunk_size = max(1, configured_chunk_paragraphs)
     if paragraph_count <= TARGET_MINIMAL_EDIT_BLOCKS:
@@ -398,6 +607,58 @@ def build_markdown_assemble_prompt(
         reference_full_text or "（无）",
     ]
     return "\n".join(sections).strip()
+
+
+def build_pre_replaced_plain_text(pre_replaced_segments: list[PreReplacementSegment]) -> str:
+    return "\n\n".join(segment.text for segment in pre_replaced_segments if segment.text.strip()).strip()
+
+
+def build_single_pass_refine_prompt(
+    prompt_text: str,
+    input_paths: RefinementInputPaths,
+    *,
+    pre_replaced_segments: list[PreReplacementSegment],
+    reference_full_text: str,
+) -> str:
+    rendered_segments: list[str] = []
+    for index, segment in enumerate(pre_replaced_segments, start=1):
+        rendered_segments.extend(
+            [
+                f"[SEGMENT {index:02d}][{segment.segment_type}]",
+                segment.text,
+                "",
+            ]
+        )
+
+    sections = [
+        prompt_text.strip(),
+        "",
+        "你现在负责阶段 6 的整篇单次校对整理。",
+        "输入同时包含整篇参考原文和预替换全文。",
+        "不得改写 locked_quote 的实词内容，只允许调整标点、断句和引用格式。",
+        "仅允许在 unlocked_text 中结合参考原文继续修正。",
+        "证据不足时，不得把讲解改写为原文。",
+        "请只返回 JSON，字段必须包含：final_markdown、section_map、refinement_notes、needs_review_sections。",
+        "",
+        f"当前文件: {input_paths.basename}.txt",
+        "",
+        "整篇参考原文：",
+        reference_full_text or "（无）",
+        "",
+        "预替换全文：",
+        "\n".join(rendered_segments).strip(),
+    ]
+    return "\n".join(sections).strip()
+
+
+def locked_quotes_preserved(final_markdown: str, pre_replaced_segments: list[PreReplacementSegment]) -> bool:
+    plain_text = normalize_for_match(markdown_to_plain_text(final_markdown))
+    for segment in pre_replaced_segments:
+        if segment.segment_type != "locked_quote":
+            continue
+        if normalize_for_match(segment.text) not in plain_text:
+            return False
+    return True
 
 
 def normalize_deletion_candidates(raw_candidates: Any) -> list[dict[str, str]]:
@@ -889,6 +1150,84 @@ def run_two_step_backend_refinement(
     )
 
 
+def run_single_pass_backend_refinement(
+    *,
+    backend: str,
+    input_paths: RefinementInputPaths,
+    loaded_settings: LoadedSettings,
+    markdown_prompt_text: str,
+    asr_full_text: str,
+    reference_full_text: str,
+    logger: logging.Logger | None = None,
+) -> BackendDocumentRefinementResult:
+    pre_replaced_segments = build_pre_replaced_document(
+        asr_full_text=asr_full_text,
+        reference_full_text=reference_full_text,
+        loaded_settings=loaded_settings,
+    )
+    edited_plain_text = build_pre_replaced_plain_text(pre_replaced_segments)
+    prompt = build_single_pass_refine_prompt(
+        markdown_prompt_text,
+        input_paths,
+        pre_replaced_segments=pre_replaced_segments,
+        reference_full_text=reference_full_text,
+    )
+    try:
+        payload = run_backend_payload(backend, prompt, loaded_settings)
+        document_result = parse_backend_document_result(backend, payload)
+    except CLIBackendError:
+        return BackendDocumentRefinementResult(
+            backend=backend,
+            model_name=backend,
+            final_markdown=build_simple_markdown(input_paths.basename, edited_plain_text),
+            refinement_strategy="programmatic_markdown_fallback",
+            refinement_reason="single_pass_backend_failed",
+            needs_review_sections=[],
+            refinement_notes=["single_pass_backend_failed_use_programmatic_fallback"],
+            edited_plain_text=edited_plain_text,
+            section_map=[],
+        )
+
+    refinement_notes = list(document_result.refinement_notes)
+    final_markdown = document_result.final_markdown
+    if not locked_quotes_preserved(final_markdown, pre_replaced_segments):
+        refinement_notes.append("locked_quote_changed_use_programmatic_fallback")
+        final_markdown = build_simple_markdown(input_paths.basename, edited_plain_text)
+        document_result = BackendDocumentRefinementResult(
+            backend=backend,
+            model_name=document_result.model_name or backend,
+            final_markdown=final_markdown,
+            refinement_strategy="programmatic_markdown_fallback",
+            refinement_reason="locked_quote_changed",
+            needs_review_sections=document_result.needs_review_sections,
+            refinement_notes=document_result.refinement_notes,
+            section_map=[],
+        )
+
+    if logger is not None:
+        locked_count = len([segment for segment in pre_replaced_segments if segment.segment_type == "locked_quote"])
+        logger.info(
+            "阶段 6 单次调用 | file=%s | backend=%s | locked_segments=%s | total_segments=%s",
+            input_paths.basename,
+            backend,
+            locked_count,
+            len(pre_replaced_segments),
+        )
+
+    return BackendDocumentRefinementResult(
+        backend=backend,
+        model_name=document_result.model_name or backend,
+        final_markdown=final_markdown,
+        refinement_strategy="single_pass_safe_replace",
+        refinement_reason="single_pass_codex",
+        needs_review_sections=document_result.needs_review_sections,
+        refinement_notes=refinement_notes,
+        edited_plain_text=edited_plain_text,
+        fidelity_report={"passed": True, "pre_replaced_segments": len(pre_replaced_segments)},
+        section_map=document_result.section_map,
+    )
+
+
 def build_fallback_document_result(title: str, asr_full_text: str) -> BackendDocumentRefinementResult:
     review_sections = []
     paragraphs = [item.strip() for item in asr_full_text.splitlines() if item.strip()]
@@ -969,7 +1308,7 @@ def write_refinement_result(
         "source_reference_file": relativize_path(input_paths.reference_text_path, loaded_settings.project_root),
         "refinement_backends": list(loaded_settings.settings.llm.backends),
         "backend_status": backend_status,
-        "prompt_mode": "two_step_conservative_refine",
+        "prompt_mode": selected_result.refinement_strategy,
         "selected_backend": selected_result.backend,
         "comparison_summary": comparison_summary,
         "final_markdown": selected_result.final_markdown,
@@ -999,7 +1338,6 @@ def refine_batch(
     if not asr_files:
         raise RefinementInputEmptyError(f"ASR 输入目录中没有可处理的 TXT 文件: {asr_dir}")
 
-    minimal_edit_prompt_text = load_refinement_prompt(loaded_settings)
     markdown_prompt_text = load_markdown_assemble_prompt(loaded_settings)
     items: list[RefinementBatchItem] = []
     success_count = 0
@@ -1013,11 +1351,10 @@ def refine_batch(
         document_title = input_paths.basename
         for backend in loaded_settings.settings.llm.backends:
             try:
-                result = run_two_step_backend_refinement(
+                result = run_single_pass_backend_refinement(
                     backend=backend,
                     input_paths=input_paths,
                     loaded_settings=loaded_settings,
-                    minimal_edit_prompt_text=minimal_edit_prompt_text,
                     markdown_prompt_text=markdown_prompt_text,
                     asr_full_text=asr_full_text,
                     reference_full_text=reference_full_text,
@@ -1030,7 +1367,7 @@ def refine_batch(
                 continue
 
             backend_results.append(result)
-            status = "returned_two_step"
+            status = "returned_single_pass"
             if result.model_name:
                 status = f"{status}:model={result.model_name}"
             backend_status[backend] = status
@@ -1069,8 +1406,9 @@ def refine_batch(
         success_count += 1
         if logger:
             logger.info(
-                "精修完成 | %s | prompt_mode=two_step_conservative_refine | needs_review=%s | selected_backend=%s",
+                "精修完成 | %s | prompt_mode=%s | needs_review=%s | selected_backend=%s",
                 input_paths.basename,
+                selected_result.refinement_strategy,
                 len(selected_result.needs_review_sections),
                 selected_result.backend,
             )

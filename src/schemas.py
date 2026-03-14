@@ -153,6 +153,12 @@ class LLMSettings(AppBaseModel):
     temperature: float = 0.1
     max_output_tokens: int = 4000
     timeout_seconds: int = 1800
+    safe_replace_min_score: float = 88.0
+    safe_replace_min_margin: float = 6.0
+    safe_replace_length_ratio_min: float = 0.8
+    safe_replace_length_ratio_max: float = 1.2
+    safe_replace_max_extra_content_ratio: float = 0.12
+    safe_replace_min_run_length: int = 2
 
 
 class OutputSettings(AppBaseModel):

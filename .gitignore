@@ -14,6 +14,7 @@ __pycache__/
 .vscode/
 .zcf/
 .DS_Store
+.worktrees/
 
 # Input assets
 data/input/videos/*

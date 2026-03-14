@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 from pathlib import Path
 
 import pytest
@@ -13,14 +12,17 @@ from src.refine_utils import (
     BACKEND_FALLBACK,
     BACKEND_GEMINI,
     BackendDocumentRefinementResult,
+    PreReplacementSegment,
     CLIBackendError,
     CLIBackendRetryableError,
     RefinementBlock,
     RefinementInputEmptyError,
+    build_pre_replaced_document,
     build_fallback_document_result,
     build_markdown_assemble_prompt,
     build_minimal_edit_prompt,
     build_refinement_blocks,
+    build_single_pass_refine_prompt,
     build_fulltext_refine_prompt,
     build_refinement_output_path,
     compare_backend_documents,
@@ -194,6 +196,178 @@ def test_build_markdown_assemble_prompt_restricts_to_structure_only(tmp_path: Pa
     assert "不得改写 edited_plain_text 的措辞" in prompt
     assert "edited_plain_text" in prompt
     assert "参考原文" in prompt
+
+
+def test_build_pre_replaced_document_locks_only_high_confidence_reference_runs(tmp_path: Path) -> None:
+    write_minimal_settings(
+        tmp_path,
+        llm_overrides={
+            "safe_replace_min_score": 80,
+            "safe_replace_min_margin": 5,
+            "safe_replace_length_ratio_min": 0.8,
+            "safe_replace_length_ratio_max": 1.2,
+            "safe_replace_max_extra_content_ratio": 0.12,
+            "safe_replace_min_run_length": 2,
+        },
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    segments = build_pre_replaced_document(
+        asr_full_text="天地玄黄 宇宙洪荒。\n\n日月盈昃 辰宿列张。\n\n这里是在解释宇宙观。",
+        reference_full_text="天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。",
+        loaded_settings=loaded_settings,
+    )
+
+    assert segments == [
+        PreReplacementSegment(
+            segment_type="locked_quote",
+            text="天地玄黄，宇宙洪荒。\n\n日月盈昃，辰宿列张。",
+            source_text="天地玄黄 宇宙洪荒。\n\n日月盈昃 辰宿列张。",
+            reference_text="天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。",
+            start_sentence_index=0,
+            end_sentence_index=1,
+        ),
+        PreReplacementSegment(
+            segment_type="unlocked_text",
+            text="这里是在解释宇宙观。",
+            source_text="这里是在解释宇宙观。",
+            reference_text="",
+            start_sentence_index=2,
+            end_sentence_index=2,
+        ),
+    ]
+
+
+def test_build_pre_replaced_document_does_not_lock_sentence_followed_by_explanation(tmp_path: Path) -> None:
+    write_minimal_settings(
+        tmp_path,
+        llm_overrides={
+            "safe_replace_min_score": 80,
+            "safe_replace_min_margin": 5,
+            "safe_replace_length_ratio_min": 0.8,
+            "safe_replace_length_ratio_max": 1.2,
+            "safe_replace_max_extra_content_ratio": 0.12,
+            "safe_replace_min_run_length": 2,
+        },
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    segments = build_pre_replaced_document(
+        asr_full_text="天地玄黄 宇宙洪荒。\n\n这里是在解释为什么先讲宇宙。",
+        reference_full_text="天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。",
+        loaded_settings=loaded_settings,
+    )
+
+    assert segments == [
+        PreReplacementSegment(
+            segment_type="unlocked_text",
+            text="天地玄黄 宇宙洪荒。\n\n这里是在解释为什么先讲宇宙。",
+            source_text="天地玄黄 宇宙洪荒。\n\n这里是在解释为什么先讲宇宙。",
+            reference_text="",
+            start_sentence_index=0,
+            end_sentence_index=1,
+        )
+    ]
+
+
+def test_build_single_pass_refine_prompt_includes_reference_and_locking_rules(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path)
+    asr_path = write_refine_inputs(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    input_paths = resolve_refinement_input_paths(loaded_settings, asr_path)
+
+    prompt = build_single_pass_refine_prompt(
+        "# test final cleanup",
+        input_paths,
+        pre_replaced_segments=[
+            PreReplacementSegment(
+                segment_type="locked_quote",
+                text="天地玄黄，宇宙洪荒。",
+                source_text="天地玄黄 宇宙洪荒。",
+                reference_text="天地玄黄，宇宙洪荒。",
+                start_sentence_index=0,
+                end_sentence_index=0,
+            ),
+            PreReplacementSegment(
+                segment_type="unlocked_text",
+                text="这里是在解释宇宙观。",
+                source_text="这里是在解释宇宙观。",
+                reference_text="",
+                start_sentence_index=1,
+                end_sentence_index=1,
+            ),
+        ],
+        reference_full_text="天地玄黄，宇宙洪荒。",
+    )
+
+    assert "预替换全文" in prompt
+    assert "整篇参考原文" in prompt
+    assert "[SEGMENT 01][locked_quote]" in prompt
+    assert "[SEGMENT 02][unlocked_text]" in prompt
+    assert "不得改写 locked_quote 的实词内容" in prompt
+    assert "仅允许在 unlocked_text 中结合参考原文继续修正" in prompt
+
+
+def test_refine_batch_uses_single_codex_call_with_reference_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(
+        tmp_path,
+        llm_overrides={
+            "block_batch_size": 1,
+            "safe_replace_min_score": 80,
+            "safe_replace_min_margin": 5,
+            "safe_replace_length_ratio_min": 0.8,
+            "safe_replace_length_ratio_max": 1.2,
+            "safe_replace_max_extra_content_ratio": 0.12,
+            "safe_replace_min_run_length": 2,
+        },
+    )
+    asr_dir = tmp_path / "data/intermediate/asr"
+    reference_dir = tmp_path / "data/intermediate/extracted_text"
+    asr_dir.mkdir(parents=True, exist_ok=True)
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    (asr_dir / "single-pass-demo.txt").write_text(
+        "天地玄黄 宇宙洪荒。\n\n日月盈昃 辰宿列张。\n\n这里是在解释宇宙观。",
+        encoding="utf-8",
+    )
+    (reference_dir / "single-pass-demo.txt").write_text(
+        "天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。",
+        encoding="utf-8",
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    prompts: list[str] = []
+
+    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+        prompts.append(prompt)
+        if "当前块正文" in prompt:
+            current_text = prompt.split("当前块正文：\n", 1)[1].split("\n\n后文锚点：", 1)[0].strip()
+            return {
+                "edited_text": current_text,
+                "deletion_candidates": [],
+                "edit_notes": [],
+                "needs_review_sections": [],
+            }
+
+        return {
+            "final_markdown": "# single-pass-demo\n\n> 天地玄黄，宇宙洪荒。\n>\n> 日月盈昃，辰宿列张。\n\n这里是在解释宇宙观。",
+            "section_map": [],
+            "refinement_notes": [],
+            "needs_review_sections": [],
+            "refinement_strategy": "single_pass_with_safe_replace",
+            "refinement_reason": "single_pass_codex",
+        }
+
+    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
+
+    refine_batch(loaded_settings)
+
+    assert len(prompts) == 1
+    assert "整篇参考原文" in prompts[0]
+    assert "[SEGMENT 01][locked_quote]" in prompts[0]
+    assert "[SEGMENT 02][unlocked_text]" in prompts[0]
 
 
 def test_parse_backend_document_result_requires_fulltext() -> None:
@@ -400,33 +574,14 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     asr_path = write_refine_inputs(tmp_path)
     loaded_settings = load_settings(project_root=tmp_path)
 
-    call_state = {"minimal": 0}
-
     def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
-        if "当前块正文" in prompt:
-            block_index = call_state["minimal"]
-            call_state["minimal"] += 1
-            if block_index == 0:
-                return {
-                    "edited_text": "久有凌云志，重上井冈山。",
-                    "deletion_candidates": [],
-                    "edit_notes": ["fix_typos"],
-                    "needs_review_sections": [],
-                }
-            return {
-                "edited_text": "这里主要是表达作者情绪变化。",
-                "deletion_candidates": [],
-                "edit_notes": ["summary_bad"],
-                "needs_review_sections": [],
-            }
-
         return {
             "final_markdown": "# demo\n\n> 久有凌云志，重上井冈山。\n\n这里 的意思 是 作者在说明情绪变化。",
             "section_map": [{"section": "quote", "source_blocks": [0]}],
             "refinement_notes": ["codex_note"],
             "needs_review_sections": [],
-            "refinement_strategy": "two_step_markdown_assemble",
-            "refinement_reason": "codex_two_step",
+            "refinement_strategy": "single_pass_with_safe_replace",
+            "refinement_reason": "single_pass_codex",
         }
 
     monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
@@ -436,23 +591,23 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
 
     assert summary.success == 1
-    assert result["prompt_mode"] == "two_step_conservative_refine"
+    assert result["prompt_mode"] == "single_pass_safe_replace"
     assert result["source_asr_file"] == "data/intermediate/asr/demo.txt"
     assert result["source_reference_file"] == "data/intermediate/extracted_text/demo.txt"
     assert result["refinement_backends"] == [BACKEND_CODEX]
-    assert result["backend_status"]["codex_cli"] == "returned_two_step:model=gpt-5.4"
+    assert result["backend_status"]["codex_cli"] == "returned_single_pass:model=codex_cli"
     assert result["selected_backend"] == BACKEND_CODEX
     assert "final_markdown" in result
     assert result["final_markdown"].startswith("# demo")
-    assert result["edited_plain_text"].startswith("久有凌云志，重上井冈山。")
+    assert result["edited_plain_text"].startswith("九月零云至 崇尚敬江山")
     assert "这里 的意思 是 作者在说明情绪变化" in result["edited_plain_text"]
     assert result["deletion_candidates"] == []
     assert result["fidelity_report"]["passed"] is True
-    assert "block_validation_failed" in result["refinement_notes"]
+    assert result["refinement_notes"] == ["codex_note"]
     assert "classification_summary" not in result
 
 
-def test_refine_batch_limits_minimal_edit_calls_for_long_line_based_asr(
+def test_refine_batch_uses_single_codex_call_for_long_line_based_asr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -467,36 +622,29 @@ def test_refine_batch_limits_minimal_edit_calls_for_long_line_based_asr(
     (reference_dir / "long-demo.txt").write_text("参考原文", encoding="utf-8")
     loaded_settings = load_settings(project_root=tmp_path)
 
-    minimal_calls = {"count": 0}
+    prompts: list[str] = []
 
     def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
-        if "当前块正文" in prompt:
-            minimal_calls["count"] += 1
-            current_text = prompt.split("当前块正文：\n", 1)[1].split("\n\n后文锚点：", 1)[0].strip()
-            return {
-                "edited_text": current_text,
-                "deletion_candidates": [],
-                "edit_notes": [],
-                "needs_review_sections": [],
-            }
-
+        prompts.append(prompt)
         return {
             "final_markdown": "# long-demo\n\n" + "\n\n".join(f"第{i:04d}行转写文本" for i in range(line_count)),
             "section_map": [],
             "refinement_notes": [],
             "needs_review_sections": [],
-            "refinement_strategy": "two_step_markdown_assemble",
-            "refinement_reason": "codex_two_step",
+            "refinement_strategy": "single_pass_with_safe_replace",
+            "refinement_reason": "single_pass_codex",
         }
 
     monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
 
     refine_batch(loaded_settings)
 
-    assert minimal_calls["count"] == math.ceil(line_count / 10)
+    assert len(prompts) == 1
+    assert "整篇参考原文" in prompts[0]
+    assert "预替换全文" in prompts[0]
 
 
-def test_refine_batch_uses_block_concurrency_for_minimal_edit_stage(
+def test_refine_batch_does_not_use_block_concurrency_in_single_pass_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -511,13 +659,6 @@ def test_refine_batch_uses_block_concurrency_for_minimal_edit_stage(
 
     seen: dict[str, object] = {}
 
-    class FakeFuture:
-        def __init__(self, value: object) -> None:
-            self._value = value
-
-        def result(self) -> object:
-            return self._value
-
     class FakeExecutor:
         def __init__(self, *, max_workers: int) -> None:
             seen["max_workers"] = max_workers
@@ -528,41 +669,25 @@ def test_refine_batch_uses_block_concurrency_for_minimal_edit_stage(
         def __exit__(self, exc_type, exc, tb) -> None:
             _ = exc_type, exc, tb
 
-        def submit(self, fn, *args, **kwargs) -> FakeFuture:
-            return FakeFuture(fn(*args, **kwargs))
-
-    def fake_as_completed(futures):
-        return list(futures)
-
     def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
-        if "当前块正文" in prompt:
-            current_text = prompt.split("当前块正文：\n", 1)[1].split("\n\n后文锚点：", 1)[0].strip()
-            return {
-                "edited_text": current_text,
-                "deletion_candidates": [],
-                "edit_notes": [],
-                "needs_review_sections": [],
-            }
-
         return {
             "final_markdown": "# parallel-demo\n\n正文",
             "section_map": [],
             "refinement_notes": [],
             "needs_review_sections": [],
-            "refinement_strategy": "two_step_markdown_assemble",
-            "refinement_reason": "codex_two_step",
+            "refinement_strategy": "single_pass_with_safe_replace",
+            "refinement_reason": "single_pass_codex",
         }
 
     monkeypatch.setattr("src.refine_utils.ThreadPoolExecutor", FakeExecutor)
-    monkeypatch.setattr("src.refine_utils.as_completed", fake_as_completed)
     monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
 
     refine_batch(loaded_settings)
 
-    assert seen["max_workers"] == 6
+    assert "max_workers" not in seen
 
 
-def test_refine_batch_logs_block_level_progress(
+def test_refine_batch_logs_single_pass_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -577,22 +702,13 @@ def test_refine_batch_logs_block_level_progress(
     loaded_settings = load_settings(project_root=tmp_path)
 
     def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
-        if "当前块正文" in prompt:
-            current_text = prompt.split("当前块正文：\n", 1)[1].split("\n\n后文锚点：", 1)[0].strip()
-            return {
-                "edited_text": current_text,
-                "deletion_candidates": [],
-                "edit_notes": [],
-                "needs_review_sections": [],
-            }
-
         return {
             "final_markdown": "# progress-demo\n\n正文",
             "section_map": [],
             "refinement_notes": [],
             "needs_review_sections": [],
-            "refinement_strategy": "two_step_markdown_assemble",
-            "refinement_reason": "codex_two_step",
+            "refinement_strategy": "single_pass_with_safe_replace",
+            "refinement_reason": "single_pass_codex",
         }
 
     monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
@@ -600,12 +716,12 @@ def test_refine_batch_logs_block_level_progress(
     with caplog.at_level("INFO"):
         refine_batch(loaded_settings, logger=logging.getLogger("test-refine-progress"))
 
-    progress_messages = [record.message for record in caplog.records if "阶段 6 块进度" in record.message]
-    assert len(progress_messages) == 15
+    progress_messages = [record.message for record in caplog.records if "阶段 6 单次调用" in record.message]
+    assert len(progress_messages) == 1
     assert "file=progress-demo" in progress_messages[0]
     assert "backend=codex_cli" in progress_messages[0]
-    assert "block=1/15" in progress_messages[0]
-    assert "block=15/15" in progress_messages[-1]
+    assert "locked_segments=" in progress_messages[0]
+    assert "total_segments=" in progress_messages[0]
 
 
 def test_refine_batch_uses_fallback_when_all_backends_fail(
@@ -619,7 +735,7 @@ def test_refine_batch_uses_fallback_when_all_backends_fail(
     def fail_backend(**_kwargs) -> BackendDocumentRefinementResult:
         raise CLIBackendError("backend failed")
 
-    monkeypatch.setattr("src.refine_utils.run_two_step_backend_refinement", fail_backend)
+    monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fail_backend)
 
     summary = refine_batch(loaded_settings)
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
