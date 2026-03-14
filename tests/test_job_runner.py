@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import logging
 from email.message import Message
 from pathlib import Path
 
@@ -8,12 +9,19 @@ import yaml
 
 from src.config_loader import load_settings
 from src.job_runner import (
+    BatchJobRuntime,
+    BatchJobSpec,
+    BatchRunSummary,
     CANONICAL_INPUT_BASENAME,
     build_job_paths,
     build_job_initial_prompt,
     detect_reference_source_type,
     fetch_reference_from_url,
+    get_batch_exit_code,
+    load_batch_job_specs,
     prepare_job_inputs,
+    run_batch_jobs,
+    run_batch_stage,
     run_single_job,
     write_job_settings,
 )
@@ -227,3 +235,338 @@ def test_run_single_job_copies_final_markdown_to_output_dir(
     assert result.copied_output_path.read_text(encoding="utf-8") == "# 最终稿\n\n正文"
     manifest_path = tmp_path / "data/jobs/job-fixed-id/manifest.json"
     assert manifest_path.exists()
+
+
+def test_load_batch_job_specs_from_manifest_keeps_valid_items_and_records_invalid_entries(
+    tmp_path: Path,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    output_dir = tmp_path / "deliverables"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    video_path = tmp_path / "lesson.mp4"
+    reference_path = tmp_path / "chapter.txt"
+    glossary_path = tmp_path / "glossary.txt"
+    video_path.write_bytes(b"video")
+    reference_path.write_text("参考原文", encoding="utf-8")
+    glossary_path.write_text("术语", encoding="utf-8")
+
+    manifest_path = tmp_path / "jobs.yaml"
+    manifest_path.write_text(
+        yaml.safe_dump(
+            {
+                "jobs": [
+                    {
+                        "video": str(video_path),
+                        "reference": str(reference_path),
+                        "output_dir": str(output_dir),
+                        "book_name": "书名",
+                        "chapter": "第一章",
+                        "glossary_file": str(glossary_path),
+                    },
+                    {
+                        "video": str(video_path),
+                        "output_dir": str(output_dir),
+                    },
+                ]
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    specs, failed_items = load_batch_job_specs(
+        base_loaded_settings=loaded_settings,
+        manifest=str(manifest_path),
+    )
+
+    assert len(specs) == 1
+    assert specs[0] == BatchJobSpec(
+        video=str(video_path.resolve()),
+        reference=str(reference_path.resolve()),
+        output_dir=str(output_dir.resolve()),
+        mode="manifest",
+        book_name="书名",
+        chapter="第一章",
+        glossary_file=str(glossary_path.resolve()),
+    )
+    assert len(failed_items) == 1
+    assert failed_items[0].status == "failed"
+    assert failed_items[0].failed_stage == "input-validation"
+    assert "缺少必填字段" in (failed_items[0].error_message or "")
+
+
+def test_load_batch_job_specs_pairs_directory_inputs_and_marks_missing_reference_and_invalid_extension(
+    tmp_path: Path,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    videos_dir = tmp_path / "videos"
+    reference_dir = tmp_path / "reference"
+    output_dir = tmp_path / "deliverables"
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    reference_dir.mkdir(parents=True, exist_ok=True)
+
+    (videos_dir / "lesson-a.mp4").write_bytes(b"video-a")
+    (videos_dir / "lesson-b.mp4").write_bytes(b"video-b")
+    (videos_dir / "notes.txt").write_text("not-video", encoding="utf-8")
+    (reference_dir / "lesson-a.txt").write_text("参考 A", encoding="utf-8")
+
+    specs, failed_items = load_batch_job_specs(
+        base_loaded_settings=loaded_settings,
+        videos_dir=str(videos_dir),
+        reference_dir=str(reference_dir),
+        output_dir=str(output_dir),
+    )
+
+    assert len(specs) == 1
+    assert specs[0].mode == "paired-dir"
+    assert Path(specs[0].video) == (videos_dir / "lesson-a.mp4").resolve()
+    assert Path(specs[0].reference) == (reference_dir / "lesson-a.txt").resolve()
+    assert Path(specs[0].output_dir) == output_dir.resolve()
+
+    assert len(failed_items) == 2
+    error_messages = {item.error_message or "" for item in failed_items}
+    assert any("缺少匹配的 reference" in message for message in error_messages)
+    assert any("不支持的视频扩展名" in message for message in error_messages)
+
+
+def test_load_batch_job_specs_marks_duplicate_targets_as_failed(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    videos_dir = tmp_path / "videos"
+    reference_dir = tmp_path / "reference"
+    output_dir = tmp_path / "deliverables"
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    reference_dir.mkdir(parents=True, exist_ok=True)
+
+    (videos_dir / "lesson-a.mp4").write_bytes(b"video-a")
+    (videos_dir / "lesson-b.mp4").write_bytes(b"video-b")
+    (reference_dir / "lesson-a.txt").write_text("参考 A", encoding="utf-8")
+    (reference_dir / "lesson-b.txt").write_text("参考 B", encoding="utf-8")
+
+    specs, failed_items = load_batch_job_specs(
+        base_loaded_settings=loaded_settings,
+        videos_dir=str(videos_dir),
+        reference_dir=str(reference_dir),
+        output_dir=str(output_dir),
+        book_name="同一本书",
+        chapter="同一章",
+    )
+
+    assert specs == []
+    assert len(failed_items) == 2
+    assert all(item.failed_stage == "input-validation" for item in failed_items)
+    assert all("重复 target" in (item.error_message or "") for item in failed_items)
+
+
+def test_load_batch_job_specs_supports_shared_reference_mode(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    videos_dir = tmp_path / "videos"
+    output_dir = tmp_path / "deliverables"
+    shared_reference = tmp_path / "shared.txt"
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    shared_reference.write_text("共享参考", encoding="utf-8")
+
+    (videos_dir / "lesson-a.mp4").write_bytes(b"video-a")
+    (videos_dir / "lesson-b.mp4").write_bytes(b"video-b")
+
+    specs, failed_items = load_batch_job_specs(
+        base_loaded_settings=loaded_settings,
+        videos_dir=str(videos_dir),
+        shared_reference=str(shared_reference),
+        output_dir=str(output_dir),
+    )
+
+    assert len(specs) == 2
+    assert failed_items == []
+    assert all(spec.mode == "shared-reference" for spec in specs)
+    assert {Path(spec.video).name for spec in specs} == {"lesson-a.mp4", "lesson-b.mp4"}
+    assert all(Path(spec.reference) == shared_reference.resolve() for spec in specs)
+
+
+def test_run_batch_stage_uses_limited_concurrency_for_remote_stages(tmp_path: Path, monkeypatch) -> None:
+    runtime = BatchJobRuntime(
+        job_id="job-a",
+        job_root=tmp_path / "data/jobs/job-a",
+        spec=BatchJobSpec(
+            video=str((tmp_path / "lesson-a.mp4").resolve()),
+            reference=str((tmp_path / "lesson-a.txt").resolve()),
+            output_dir=str((tmp_path / "deliverables").resolve()),
+            mode="manifest",
+        ),
+        status="pending",
+    )
+    calls: list[tuple[str, int, list[str]]] = []
+
+    def fake_run_jobs_with_limited_concurrency(*, stage_name, runtimes, remote_concurrency, **_kwargs) -> None:
+        calls.append((stage_name, remote_concurrency, [item.job_id for item in runtimes]))
+
+    monkeypatch.setattr("src.job_runner.run_jobs_with_limited_concurrency", fake_run_jobs_with_limited_concurrency)
+
+    run_batch_stage(
+        stage_name="prepare-reference",
+        runtimes=[runtime],
+        project_root=tmp_path,
+        logger=logging.getLogger("test-batch"),
+        remote_concurrency=3,
+    )
+
+    assert calls == [("prepare-reference", 3, ["job-a"])]
+
+
+def test_run_batch_jobs_marks_failed_stage_skips_later_stages_and_records_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    output_dir = tmp_path / "deliverables"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    video_a = tmp_path / "lesson-a.mp4"
+    video_b = tmp_path / "lesson-b.mp4"
+    reference_a = tmp_path / "lesson-a.txt"
+    reference_b = tmp_path / "lesson-b.txt"
+    video_a.write_bytes(b"video-a")
+    video_b.write_bytes(b"video-b")
+    reference_a.write_text("参考 A", encoding="utf-8")
+    reference_b.write_text("参考 B", encoding="utf-8")
+
+    created_job_ids = iter(["job-a", "job-b"])
+    monkeypatch.setattr("src.job_runner.create_job_id", lambda: next(created_job_ids))
+
+    stage_calls: list[tuple[str, str]] = []
+
+    def fake_run_stage(stage_name, job_loaded_settings, logger) -> int:
+        _ = logger
+        job_id = job_loaded_settings.path_for("videos_dir").parents[1].name
+        stage_calls.append((stage_name, job_id))
+        if stage_name == "prepare-reference" and job_id == "job-b":
+            return 1
+        if stage_name == "export-markdown" and job_id == "job-a":
+            final_dir = job_loaded_settings.path_for("final_dir")
+            final_dir.mkdir(parents=True, exist_ok=True)
+            (final_dir / f"{CANONICAL_INPUT_BASENAME}.md").write_text("# 批量输出\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("src.job_runner.run_stage", fake_run_stage)
+
+    summary = run_batch_jobs(
+        project_root=tmp_path,
+        base_loaded_settings=loaded_settings,
+        job_specs=[
+            BatchJobSpec(
+                video=str(video_a),
+                reference=str(reference_a),
+                output_dir=str(output_dir),
+                mode="manifest",
+            ),
+            BatchJobSpec(
+                video=str(video_b),
+                reference=str(reference_b),
+                output_dir=str(output_dir),
+                mode="manifest",
+            ),
+        ],
+        failed_runtimes=[],
+        remote_concurrency=2,
+        batch_id="batch-fixed",
+    )
+
+    assert summary.batch_id == "batch-fixed"
+    assert summary.total == 2
+    assert summary.success == 1
+    assert summary.failed == 1
+
+    items_by_job_id = {item.job_id: item for item in summary.items}
+    assert items_by_job_id["job-a"].status == "success"
+    assert items_by_job_id["job-a"].copied_output_path == output_dir / "lesson-a.md"
+    assert items_by_job_id["job-a"].copied_output_path.read_text(encoding="utf-8") == "# 批量输出\n"
+    assert items_by_job_id["job-b"].status == "failed"
+    assert items_by_job_id["job-b"].failed_stage == "prepare-reference"
+    assert "exit_code=1" in (items_by_job_id["job-b"].error_message or "")
+
+    assert ("refine", "job-b") not in stage_calls
+    assert ("export-markdown", "job-b") not in stage_calls
+
+    summary_path = tmp_path / "data/jobs/batches/batch-fixed/summary.json"
+    assert summary_path.exists()
+    summary_payload = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
+    assert summary_payload["failed"] == 1
+    assert summary_payload["items"][0]["copied_output_path"].endswith("lesson-a.md")
+
+
+def test_get_batch_exit_code_returns_expected_values(tmp_path: Path) -> None:
+    spec = BatchJobSpec(
+        video=str((tmp_path / "lesson.mp4").resolve()),
+        reference=str((tmp_path / "lesson.txt").resolve()),
+        output_dir=str((tmp_path / "deliverables").resolve()),
+        mode="manifest",
+    )
+
+    assert get_batch_exit_code(
+        BatchRunSummary(
+            batch_id="batch-all-success",
+            total=2,
+            success=2,
+            failed=0,
+            items=[
+                BatchJobRuntime(job_id="job-a", job_root=tmp_path / "job-a", spec=spec, status="success"),
+                BatchJobRuntime(job_id="job-b", job_root=tmp_path / "job-b", spec=spec, status="success"),
+            ],
+        )
+    ) == 0
+    assert get_batch_exit_code(
+        BatchRunSummary(
+            batch_id="batch-partial",
+            total=2,
+            success=1,
+            failed=1,
+            items=[
+                BatchJobRuntime(job_id="job-a", job_root=tmp_path / "job-a", spec=spec, status="success"),
+                BatchJobRuntime(
+                    job_id="job-b",
+                    job_root=tmp_path / "job-b",
+                    spec=spec,
+                    status="failed",
+                    failed_stage="refine",
+                    error_message="boom",
+                ),
+            ],
+        )
+    ) == 2
+    assert get_batch_exit_code(
+        BatchRunSummary(
+            batch_id="batch-all-failed",
+            total=2,
+            success=0,
+            failed=2,
+            items=[
+                BatchJobRuntime(
+                    job_id="job-a",
+                    job_root=tmp_path / "job-a",
+                    spec=spec,
+                    status="failed",
+                    failed_stage="transcribe",
+                    error_message="boom-a",
+                ),
+                BatchJobRuntime(
+                    job_id="job-b",
+                    job_root=tmp_path / "job-b",
+                    spec=spec,
+                    status="failed",
+                    failed_stage="refine",
+                    error_message="boom-b",
+                ),
+            ],
+        )
+    ) == 1
