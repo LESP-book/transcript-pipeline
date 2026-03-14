@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 from pathlib import Path
 
 import pytest
@@ -118,6 +120,20 @@ def test_build_refinement_blocks_includes_adjacent_context() -> None:
         previous_anchor="第一段。",
         next_anchor="第三段。",
     )
+
+
+def test_build_refinement_blocks_scales_down_long_line_based_asr_to_about_twenty_calls() -> None:
+    line_based_text = "\n".join(f"第{i:04d}行转写文本" for i in range(200))
+
+    blocks = build_refinement_blocks(
+        line_based_text,
+        chunk_paragraphs=2,
+        anchor_paragraphs=1,
+    )
+
+    assert len(blocks) == 20
+    assert blocks[0].current_text.count("\n\n") == 9
+    assert blocks[-1].current_text.count("\n\n") == 9
 
 
 def test_build_minimal_edit_prompt_contains_context_and_hard_guards(tmp_path: Path) -> None:
@@ -434,6 +450,162 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     assert result["fidelity_report"]["passed"] is True
     assert "block_validation_failed" in result["refinement_notes"]
     assert "classification_summary" not in result
+
+
+def test_refine_batch_limits_minimal_edit_calls_for_long_line_based_asr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path, llm_overrides={"block_batch_size": 2, "block_concurrency": 6})
+    asr_dir = tmp_path / "data/intermediate/asr"
+    reference_dir = tmp_path / "data/intermediate/extracted_text"
+    asr_dir.mkdir(parents=True, exist_ok=True)
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    asr_path = asr_dir / "long-demo.txt"
+    line_count = 200
+    asr_path.write_text("\n".join(f"第{i:04d}行转写文本" for i in range(line_count)), encoding="utf-8")
+    (reference_dir / "long-demo.txt").write_text("参考原文", encoding="utf-8")
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    minimal_calls = {"count": 0}
+
+    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+        if "当前块正文" in prompt:
+            minimal_calls["count"] += 1
+            current_text = prompt.split("当前块正文：\n", 1)[1].split("\n\n后文锚点：", 1)[0].strip()
+            return {
+                "edited_text": current_text,
+                "deletion_candidates": [],
+                "edit_notes": [],
+                "needs_review_sections": [],
+            }
+
+        return {
+            "final_markdown": "# long-demo\n\n" + "\n\n".join(f"第{i:04d}行转写文本" for i in range(line_count)),
+            "section_map": [],
+            "refinement_notes": [],
+            "needs_review_sections": [],
+            "refinement_strategy": "two_step_markdown_assemble",
+            "refinement_reason": "codex_two_step",
+        }
+
+    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
+
+    refine_batch(loaded_settings)
+
+    assert minimal_calls["count"] == math.ceil(line_count / 10)
+
+
+def test_refine_batch_uses_block_concurrency_for_minimal_edit_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path, llm_overrides={"block_batch_size": 1, "block_concurrency": 6})
+    asr_dir = tmp_path / "data/intermediate/asr"
+    reference_dir = tmp_path / "data/intermediate/extracted_text"
+    asr_dir.mkdir(parents=True, exist_ok=True)
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    (asr_dir / "parallel-demo.txt").write_text("\n".join(f"第{i:04d}行转写文本" for i in range(12)), encoding="utf-8")
+    (reference_dir / "parallel-demo.txt").write_text("参考原文", encoding="utf-8")
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    seen: dict[str, object] = {}
+
+    class FakeFuture:
+        def __init__(self, value: object) -> None:
+            self._value = value
+
+        def result(self) -> object:
+            return self._value
+
+    class FakeExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            seen["max_workers"] = max_workers
+
+        def __enter__(self) -> "FakeExecutor":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            _ = exc_type, exc, tb
+
+        def submit(self, fn, *args, **kwargs) -> FakeFuture:
+            return FakeFuture(fn(*args, **kwargs))
+
+    def fake_as_completed(futures):
+        return list(futures)
+
+    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+        if "当前块正文" in prompt:
+            current_text = prompt.split("当前块正文：\n", 1)[1].split("\n\n后文锚点：", 1)[0].strip()
+            return {
+                "edited_text": current_text,
+                "deletion_candidates": [],
+                "edit_notes": [],
+                "needs_review_sections": [],
+            }
+
+        return {
+            "final_markdown": "# parallel-demo\n\n正文",
+            "section_map": [],
+            "refinement_notes": [],
+            "needs_review_sections": [],
+            "refinement_strategy": "two_step_markdown_assemble",
+            "refinement_reason": "codex_two_step",
+        }
+
+    monkeypatch.setattr("src.refine_utils.ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr("src.refine_utils.as_completed", fake_as_completed)
+    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
+
+    refine_batch(loaded_settings)
+
+    assert seen["max_workers"] == 6
+
+
+def test_refine_batch_logs_block_level_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    write_minimal_settings(tmp_path, llm_overrides={"block_batch_size": 2, "block_concurrency": 6})
+    asr_dir = tmp_path / "data/intermediate/asr"
+    reference_dir = tmp_path / "data/intermediate/extracted_text"
+    asr_dir.mkdir(parents=True, exist_ok=True)
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    (asr_dir / "progress-demo.txt").write_text("\n".join(f"第{i:04d}行转写文本" for i in range(30)), encoding="utf-8")
+    (reference_dir / "progress-demo.txt").write_text("参考原文", encoding="utf-8")
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+        if "当前块正文" in prompt:
+            current_text = prompt.split("当前块正文：\n", 1)[1].split("\n\n后文锚点：", 1)[0].strip()
+            return {
+                "edited_text": current_text,
+                "deletion_candidates": [],
+                "edit_notes": [],
+                "needs_review_sections": [],
+            }
+
+        return {
+            "final_markdown": "# progress-demo\n\n正文",
+            "section_map": [],
+            "refinement_notes": [],
+            "needs_review_sections": [],
+            "refinement_strategy": "two_step_markdown_assemble",
+            "refinement_reason": "codex_two_step",
+        }
+
+    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
+
+    with caplog.at_level("INFO"):
+        refine_batch(loaded_settings, logger=logging.getLogger("test-refine-progress"))
+
+    progress_messages = [record.message for record in caplog.records if "阶段 6 块进度" in record.message]
+    assert len(progress_messages) == 15
+    assert "file=progress-demo" in progress_messages[0]
+    assert "backend=codex_cli" in progress_messages[0]
+    assert "block=1/15" in progress_messages[0]
+    assert "block=15/15" in progress_messages[-1]
 
 
 def test_refine_batch_uses_fallback_when_all_backends_fail(

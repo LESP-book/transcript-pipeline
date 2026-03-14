@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 import json
 import logging
 import re
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,7 @@ PROMPT_MISSING_ERROR = "缺少阶段 6 提示词配置，请检查 prompts.class
 BACKEND_CODEX = "codex_cli"
 BACKEND_GEMINI = "gemini_cli"
 BACKEND_FALLBACK = "local_fallback"
+TARGET_MINIMAL_EDIT_BLOCKS = 20
 
 
 class RefinementError(RuntimeError):
@@ -53,6 +56,16 @@ class RefinementBlock:
     current_text: str
     previous_anchor: str
     next_anchor: str
+
+
+@dataclass(frozen=True)
+class MinimalEditBlockResult:
+    block: RefinementBlock
+    edited_text: str
+    deletion_candidates: list[dict[str, Any]]
+    edit_notes: list[str]
+    needs_review_sections: list[dict[str, Any]]
+    failed_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -240,6 +253,13 @@ def split_text_into_paragraphs(text: str) -> list[str]:
     return paragraphs or single_lines
 
 
+def resolve_chunk_paragraphs(paragraph_count: int, configured_chunk_paragraphs: int) -> int:
+    base_chunk_size = max(1, configured_chunk_paragraphs)
+    if paragraph_count <= TARGET_MINIMAL_EDIT_BLOCKS:
+        return base_chunk_size
+    return max(base_chunk_size, math.ceil(paragraph_count / TARGET_MINIMAL_EDIT_BLOCKS))
+
+
 def build_refinement_blocks(
     text: str,
     *,
@@ -250,7 +270,7 @@ def build_refinement_blocks(
     if not paragraphs:
         return []
 
-    chunk_size = max(1, chunk_paragraphs)
+    chunk_size = resolve_chunk_paragraphs(len(paragraphs), chunk_paragraphs)
     anchor_size = max(0, anchor_paragraphs)
     blocks: list[RefinementBlock] = []
     for block_index, start in enumerate(range(0, len(paragraphs), chunk_size)):
@@ -638,6 +658,72 @@ def run_backend_payload(backend: str, prompt: str, loaded_settings: LoadedSettin
     raise CLIBackendError(f"未知阶段 6 后端: {backend}")
 
 
+def process_minimal_edit_block(
+    *,
+    backend: str,
+    block: RefinementBlock,
+    input_paths: RefinementInputPaths,
+    loaded_settings: LoadedSettings,
+    minimal_edit_prompt_text: str,
+    reference_full_text: str,
+) -> MinimalEditBlockResult:
+    prompt = build_minimal_edit_prompt(
+        minimal_edit_prompt_text,
+        input_paths,
+        block,
+        reference_full_text=reference_full_text,
+    )
+    try:
+        payload = run_backend_payload(backend, prompt, loaded_settings)
+        parsed = parse_minimal_edit_result(payload)
+    except CLIBackendError:
+        return MinimalEditBlockResult(
+            block=block,
+            edited_text=block.current_text,
+            deletion_candidates=[],
+            edit_notes=[],
+            needs_review_sections=[{"excerpt": truncate_for_prompt(block.current_text, 80), "reason": "block_backend_failed"}],
+            failed_reason="block_backend_failed",
+        )
+
+    fidelity_report = validate_minimal_edit_result(
+        source_text=block.current_text,
+        edited_text=parsed["edited_text"],
+        deletion_candidates=parsed["deletion_candidates"],
+    )
+    if not fidelity_report["passed"]:
+        return MinimalEditBlockResult(
+            block=block,
+            edited_text=block.current_text,
+            deletion_candidates=[],
+            edit_notes=[],
+            needs_review_sections=[{"excerpt": truncate_for_prompt(block.current_text, 80), "reason": "block_validation_failed"}],
+            failed_reason="block_validation_failed",
+        )
+
+    normalized_review_sections: list[dict[str, Any]] = []
+    for item in parsed["needs_review_sections"]:
+        if not isinstance(item, dict):
+            continue
+        excerpt = normalize_inline_text(str(item.get("excerpt", "")).strip())
+        reason = normalize_inline_text(str(item.get("reason", "")).strip())
+        if excerpt or reason:
+            normalized_review_sections.append(
+                {
+                    "excerpt": excerpt or truncate_for_prompt(parsed["edited_text"], 80),
+                    "reason": reason or "minimal_edit_needs_review",
+                }
+            )
+
+    return MinimalEditBlockResult(
+        block=block,
+        edited_text=parsed["edited_text"].strip(),
+        deletion_candidates=parsed["deletion_candidates"],
+        edit_notes=parsed["edit_notes"],
+        needs_review_sections=normalized_review_sections,
+    )
+
+
 def build_simple_markdown(title: str, text: str) -> str:
     normalized_text = normalize_multiline_text(text)
     return f"# {title}\n\n{normalized_text}".strip()
@@ -652,6 +738,7 @@ def run_two_step_backend_refinement(
     markdown_prompt_text: str,
     asr_full_text: str,
     reference_full_text: str,
+    logger: logging.Logger | None = None,
 ) -> BackendDocumentRefinementResult:
     llm_settings = loaded_settings.settings.llm
     blocks = build_refinement_blocks(
@@ -669,58 +756,64 @@ def run_two_step_backend_refinement(
     refinement_notes: list[str] = []
     model_name = llm_settings.model.strip() if backend == BACKEND_CODEX else llm_settings.gemini_model
 
+    block_concurrency = max(1, getattr(llm_settings, "block_concurrency", 1))
+    block_results: dict[int, MinimalEditBlockResult] = {}
+    completed_blocks = 0
+
+    def log_block_progress(result: MinimalEditBlockResult) -> None:
+        nonlocal completed_blocks
+        if logger is None:
+            return
+        completed_blocks += 1
+        status = result.failed_reason or "ok"
+        logger.info(
+            "阶段 6 块进度 | file=%s | backend=%s | block=%s/%s | status=%s",
+            input_paths.basename,
+            backend,
+            completed_blocks,
+            len(blocks),
+            status,
+        )
+
+    if block_concurrency == 1 or len(blocks) <= 1:
+        for block in blocks:
+            result = process_minimal_edit_block(
+                backend=backend,
+                block=block,
+                input_paths=input_paths,
+                loaded_settings=loaded_settings,
+                minimal_edit_prompt_text=minimal_edit_prompt_text,
+                reference_full_text=reference_full_text,
+            )
+            block_results[block.index] = result
+            log_block_progress(result)
+    else:
+        with ThreadPoolExecutor(max_workers=block_concurrency) as executor:
+            futures = [
+                executor.submit(
+                    process_minimal_edit_block,
+                    backend=backend,
+                    block=block,
+                    input_paths=input_paths,
+                    loaded_settings=loaded_settings,
+                    minimal_edit_prompt_text=minimal_edit_prompt_text,
+                    reference_full_text=reference_full_text,
+                )
+                for block in blocks
+            ]
+            for future in as_completed(futures):
+                result = future.result()
+                block_results[result.block.index] = result
+                log_block_progress(result)
+
     for block in blocks:
-        prompt = build_minimal_edit_prompt(
-            minimal_edit_prompt_text,
-            input_paths,
-            block,
-            reference_full_text=reference_full_text,
-        )
-        try:
-            payload = run_backend_payload(backend, prompt, loaded_settings)
-            parsed = parse_minimal_edit_result(payload)
-            model_name = str(payload.get("model_name", "")).strip() or model_name
-        except CLIBackendError:
-            block_outputs.append(block.current_text)
-            needs_review_sections.append(
-                {
-                    "excerpt": truncate_for_prompt(block.current_text, 80),
-                    "reason": "block_backend_failed",
-                }
-            )
-            refinement_notes.append("block_backend_failed")
-            continue
-
-        fidelity_report = validate_minimal_edit_result(
-            source_text=block.current_text,
-            edited_text=parsed["edited_text"],
-            deletion_candidates=parsed["deletion_candidates"],
-        )
-        if not fidelity_report["passed"]:
-            block_outputs.append(block.current_text)
-            needs_review_sections.append(
-                {
-                    "excerpt": truncate_for_prompt(block.current_text, 80),
-                    "reason": "block_validation_failed",
-                }
-            )
-            refinement_notes.append("block_validation_failed")
-            continue
-
-        block_outputs.append(parsed["edited_text"].strip())
-        edit_operations.extend(parsed["edit_notes"])
-        deletion_candidates.extend(parsed["deletion_candidates"])
-        for item in parsed["needs_review_sections"]:
-            if isinstance(item, dict):
-                excerpt = normalize_inline_text(str(item.get("excerpt", "")).strip())
-                reason = normalize_inline_text(str(item.get("reason", "")).strip())
-                if excerpt or reason:
-                    needs_review_sections.append(
-                        {
-                            "excerpt": excerpt or truncate_for_prompt(parsed["edited_text"], 80),
-                            "reason": reason or "minimal_edit_needs_review",
-                        }
-                    )
+        result = block_results[block.index]
+        block_outputs.append(result.edited_text)
+        edit_operations.extend(result.edit_notes)
+        deletion_candidates.extend(result.deletion_candidates)
+        needs_review_sections.extend(result.needs_review_sections)
+        if result.failed_reason:
+            refinement_notes.append(result.failed_reason)
 
     edited_plain_text = "\n\n".join(item.strip() for item in block_outputs if item.strip()).strip()
     fidelity_report = validate_minimal_edit_result(
@@ -928,6 +1021,7 @@ def refine_batch(
                     markdown_prompt_text=markdown_prompt_text,
                     asr_full_text=asr_full_text,
                     reference_full_text=reference_full_text,
+                    logger=logger,
                 )
             except CLIBackendError as exc:
                 backend_status[backend] = "failed_on_file"

@@ -144,6 +144,7 @@ class LLMSettings(AppBaseModel):
     backends: list[str] = Field(default_factory=lambda: ["codex_cli"])
     enable_fallback: bool = True
     block_batch_size: int = 2
+    block_concurrency: int = 6
     prompt_style: str = "web_like"
     top_matches_for_prompt: int = 3
     max_asr_chars_for_prompt: int = 120

@@ -125,6 +125,7 @@ def write_minimal_settings(
             "backends": ["codex_cli"],
             "enable_fallback": True,
             "block_batch_size": 2,
+            "block_concurrency": 6,
             "prompt_style": "web_like",
             "top_matches_for_prompt": 3,
             "max_asr_chars_for_prompt": 120,

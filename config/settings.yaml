@@ -171,6 +171,7 @@ llm:
     - codex_cli
   enable_fallback: true
   block_batch_size: 2
+  block_concurrency: 6
   prompt_style: web_like
   top_matches_for_prompt: 3
   max_asr_chars_for_prompt: 120
