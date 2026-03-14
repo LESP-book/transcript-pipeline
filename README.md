@@ -7,7 +7,7 @@
 - Ubuntu 24 本地开发环境，CPU 运行
 - Windows + WSL2 + NVIDIA 3060Ti 环境，后续可切换到 GPU 后端
 
-当前仓库已实现前八个阶段的最小可运行版本：
+当前仓库已实现前九个阶段的最小可运行版本：
 
 - 第一阶段：配置读取与音频抽取
 - 第二阶段：ASR 抽象接口与第一版转录
@@ -17,6 +17,7 @@
 - 第六阶段：本地 CLI 模型整篇整理，直接读取 `asr.txt + reference.txt` 产出最终 Markdown 草稿（`codex` / `gemini`，含保守降级后端）
 - 第七阶段：将阶段 6 的 Markdown 结果写入最终输出目录
 - 第八阶段：单任务 job 入口，支持显式指定视频、参考源和输出目录
+- 第九阶段：批量 job 入口，支持按 manifest、basename 配对和共享参考三种模式批量运行
 
 当前仍不包含 OCR、最终分类定稿或自动发布能力。
 
@@ -39,7 +40,7 @@
 - 基于 `asr.txt + extracted_text.txt + 提示词` 直接输出整篇 Markdown 草稿到 `data/intermediate/refined/`
 - 阶段 6 支持本地 `codex` 与 `gemini` CLI 双后端整篇比较后生成单一 `final_markdown`
 - 阶段 7 将阶段 6 的 `final_markdown` 写入 `data/output/final/`
-- 九个最小 CLI 入口
+- 十个最小 CLI 入口
 - 最基本单元测试
 
 ## 当前阶段未实现
@@ -92,6 +93,7 @@ transcript-pipeline/
 │   ├── 06_refine.py
 │   ├── 07_export_markdown.py
 │   ├── 08_run_job.py
+│   ├── 09_run_batch_jobs.py
 │   └── run_pipeline.py
 ├── src/
 │   ├── __init__.py
@@ -494,6 +496,85 @@ PY
 - `local_cpu` 与 `wsl2_gpu` 使用 `beam_size = 5`
 - `local_cpu_high_accuracy` 与 `wsl2_gpu_high_accuracy` 使用 `beam_size = 8`
 - `wsl2_gpu_max_accuracy` 使用 `large-v3-turbo`，并将 `beam_size` 提高到 `10`
+
+推荐的 GPU 批量运行方式：
+
+manifest 模式：
+
+```bash
+.venv/bin/python scripts/09_run_batch_jobs.py \
+  --profile "wsl2_gpu_high_accuracy" \
+  --manifest "/path/to/jobs.yaml" \
+  --remote-concurrency 2
+```
+
+`jobs.yaml` 示例：
+
+```yaml
+jobs:
+  - video: /data/videos/session-01.mp4
+    reference: /data/reference/session-01.txt
+    output_dir: /data/output
+    book_name: 家庭、私有制和国家的起源
+    chapter: 第一章
+
+  - video: /data/videos/session-02.mp4
+    reference: https://example.com/session-02
+    output_dir: /data/output
+    glossary_file: /data/glossary/session-02.txt
+```
+
+basename 配对模式：
+
+```bash
+.venv/bin/python scripts/09_run_batch_jobs.py \
+  --profile "wsl2_gpu_high_accuracy" \
+  --videos-dir "/data/videos" \
+  --reference-dir "/data/reference" \
+  --output-dir "/data/output" \
+  --book-name "家庭、私有制和国家的起源" \
+  --chapter "第一编" \
+  --remote-concurrency 2
+```
+
+目录约定示例：
+
+```text
+/data/videos/
+  session-01.mp4
+  session-02.mp4
+
+/data/reference/
+  session-01.txt
+  session-02.md
+```
+
+共享参考模式：
+
+```bash
+.venv/bin/python scripts/09_run_batch_jobs.py \
+  --profile "wsl2_gpu_high_accuracy" \
+  --videos-dir "/data/videos" \
+  --shared-reference "/data/reference/shared.txt" \
+  --output-dir "/data/output" \
+  --book-name "家庭、私有制和国家的起源" \
+  --chapter "导读" \
+  --remote-concurrency 2
+```
+
+如果共享参考是网页链接，可直接把 `--shared-reference` 换成公开 URL。
+
+批量入口说明：
+
+- GPU 高精度建议优先使用 `wsl2_gpu_high_accuracy`
+- `prepare-reference` 与 `refine` 默认按 `--remote-concurrency 2` 并发运行
+- `extract-audio` 与 `transcribe` 仍按单任务顺序执行，避免本地资源阶段过载
+- 每次批量运行都会写出 `data/jobs/batches/<batch_id>/manifest.json`
+- 每次批量运行都会写出 `data/jobs/batches/<batch_id>/summary.json` 与 `summary.md`
+- 批量退出码：
+  - `0` 表示全部成功
+  - `2` 表示部分失败
+  - `1` 表示全部失败或入口参数无效
 
 运行测试：
 
