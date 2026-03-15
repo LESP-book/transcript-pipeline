@@ -134,6 +134,32 @@ def import_whisper_model_class() -> Any:
     return WhisperModel
 
 
+def import_faster_whisper_download_model() -> Any:
+    try:
+        from faster_whisper.utils import download_model
+    except ImportError as exc:
+        raise AsrDependencyError(
+            "未安装 faster-whisper。请先执行 `pip install -r requirements.txt`。"
+        ) from exc
+
+    return download_model
+
+
+def resolve_cached_faster_whisper_model_path(model_size: str, download_root: Path) -> Path | None:
+    download_model = import_faster_whisper_download_model()
+
+    try:
+        model_path = download_model(
+            model_size,
+            cache_dir=str(download_root),
+            local_files_only=True,
+        )
+    except Exception:
+        return None
+
+    return Path(model_path)
+
+
 def find_python_package_dirs(package_name: str) -> list[Path]:
     spec = importlib.util.find_spec(package_name)
     if spec is None:
@@ -232,7 +258,6 @@ def load_faster_whisper_model(loaded_settings: LoadedSettings) -> Any:
     compute_type = profile.asr_compute_type
     download_root = loaded_settings.resolve_path(profile.cache_dir) / settings.asr.model_cache_subdir
     cuda_runtime_hint = build_cuda_runtime_fix_hint()
-
     if device == "cuda":
         try:
             configure_cuda_runtime_from_venv()
@@ -244,14 +269,24 @@ def load_faster_whisper_model(loaded_settings: LoadedSettings) -> Any:
             ) from exc
 
     WhisperModel = import_whisper_model_class()
+    cached_model_path = resolve_cached_faster_whisper_model_path(model_size, download_root)
 
     try:
-        return WhisperModel(
-            model_size,
-            device=device,
-            compute_type=compute_type,
-            download_root=str(download_root),
+        model_ref = model_size
+        model_kwargs: dict[str, Any] = {
+            "device": device,
+            "compute_type": compute_type,
+        }
+        if cached_model_path is not None:
+            model_ref = str(cached_model_path)
+        else:
+            model_kwargs["download_root"] = str(download_root)
+
+        model = WhisperModel(
+            model_ref,
+            **model_kwargs,
         )
+        return model
     except Exception as exc:
         message = str(exc)
         if device == "cuda" and looks_like_cuda_error(message):

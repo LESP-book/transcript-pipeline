@@ -14,6 +14,7 @@ from src.asr_utils import (
     configure_cuda_runtime_from_venv,
     discover_cuda_runtime_library_dirs,
     iter_audio_files,
+    resolve_cached_faster_whisper_model_path,
     load_faster_whisper_model,
     transcribe_audio_file,
     transcribe_batch,
@@ -174,3 +175,45 @@ def test_load_faster_whisper_model_surfaces_cuda_hint_on_library_error(tmp_path:
         load_faster_whisper_model(loaded_settings)
 
     assert "HINT: export LD_LIBRARY_PATH=..." in str(exc_info.value)
+
+
+def test_resolve_cached_faster_whisper_model_path_uses_local_files_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_path = tmp_path / "snapshots" / "cached-model"
+
+    def fake_download_model(model_size: str, *, cache_dir: str, local_files_only: bool):
+        assert model_size == "large-v3-turbo"
+        assert cache_dir == str(tmp_path)
+        assert local_files_only is True
+        return str(expected_path)
+
+    monkeypatch.setattr("src.asr_utils.import_faster_whisper_download_model", lambda: fake_download_model)
+
+    resolved = resolve_cached_faster_whisper_model_path("large-v3-turbo", tmp_path)
+
+    assert resolved == expected_path
+
+
+def test_load_faster_whisper_model_prefers_cached_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    cached_path = tmp_path / "cached-model"
+    captured: dict[str, object] = {}
+
+    class FakeWhisperModel:
+        def __init__(self, model_ref: str, **kwargs) -> None:
+            captured["model_ref"] = model_ref
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr("src.asr_utils.resolve_cached_faster_whisper_model_path", lambda *_args, **_kwargs: cached_path)
+    monkeypatch.setattr("src.asr_utils.import_whisper_model_class", lambda: FakeWhisperModel)
+
+    load_faster_whisper_model(loaded_settings)
+
+    assert captured["model_ref"] == str(cached_path)
+    assert "download_root" not in captured["kwargs"]

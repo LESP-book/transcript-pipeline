@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,15 @@ from src.reference_utils import (
 from src.runtime_utils import normalize_stage_name, setup_logging
 
 
+def log_stage_completion(logger, stage_name: str, summary: str, started_at: float) -> None:
+    logger.info(
+        "流水线完成 | stage=%s | %s | elapsed=%.3fs",
+        stage_name,
+        summary,
+        time.perf_counter() - started_at,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="运行最小流水线入口。")
     parser.add_argument(
@@ -37,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_stage(stage_name: str, loaded_settings, logger, backend_override: str | None = None) -> int:
+    started_at = time.perf_counter()
+
     if stage_name == "extract-audio":
         try:
             results = extract_audio_batch(loaded_settings, logger=logger)
@@ -44,7 +56,7 @@ def run_stage(stage_name: str, loaded_settings, logger, backend_override: str | 
             logger.error("%s", exc)
             return 1
 
-        logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_extraction_results(results))
+        log_stage_completion(logger, stage_name, summarize_extraction_results(results), started_at)
         return 0
 
     if stage_name == "transcribe":
@@ -54,7 +66,7 @@ def run_stage(stage_name: str, loaded_settings, logger, backend_override: str | 
             logger.error("%s", exc)
             return 1
 
-        logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_transcription_results(outputs))
+        log_stage_completion(logger, stage_name, summarize_transcription_results(outputs), started_at)
         return 0
 
     if stage_name == "prepare-reference":
@@ -64,7 +76,7 @@ def run_stage(stage_name: str, loaded_settings, logger, backend_override: str | 
             logger.error("%s", exc)
             return 1
 
-        logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_reference_results(summary))
+        log_stage_completion(logger, stage_name, summarize_reference_results(summary), started_at)
         return 0
 
     if stage_name == "align":
@@ -74,7 +86,7 @@ def run_stage(stage_name: str, loaded_settings, logger, backend_override: str | 
             logger.error("%s", exc)
             return 1
 
-        logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_alignment_results(summary))
+        log_stage_completion(logger, stage_name, summarize_alignment_results(summary), started_at)
         return 0
 
     if stage_name == "classify":
@@ -84,7 +96,7 @@ def run_stage(stage_name: str, loaded_settings, logger, backend_override: str | 
             logger.error("%s", exc)
             return 1
 
-        logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_classification_results(summary))
+        log_stage_completion(logger, stage_name, summarize_classification_results(summary), started_at)
         return 0
 
     if stage_name == "refine":
@@ -95,7 +107,7 @@ def run_stage(stage_name: str, loaded_settings, logger, backend_override: str | 
             logger.error("%s", exc)
             return 1
 
-        logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_refinement_results(summary))
+        log_stage_completion(logger, stage_name, summarize_refinement_results(summary), started_at)
         return 0
 
     if stage_name == "export-markdown":
@@ -105,7 +117,7 @@ def run_stage(stage_name: str, loaded_settings, logger, backend_override: str | 
             logger.error("%s", exc)
             return 1
 
-        logger.info("流水线完成 | stage=%s | %s", stage_name, summarize_export_results(summary))
+        log_stage_completion(logger, stage_name, summarize_export_results(summary), started_at)
         return 0
 
     logger.error("未实现的阶段: %s", stage_name)
