@@ -740,6 +740,75 @@ def test_refine_batch_supports_single_gemini_backend_via_override(
     assert result["model_results"][BACKEND_GEMINI]["model_name"] == "gemini-3.1-pro-preview"
 
 
+def test_refine_batch_marks_programmatic_fallback_as_degraded_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    asr_path = write_refine_inputs(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    def fake_run_single_pass_backend_refinement(**_kwargs) -> BackendDocumentRefinementResult:
+        return BackendDocumentRefinementResult(
+            backend=BACKEND_CODEX,
+            model_name=BACKEND_CODEX,
+            final_markdown="# demo\n\n降级稿",
+            refinement_strategy="programmatic_markdown_fallback",
+            refinement_reason="single_pass_backend_failed",
+            needs_review_sections=[],
+            refinement_notes=["single_pass_backend_failed_use_programmatic_fallback"],
+            edited_plain_text="降级稿",
+        )
+
+    monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
+
+    refine_batch(loaded_settings)
+    output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
+    result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
+
+    assert result["prompt_mode"] == "programmatic_markdown_fallback"
+    assert result["backend_status"]["codex_cli"] == (
+        "degraded_to_programmatic_fallback:single_pass_backend_failed:model=codex_cli"
+    )
+
+
+def test_refine_batch_falls_back_to_codex_when_single_gemini_backend_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path, llm_overrides={"backends": [BACKEND_CODEX]})
+    asr_path = write_refine_inputs(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    def fake_run_gemini_payload(_prompt: str, _loaded_settings) -> dict[str, object]:
+        raise CLIBackendError("gemini failed")
+
+    def fake_run_codex_payload(_prompt: str, _loaded_settings) -> dict[str, object]:
+        return {
+            "model_name": BACKEND_CODEX,
+            "final_markdown": "# demo\n\nCodex 回退结果",
+            "section_map": [{"section": "lecture", "source_blocks": [0]}],
+            "refinement_notes": ["codex_fallback_note"],
+            "needs_review_sections": [],
+            "refinement_strategy": "single_pass_with_safe_replace",
+            "refinement_reason": "single_pass_codex",
+        }
+
+    monkeypatch.setattr("src.refine_utils.run_gemini_cli_payload", fake_run_gemini_payload)
+    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
+
+    refine_batch(loaded_settings, requested_backends=[BACKEND_GEMINI])
+    output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
+    result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
+
+    assert result["refinement_backends"] == [BACKEND_GEMINI]
+    assert result["selected_backend"] == BACKEND_CODEX
+    assert result["final_markdown"] == "# demo\n\nCodex 回退结果"
+    assert result["backend_status"]["gemini_cli"] == "failed_on_file"
+    assert result["backend_status"]["codex_cli"] == "returned_single_pass:model=codex_cli:fallback_from=gemini_cli"
+    assert result["model_results"][BACKEND_CODEX]["final_markdown"] == "# demo\n\nCodex 回退结果"
+
+
 def test_refine_batch_uses_single_codex_call_for_long_line_based_asr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

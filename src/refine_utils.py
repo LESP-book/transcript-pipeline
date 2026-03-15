@@ -93,6 +93,7 @@ class BackendDocumentRefinementResult:
     deletion_candidates: list[dict[str, Any]] = field(default_factory=list)
     fidelity_report: dict[str, Any] = field(default_factory=dict)
     section_map: list[dict[str, Any]] = field(default_factory=list)
+    backend_statuses: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -831,6 +832,28 @@ def parse_backend_document_result(backend: str, payload: dict[str, Any]) -> Back
     )
 
 
+def build_result_backend_status(
+    result: BackendDocumentRefinementResult,
+    *,
+    fallback_from: str | None = None,
+) -> str:
+    if result.refinement_strategy == "programmatic_markdown_fallback":
+        status = f"degraded_to_programmatic_fallback:{result.refinement_reason}"
+    else:
+        status = "returned_single_pass"
+    if result.model_name:
+        status = f"{status}:model={result.model_name}"
+    if fallback_from:
+        status = f"{status}:fallback_from={fallback_from}"
+    return status
+
+
+def resolve_backend_statuses(result: BackendDocumentRefinementResult) -> dict[str, str]:
+    if result.backend_statuses:
+        return dict(result.backend_statuses)
+    return {result.backend: build_result_backend_status(result)}
+
+
 def parse_minimal_edit_result(payload: dict[str, Any]) -> dict[str, Any]:
     edited_text = str(payload.get("edited_text", "")).strip()
     if not edited_text:
@@ -1182,6 +1205,7 @@ def run_two_step_backend_refinement(
 def run_single_pass_backend_refinement(
     *,
     backend: str,
+    fallback_backend: str | None = None,
     input_paths: RefinementInputPaths,
     loaded_settings: LoadedSettings,
     markdown_prompt_text: str,
@@ -1195,20 +1219,22 @@ def run_single_pass_backend_refinement(
         loaded_settings=loaded_settings,
     )
     edited_plain_text = build_pre_replaced_plain_text(pre_replaced_segments)
-    prompt = build_single_pass_refine_prompt(
-        markdown_prompt_text,
-        input_paths,
-        backend=backend,
-        pre_replaced_segments=pre_replaced_segments,
-        reference_full_text=reference_full_text,
-    )
-    try:
-        payload = run_backend_payload(backend, prompt, loaded_settings)
-        document_result = parse_backend_document_result(backend, payload)
-    except CLIBackendError:
+
+    def run_backend_attempt(target_backend: str) -> BackendDocumentRefinementResult:
+        prompt = build_single_pass_refine_prompt(
+            markdown_prompt_text,
+            input_paths,
+            backend=target_backend,
+            pre_replaced_segments=pre_replaced_segments,
+            reference_full_text=reference_full_text,
+        )
+        payload = run_backend_payload(target_backend, prompt, loaded_settings)
+        return parse_backend_document_result(target_backend, payload)
+
+    def build_programmatic_fallback_result(target_backend: str) -> BackendDocumentRefinementResult:
         return BackendDocumentRefinementResult(
-            backend=backend,
-            model_name=backend,
+            backend=target_backend,
+            model_name=target_backend,
             final_markdown=build_simple_markdown(input_paths.basename, edited_plain_text),
             refinement_strategy="programmatic_markdown_fallback",
             refinement_reason="single_pass_backend_failed",
@@ -1218,14 +1244,27 @@ def run_single_pass_backend_refinement(
             section_map=[],
         )
 
+    fallback_from_backend: str | None = None
+    try:
+        document_result = run_backend_attempt(backend)
+    except CLIBackendError:
+        if fallback_backend:
+            try:
+                document_result = run_backend_attempt(fallback_backend)
+                fallback_from_backend = backend
+            except CLIBackendError:
+                return build_programmatic_fallback_result(backend)
+        else:
+            return build_programmatic_fallback_result(backend)
+
     refinement_notes = list(document_result.refinement_notes)
     final_markdown = document_result.final_markdown
     if not locked_quotes_preserved(final_markdown, pre_replaced_segments):
         refinement_notes.append("locked_quote_changed_use_programmatic_fallback")
         final_markdown = build_simple_markdown(input_paths.basename, edited_plain_text)
         document_result = BackendDocumentRefinementResult(
-            backend=backend,
-            model_name=document_result.model_name or backend,
+            backend=document_result.backend,
+            model_name=document_result.model_name or document_result.backend,
             final_markdown=final_markdown,
             refinement_strategy="programmatic_markdown_fallback",
             refinement_reason="locked_quote_changed",
@@ -1234,27 +1273,45 @@ def run_single_pass_backend_refinement(
             section_map=[],
         )
 
+    backend_statuses = dict(document_result.backend_statuses)
+    if fallback_from_backend:
+        backend_statuses[fallback_from_backend] = "failed_on_file"
+        backend_statuses[document_result.backend] = build_result_backend_status(
+            document_result,
+            fallback_from=fallback_from_backend,
+        )
+
     if logger is not None:
         locked_count = len([segment for segment in pre_replaced_segments if segment.segment_type == "locked_quote"])
         logger.info(
-            "阶段 6 单次调用 | file=%s | backend=%s | locked_segments=%s | total_segments=%s",
+            "阶段 6 单次调用 | file=%s | backend=%s | actual_backend=%s | locked_segments=%s | total_segments=%s",
             input_paths.basename,
             backend,
+            document_result.backend,
             locked_count,
             len(pre_replaced_segments),
         )
 
     return BackendDocumentRefinementResult(
-        backend=backend,
-        model_name=document_result.model_name or backend,
+        backend=document_result.backend,
+        model_name=document_result.model_name or document_result.backend,
         final_markdown=final_markdown,
-        refinement_strategy="single_pass_safe_replace",
-        refinement_reason=f"single_pass_{backend}",
+        refinement_strategy=(
+            document_result.refinement_strategy
+            if document_result.refinement_strategy == "programmatic_markdown_fallback"
+            else "single_pass_safe_replace"
+        ),
+        refinement_reason=(
+            document_result.refinement_reason
+            if document_result.refinement_strategy == "programmatic_markdown_fallback"
+            else f"single_pass_{document_result.backend}"
+        ),
         needs_review_sections=document_result.needs_review_sections,
         refinement_notes=refinement_notes,
         edited_plain_text=edited_plain_text,
         fidelity_report={"passed": True, "pre_replaced_segments": len(pre_replaced_segments)},
         section_map=document_result.section_map,
+        backend_statuses=backend_statuses,
     )
 
 
@@ -1338,6 +1395,7 @@ def serialize_backend_result(result: BackendDocumentRefinementResult) -> dict[st
         "deletion_candidates": result.deletion_candidates,
         "fidelity_report": result.fidelity_report,
         "section_map": result.section_map,
+        "backend_statuses": result.backend_statuses,
     }
 
 
@@ -1411,7 +1469,7 @@ def write_refinement_result(
         write_backend_result_file(
             input_paths=input_paths,
             loaded_settings=loaded_settings,
-            backend_status=backend_status.get(result.backend, "returned_single_pass"),
+            backend_status=backend_status.get(result.backend, build_result_backend_status(result)),
             result=result,
             output_path=build_backend_output_json_path(output_path, result.backend),
         )
@@ -1445,6 +1503,7 @@ def refine_batch(
             try:
                 result = run_single_pass_backend_refinement(
                     backend=backend,
+                    fallback_backend=BACKEND_CODEX if backend == BACKEND_GEMINI and BACKEND_CODEX not in active_backends else None,
                     input_paths=input_paths,
                     loaded_settings=loaded_settings,
                     markdown_prompt_text=markdown_prompt_text,
@@ -1459,10 +1518,7 @@ def refine_batch(
                 continue
 
             backend_results.append(result)
-            status = "returned_single_pass"
-            if result.model_name:
-                status = f"{status}:model={result.model_name}"
-            backend_status[backend] = status
+            backend_status.update(resolve_backend_statuses(result))
 
         if not backend_results and loaded_settings.settings.llm.enable_fallback:
             backend_results = [build_fallback_document_result(document_title, asr_full_text)]
