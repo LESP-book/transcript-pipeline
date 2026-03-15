@@ -392,6 +392,18 @@ PY
 .venv/bin/python scripts/06_refine.py
 ```
 
+只运行 Gemini：
+
+```bash
+.venv/bin/python scripts/06_refine.py --backend gemini_cli
+```
+
+同时运行 Codex 和 Gemini：
+
+```bash
+.venv/bin/python scripts/06_refine.py --backend both
+```
+
 通过统一入口运行阶段 6：
 
 ```bash
@@ -400,16 +412,21 @@ PY
 
 阶段 6 说明：
 
-- 默认使用本机 `codex` 与 `gemini` CLI 作为整篇整理后端
+- 默认按 `config/settings.yaml` 中的 `llm.backends` 运行后端，也可用 `--backend codex_cli|gemini_cli|both` 临时覆盖
+- Gemini 主模型默认是 `gemini-3.1-pro-preview`
 - 主输入是 `data/intermediate/asr/*.txt` 和同 basename 的 `data/intermediate/extracted_text/*.txt`
 - 不再依赖 `classified.json` 作为阶段 6 的主输入
 - 提示词贴近网页端单轮整理模式，直接要求输出最终 Markdown
-- 对同一份整篇文本会比较两个后端结果，再输出单一 `final_markdown`
+- 单模型模式会继续写单一 `final_markdown`
+- 双模型模式会写主索引文件 `basename.json`，并额外写：
+  - `basename.codex_cli.json`
+  - `basename.gemini_cli.json`
+- 双模型模式下主索引文件不会自动选主结果，`final_markdown` 留空，需人工决定使用哪一份
 - `final_markdown` 已直接包含：
   - 原文朗读引用块 `>`
   - 讲解普通段落
   - `## 提问环节`
-- 如果两个后端都失败，会回退到本地保守整理逻辑
+- 如果所有请求后端都失败，会回退到本地保守整理逻辑
 
 直接运行阶段 7 写入最终 Markdown：
 

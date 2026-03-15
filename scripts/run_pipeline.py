@@ -14,7 +14,7 @@ from src.asr_utils import AsrTranscriptionError, summarize_transcription_results
 from src.classify_utils import ClassificationError, classify_batch, summarize_classification_results
 from src.export_utils import ExportError, export_markdown_batch, summarize_export_results
 from src.ffmpeg_utils import AudioExtractionError, extract_audio_batch, summarize_extraction_results
-from src.refine_utils import RefinementError, refine_batch, summarize_refinement_results
+from src.refine_utils import RefinementError, refine_batch, resolve_requested_backends, summarize_refinement_results
 from src.reference_utils import (
     ReferencePreparationError,
     prepare_reference_batch,
@@ -32,10 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
+    parser.add_argument("--backend", choices=["codex_cli", "gemini_cli", "both"], help="仅 refine 阶段生效，覆盖后端选择")
     return parser
 
 
-def run_stage(stage_name: str, loaded_settings, logger) -> int:
+def run_stage(stage_name: str, loaded_settings, logger, backend_override: str | None = None) -> int:
     if stage_name == "extract-audio":
         try:
             results = extract_audio_batch(loaded_settings, logger=logger)
@@ -88,7 +89,8 @@ def run_stage(stage_name: str, loaded_settings, logger) -> int:
 
     if stage_name == "refine":
         try:
-            summary = refine_batch(loaded_settings, logger=logger)
+            requested_backends = resolve_requested_backends(backend_override, loaded_settings.settings.llm.backends)
+            summary = refine_batch(loaded_settings, requested_backends=requested_backends, logger=logger)
         except RefinementError as exc:
             logger.error("%s", exc)
             return 1
@@ -131,7 +133,7 @@ def main() -> int:
 
     logger = setup_logging(loaded_settings.settings.runtime.log_level)
     logger.info("流水线启动 | stage=%s | profile=%s", stage_name, loaded_settings.active_profile_name)
-    return run_stage(stage_name, loaded_settings, logger)
+    return run_stage(stage_name, loaded_settings, logger, backend_override=args.backend)
 
 
 if __name__ == "__main__":

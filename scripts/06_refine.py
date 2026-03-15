@@ -9,7 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config_loader import ConfigLoadError, load_settings
-from src.refine_utils import RefinementError, refine_batch, summarize_refinement_results
+from src.refine_utils import RefinementError, refine_batch, resolve_requested_backends, summarize_refinement_results
 from src.runtime_utils import setup_logging
 
 
@@ -17,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="执行阶段 6：LLM 校对精修。")
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
+    parser.add_argument("--backend", choices=["codex_cli", "gemini_cli", "both"], help="覆盖阶段 6 使用的后端")
     return parser
 
 
@@ -37,7 +38,8 @@ def main() -> int:
     logger.info("阶段启动 | refine | profile=%s", loaded_settings.active_profile_name)
 
     try:
-        summary = refine_batch(loaded_settings, logger=logger)
+        requested_backends = resolve_requested_backends(args.backend, loaded_settings.settings.llm.backends)
+        summary = refine_batch(loaded_settings, requested_backends=requested_backends, logger=logger)
     except RefinementError as exc:
         logger.error("%s", exc)
         return 1

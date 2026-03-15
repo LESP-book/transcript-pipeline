@@ -20,6 +20,7 @@ PROMPT_MISSING_ERROR = "缺少阶段 6 提示词配置，请检查 prompts.class
 BACKEND_CODEX = "codex_cli"
 BACKEND_GEMINI = "gemini_cli"
 BACKEND_FALLBACK = "local_fallback"
+VALID_REFINEMENT_BACKENDS = (BACKEND_CODEX, BACKEND_GEMINI)
 TARGET_MINIMAL_EDIT_BLOCKS = 20
 
 
@@ -127,6 +128,28 @@ def iter_asr_text_files(asr_dir: Path) -> list[Path]:
 
 def build_refinement_output_path(asr_text_path: Path, output_dir: Path) -> RefinementOutputPath:
     return RefinementOutputPath(json_path=output_dir / f"{asr_text_path.stem}.json")
+
+
+def build_backend_output_json_path(output_path: RefinementOutputPath, backend: str) -> Path:
+    return output_path.json_path.with_name(f"{output_path.json_path.stem}.{backend}.json")
+
+
+def resolve_requested_backends(requested_backend: str | None, configured_backends: list[str]) -> list[str]:
+    if requested_backend == "both":
+        return list(VALID_REFINEMENT_BACKENDS)
+
+    if requested_backend:
+        if requested_backend not in VALID_REFINEMENT_BACKENDS:
+            raise RefinementError(f"未知阶段 6 后端选择: {requested_backend}")
+        return [requested_backend]
+
+    resolved: list[str] = []
+    for backend in configured_backends:
+        if backend not in VALID_REFINEMENT_BACKENDS:
+            raise RefinementError(f"配置中存在未知阶段 6 后端: {backend}")
+        if backend not in resolved:
+            resolved.append(backend)
+    return resolved
 
 
 def normalize_inline_text(text: str) -> str:
@@ -617,9 +640,14 @@ def build_single_pass_refine_prompt(
     prompt_text: str,
     input_paths: RefinementInputPaths,
     *,
+    backend: str,
     pre_replaced_segments: list[PreReplacementSegment],
     reference_full_text: str,
 ) -> str:
+    backend_review_message = "你的结果会交给 Gemini 和 Claude 审核，请认真校对，不要敷衍。"
+    if backend == BACKEND_GEMINI:
+        backend_review_message = "你的结果会交给 Codex 和 Claude 审核，请认真校对，不要敷衍。"
+
     rendered_segments: list[str] = []
     for index, segment in enumerate(pre_replaced_segments, start=1):
         rendered_segments.extend(
@@ -634,6 +662,7 @@ def build_single_pass_refine_prompt(
         prompt_text.strip(),
         "",
         "你现在负责阶段 6 的整篇单次校对整理。",
+        backend_review_message,
         "输入同时包含整篇参考原文和预替换全文。",
         "不得改写 locked_quote 的实词内容，只允许调整标点、断句和引用格式。",
         "仅允许在 unlocked_text 中结合参考原文继续修正。",
@@ -1169,6 +1198,7 @@ def run_single_pass_backend_refinement(
     prompt = build_single_pass_refine_prompt(
         markdown_prompt_text,
         input_paths,
+        backend=backend,
         pre_replaced_segments=pre_replaced_segments,
         reference_full_text=reference_full_text,
     )
@@ -1219,7 +1249,7 @@ def run_single_pass_backend_refinement(
         model_name=document_result.model_name or backend,
         final_markdown=final_markdown,
         refinement_strategy="single_pass_safe_replace",
-        refinement_reason="single_pass_codex",
+        refinement_reason=f"single_pass_{backend}",
         needs_review_sections=document_result.needs_review_sections,
         refinement_notes=refinement_notes,
         edited_plain_text=edited_plain_text,
@@ -1293,47 +1323,109 @@ def compare_backend_documents(
     return best_result, f"selected={best_result.backend}:{best_score};runner_up={second_result.backend}:{second_score}"
 
 
+def serialize_backend_result(result: BackendDocumentRefinementResult) -> dict[str, Any]:
+    return {
+        "backend": result.backend,
+        "model_name": result.model_name,
+        "final_markdown": result.final_markdown,
+        "edited_plain_text": result.edited_plain_text,
+        "refined_full_text": markdown_to_plain_text(result.final_markdown),
+        "refinement_strategy": result.refinement_strategy,
+        "refinement_reason": result.refinement_reason,
+        "needs_review_sections": result.needs_review_sections,
+        "refinement_notes": result.refinement_notes,
+        "edit_operations": result.edit_operations,
+        "deletion_candidates": result.deletion_candidates,
+        "fidelity_report": result.fidelity_report,
+        "section_map": result.section_map,
+    }
+
+
+def write_backend_result_file(
+    *,
+    input_paths: RefinementInputPaths,
+    loaded_settings: LoadedSettings,
+    backend_status: str,
+    result: BackendDocumentRefinementResult,
+    output_path: Path,
+) -> None:
+    payload = {
+        "source_asr_file": relativize_path(input_paths.asr_text_path, loaded_settings.project_root),
+        "source_reference_file": relativize_path(input_paths.reference_text_path, loaded_settings.project_root),
+        "refinement_backends": [result.backend],
+        "backend_status": {result.backend: backend_status},
+        "prompt_mode": result.refinement_strategy,
+        "selected_backend": result.backend,
+        "comparison_summary": "single_backend_result",
+        **serialize_backend_result(result),
+    }
+    with output_path.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+
 def write_refinement_result(
     *,
     input_paths: RefinementInputPaths,
     loaded_settings: LoadedSettings,
+    active_backends: list[str],
     backend_status: dict[str, str],
-    selected_result: BackendDocumentRefinementResult,
+    backend_results: list[BackendDocumentRefinementResult],
+    selected_result: BackendDocumentRefinementResult | None,
     comparison_summary: str,
     output_path: RefinementOutputPath,
 ) -> None:
     ensure_directory(output_path.json_path.parent)
+    model_results = {result.backend: serialize_backend_result(result) for result in backend_results}
+    base_result = selected_result or backend_results[0]
+    final_markdown = selected_result.final_markdown if selected_result else ""
     payload = {
         "source_asr_file": relativize_path(input_paths.asr_text_path, loaded_settings.project_root),
         "source_reference_file": relativize_path(input_paths.reference_text_path, loaded_settings.project_root),
-        "refinement_backends": list(loaded_settings.settings.llm.backends),
+        "refinement_backends": list(active_backends),
         "backend_status": backend_status,
-        "prompt_mode": selected_result.refinement_strategy,
-        "selected_backend": selected_result.backend,
+        "prompt_mode": selected_result.refinement_strategy if selected_result else "manual_selection_required",
+        "selected_backend": selected_result.backend if selected_result else None,
         "comparison_summary": comparison_summary,
-        "final_markdown": selected_result.final_markdown,
-        "edited_plain_text": selected_result.edited_plain_text,
-        "refined_full_text": markdown_to_plain_text(selected_result.final_markdown),
-        "refinement_strategy": selected_result.refinement_strategy,
-        "refinement_reason": selected_result.refinement_reason,
-        "needs_review_sections": selected_result.needs_review_sections,
-        "refinement_notes": selected_result.refinement_notes,
-        "edit_operations": selected_result.edit_operations,
-        "deletion_candidates": selected_result.deletion_candidates,
-        "fidelity_report": selected_result.fidelity_report,
-        "section_map": selected_result.section_map,
+        "final_markdown": final_markdown,
+        "edited_plain_text": base_result.edited_plain_text,
+        "refined_full_text": markdown_to_plain_text(final_markdown),
+        "refinement_strategy": selected_result.refinement_strategy if selected_result else "manual_selection_required",
+        "refinement_reason": selected_result.refinement_reason if selected_result else "manual_selection_required",
+        "needs_review_sections": selected_result.needs_review_sections if selected_result else [],
+        "refinement_notes": selected_result.refinement_notes if selected_result else ["manual_selection_required"],
+        "edit_operations": selected_result.edit_operations if selected_result else [],
+        "deletion_candidates": selected_result.deletion_candidates if selected_result else [],
+        "fidelity_report": selected_result.fidelity_report if selected_result else {},
+        "section_map": selected_result.section_map if selected_result else [],
+        "model_results": model_results,
     }
     with output_path.json_path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False, indent=2)
 
+    if len(model_results) <= 1:
+        return
+
+    for result in backend_results:
+        if result.backend == BACKEND_FALLBACK:
+            continue
+        write_backend_result_file(
+            input_paths=input_paths,
+            loaded_settings=loaded_settings,
+            backend_status=backend_status.get(result.backend, "returned_single_pass"),
+            result=result,
+            output_path=build_backend_output_json_path(output_path, result.backend),
+        )
+
 
 def refine_batch(
     loaded_settings: LoadedSettings,
+    requested_backends: list[str] | None = None,
     logger: logging.Logger | None = None,
 ) -> RefinementBatchSummary:
     asr_dir = loaded_settings.path_for("asr_dir")
     output_dir = ensure_directory(loaded_settings.path_for("refined_dir"))
     asr_files = iter_asr_text_files(asr_dir)
+    active_backends = list(requested_backends) if requested_backends is not None else list(loaded_settings.settings.llm.backends)
 
     if not asr_files:
         raise RefinementInputEmptyError(f"ASR 输入目录中没有可处理的 TXT 文件: {asr_dir}")
@@ -1349,7 +1441,7 @@ def refine_batch(
         backend_results: list[BackendDocumentRefinementResult] = []
         backend_status: dict[str, str] = {}
         document_title = input_paths.basename
-        for backend in loaded_settings.settings.llm.backends:
+        for backend in active_backends:
             try:
                 result = run_single_pass_backend_refinement(
                     backend=backend,
@@ -1379,16 +1471,24 @@ def refine_batch(
         if not backend_results:
             raise CLIBackendError(f"阶段 6 所有后端均未返回结果，且未启用 fallback: {input_paths.basename}.txt")
 
-        selected_result, comparison_summary = compare_backend_documents(
-            asr_full_text=asr_full_text,
-            reference_full_text=reference_full_text,
-            candidates=backend_results,
-        )
+        selected_result: BackendDocumentRefinementResult | None
+        comparison_summary: str
+        if len([result for result in backend_results if result.backend != BACKEND_FALLBACK]) > 1:
+            selected_result = None
+            comparison_summary = "manual_selection_required"
+        else:
+            selected_result, comparison_summary = compare_backend_documents(
+                asr_full_text=asr_full_text,
+                reference_full_text=reference_full_text,
+                candidates=backend_results,
+            )
         output_path = build_refinement_output_path(asr_text_path, output_dir)
         write_refinement_result(
             input_paths=input_paths,
             loaded_settings=loaded_settings,
+            active_backends=active_backends,
             backend_status=backend_status,
+            backend_results=backend_results,
             selected_result=selected_result,
             comparison_summary=comparison_summary,
             output_path=output_path,
@@ -1400,7 +1500,7 @@ def refine_batch(
                 output_path=output_path.json_path,
                 success=True,
                 skipped=False,
-                selected_backends=[selected_result.backend],
+                selected_backends=[result.backend for result in backend_results],
             )
         )
         success_count += 1
@@ -1408,9 +1508,9 @@ def refine_batch(
             logger.info(
                 "精修完成 | %s | prompt_mode=%s | needs_review=%s | selected_backend=%s",
                 input_paths.basename,
-                selected_result.refinement_strategy,
-                len(selected_result.needs_review_sections),
-                selected_result.backend,
+                selected_result.refinement_strategy if selected_result else "manual_selection_required",
+                len(selected_result.needs_review_sections) if selected_result else 0,
+                selected_result.backend if selected_result else "manual_selection_required",
             )
 
     return RefinementBatchSummary(
@@ -1418,7 +1518,7 @@ def refine_batch(
         success=success_count,
         skipped=0,
         failed=0,
-        backends=list(loaded_settings.settings.llm.backends),
+        backends=active_backends,
         items=items,
     )
 

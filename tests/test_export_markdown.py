@@ -47,6 +47,8 @@ def test_iter_refined_json_files_filters_json_only(tmp_path: Path) -> None:
     refined_dir = tmp_path / "data" / "intermediate" / "refined"
     refined_dir.mkdir(parents=True, exist_ok=True)
     (refined_dir / "a.json").write_text("{}", encoding="utf-8")
+    (refined_dir / "a.codex_cli.json").write_text("{}", encoding="utf-8")
+    (refined_dir / "a.gemini_cli.json").write_text("{}", encoding="utf-8")
     (refined_dir / "b.txt").write_text("ignore", encoding="utf-8")
 
     result = iter_refined_json_files(refined_dir)
@@ -125,4 +127,28 @@ def test_export_markdown_batch_requires_final_markdown(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ExportError):
+        export_markdown_batch(loaded_settings)
+
+
+def test_export_markdown_batch_rejects_dual_backend_index_without_selected_result(tmp_path: Path) -> None:
+    settings_path = write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(settings_path=settings_path, project_root=tmp_path)
+    refined_dir = tmp_path / "data" / "intermediate" / "refined"
+    refined_dir.mkdir(parents=True, exist_ok=True)
+    refined_path = refined_dir / "dual.json"
+    refined_path.write_text(
+        json.dumps(
+            {
+                "model_results": {
+                    "codex_cli": {"final_markdown": "# dual\n\ncodex"},
+                    "gemini_cli": {"final_markdown": "# dual\n\ngemini"},
+                },
+                "final_markdown": "",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ExportError, match="双模型"):
         export_markdown_batch(loaded_settings)

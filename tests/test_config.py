@@ -15,6 +15,8 @@ def test_load_settings_success() -> None:
     assert loaded_settings.settings_path == (PROJECT_ROOT / "config/settings.yaml").resolve()
     assert loaded_settings.settings.llm.backends == ["codex_cli"]
     assert loaded_settings.settings.llm.model == "gpt-5.4"
+    assert loaded_settings.settings.llm.gemini_model == "gemini-3.1-pro-preview"
+    assert loaded_settings.settings.llm.gemini_fallback_model == "gemini-3-flash-preview"
     assert loaded_settings.settings.llm.reasoning_effort == "high"
 
 

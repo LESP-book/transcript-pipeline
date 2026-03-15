@@ -9,6 +9,8 @@ from typing import Any
 from src.runtime_utils import ensure_directory
 from src.schemas import LoadedSettings
 
+REFINEMENT_SIDECAR_SUFFIXES = (".codex_cli.json", ".gemini_cli.json")
+
 
 class ExportError(RuntimeError):
     """Raised when stage 7 export fails."""
@@ -49,7 +51,13 @@ class ExportBatchSummary:
 def iter_refined_json_files(refined_dir: Path) -> list[Path]:
     if not refined_dir.exists():
         return []
-    return sorted(path for path in refined_dir.iterdir() if path.is_file() and path.suffix.lower() == ".json")
+    return sorted(
+        path
+        for path in refined_dir.iterdir()
+        if path.is_file()
+        and path.suffix.lower() == ".json"
+        and not path.name.endswith(REFINEMENT_SIDECAR_SUFFIXES)
+    )
 
 
 def build_markdown_output_path(refined_json_path: Path, output_dir: Path) -> ExportOutputPath:
@@ -73,6 +81,10 @@ def load_refined_payload(refined_json_path: Path) -> dict[str, Any]:
     payload = load_json_payload(refined_json_path, "refined")
     final_markdown = str(payload.get("final_markdown", "")).strip()
     if not final_markdown:
+        if isinstance(payload.get("model_results"), dict) and payload.get("model_results"):
+            raise ExportError(
+                f"refined JSON 为双模型结果，缺少可导出的单一 final_markdown: {refined_json_path.name}"
+            )
         raise ExportError(f"refined JSON 缺少 final_markdown: {refined_json_path.name}")
     return payload
 

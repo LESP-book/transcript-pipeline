@@ -29,6 +29,7 @@ from src.refine_utils import (
     load_refinement_prompt,
     parse_backend_document_result,
     refine_batch,
+    resolve_requested_backends,
     resolve_refinement_input_paths,
     run_codex_cli,
     run_gemini_cli,
@@ -106,6 +107,13 @@ def test_build_fulltext_refine_prompt_contains_fulltext_context(tmp_path: Path) 
     assert "分类摘要" not in prompt
     assert "高置信原文提示" not in prompt
     assert "重点复核块提示" not in prompt
+
+
+def test_resolve_requested_backends_supports_single_and_dual_mode() -> None:
+    assert resolve_requested_backends(None, [BACKEND_CODEX]) == [BACKEND_CODEX]
+    assert resolve_requested_backends("codex_cli", [BACKEND_GEMINI]) == [BACKEND_CODEX]
+    assert resolve_requested_backends("gemini_cli", [BACKEND_CODEX]) == [BACKEND_GEMINI]
+    assert resolve_requested_backends("both", [BACKEND_CODEX]) == [BACKEND_CODEX, BACKEND_GEMINI]
 
 
 def test_build_refinement_blocks_includes_adjacent_context() -> None:
@@ -279,6 +287,7 @@ def test_build_single_pass_refine_prompt_includes_reference_and_locking_rules(tm
     prompt = build_single_pass_refine_prompt(
         "# test final cleanup",
         input_paths,
+        backend=BACKEND_CODEX,
         pre_replaced_segments=[
             PreReplacementSegment(
                 segment_type="locked_quote",
@@ -605,6 +614,130 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     assert result["fidelity_report"]["passed"] is True
     assert result["refinement_notes"] == ["codex_note"]
     assert "classification_summary" not in result
+
+
+def test_build_single_pass_refine_prompt_adds_backend_specific_review_warning(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path)
+    asr_path = write_refine_inputs(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    prompt_text = load_refinement_prompt(loaded_settings)
+    input_paths = resolve_refinement_input_paths(loaded_settings, asr_path)
+    segments = [
+        PreReplacementSegment(
+            segment_type="locked_quote",
+            text="久有凌云志，重上井冈山。",
+            source_text="九月零云至 崇尚敬江山",
+            reference_text="久有凌云志，重上井冈山。",
+            start_sentence_index=0,
+            end_sentence_index=0,
+        ),
+        PreReplacementSegment(
+            segment_type="unlocked_text",
+            text="这里 的意思 是 作者在说明情绪变化",
+            source_text="这里 的意思 是 作者在说明情绪变化",
+            reference_text="",
+            start_sentence_index=1,
+            end_sentence_index=1,
+        ),
+    ]
+
+    codex_prompt = build_single_pass_refine_prompt(
+        prompt_text,
+        input_paths,
+        backend=BACKEND_CODEX,
+        pre_replaced_segments=segments,
+        reference_full_text="久有凌云志，重上井冈山。",
+    )
+    gemini_prompt = build_single_pass_refine_prompt(
+        prompt_text,
+        input_paths,
+        backend=BACKEND_GEMINI,
+        pre_replaced_segments=segments,
+        reference_full_text="久有凌云志，重上井冈山。",
+    )
+
+    assert "结果会交给 Gemini 和 Claude 审核" in codex_prompt
+    assert "结果会交给 Codex 和 Claude 审核" in gemini_prompt
+
+
+def test_refine_batch_writes_dual_backend_outputs_without_selected_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path, llm_overrides={"backends": [BACKEND_CODEX, BACKEND_GEMINI]})
+    asr_path = write_refine_inputs(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    def fake_run_single_pass_backend_refinement(**kwargs) -> BackendDocumentRefinementResult:
+        backend = kwargs["backend"]
+        return BackendDocumentRefinementResult(
+            backend=backend,
+            model_name="gpt-5.4" if backend == BACKEND_CODEX else "gemini-3.1-pro-preview",
+            final_markdown=f"# demo\n\n{backend} 结果",
+            refinement_strategy="single_pass_safe_replace",
+            refinement_reason=f"{backend}_done",
+            needs_review_sections=[],
+            refinement_notes=[f"{backend}_note"],
+            edited_plain_text=f"{backend} plain text",
+            fidelity_report={"passed": True},
+            section_map=[{"backend": backend}],
+        )
+
+    monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
+
+    summary = refine_batch(loaded_settings, requested_backends=[BACKEND_CODEX, BACKEND_GEMINI])
+    output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
+    result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
+    codex_path = output_path.json_path.with_name("demo.codex_cli.json")
+    gemini_path = output_path.json_path.with_name("demo.gemini_cli.json")
+
+    assert summary.success == 1
+    assert summary.items[0].selected_backends == [BACKEND_CODEX, BACKEND_GEMINI]
+    assert result["refinement_backends"] == [BACKEND_CODEX, BACKEND_GEMINI]
+    assert result["selected_backend"] is None
+    assert result["comparison_summary"] == "manual_selection_required"
+    assert result["final_markdown"] == ""
+    assert result["model_results"][BACKEND_CODEX]["final_markdown"] == "# demo\n\ncodex_cli 结果"
+    assert result["model_results"][BACKEND_GEMINI]["final_markdown"] == "# demo\n\ngemini_cli 结果"
+    assert codex_path.exists()
+    assert gemini_path.exists()
+
+
+def test_refine_batch_supports_single_gemini_backend_via_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path, llm_overrides={"backends": [BACKEND_CODEX]})
+    asr_path = write_refine_inputs(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    def fake_run_single_pass_backend_refinement(**kwargs) -> BackendDocumentRefinementResult:
+        backend = kwargs["backend"]
+        return BackendDocumentRefinementResult(
+            backend=backend,
+            model_name="gemini-3.1-pro-preview",
+            final_markdown="# demo\n\nGemini 单跑结果",
+            refinement_strategy="single_pass_safe_replace",
+            refinement_reason="gemini_done",
+            needs_review_sections=[],
+            refinement_notes=["gemini_note"],
+            edited_plain_text="Gemini plain text",
+            fidelity_report={"passed": True},
+            section_map=[{"backend": backend}],
+        )
+
+    monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
+
+    summary = refine_batch(loaded_settings, requested_backends=[BACKEND_GEMINI])
+    output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
+    result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
+
+    assert summary.success == 1
+    assert summary.backends == [BACKEND_GEMINI]
+    assert result["refinement_backends"] == [BACKEND_GEMINI]
+    assert result["selected_backend"] == BACKEND_GEMINI
+    assert result["final_markdown"] == "# demo\n\nGemini 单跑结果"
+    assert result["model_results"][BACKEND_GEMINI]["model_name"] == "gemini-3.1-pro-preview"
 
 
 def test_refine_batch_uses_single_codex_call_for_long_line_based_asr(
