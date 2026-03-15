@@ -484,6 +484,27 @@ PY
   --profile "wsl2_gpu_max_accuracy"
 ```
 
+指定阶段 6 使用 Gemini：
+
+```bash
+.venv/bin/python scripts/08_run_job.py \
+  --video "/path/to/video.mp4" \
+  --reference "/path/to/reference.pdf" \
+  --output-dir "/path/to/output" \
+  --profile "wsl2_gpu_max_accuracy" \
+  --backend "gemini_cli"
+```
+
+同时运行 Codex 和 Gemini：
+
+```bash
+.venv/bin/python scripts/08_run_job.py \
+  --video "/path/to/video.mp4" \
+  --reference "/path/to/reference.pdf" \
+  --output-dir "/path/to/output" \
+  --backend "both"
+```
+
 可选附加术语词表：
 
 ```bash
@@ -509,6 +530,7 @@ PY
 - 最终 Markdown 会额外复制到 `--output-dir`
 - `config/glossaries/marxism_common.txt` 会默认参与构造本次任务的 `asr.initial_prompt`
 - `--book-name`、`--chapter`、`--glossary-file` 会追加到本次任务的 `initial_prompt`
+- `--backend` 只覆盖本次任务的阶段 6 后端选择，可用值为 `codex_cli`、`gemini_cli`、`both`
 - 附加词表文件格式为一行一个词条
 - `local_cpu` 与 `wsl2_gpu` 使用 `beam_size = 5`
 - `local_cpu_high_accuracy` 与 `wsl2_gpu_high_accuracy` 使用 `beam_size = 8`
@@ -522,7 +544,8 @@ manifest 模式：
 .venv/bin/python scripts/09_run_batch_jobs.py \
   --profile "wsl2_gpu_high_accuracy" \
   --manifest "/path/to/jobs.yaml" \
-  --remote-concurrency 2
+  --remote-concurrency 2 \
+  --backend "gemini_cli"
 ```
 
 `jobs.yaml` 示例：
@@ -551,7 +574,8 @@ basename 配对模式：
   --output-dir "/data/output" \
   --book-name "家庭、私有制和国家的起源" \
   --chapter "第一编" \
-  --remote-concurrency 2
+  --remote-concurrency 2 \
+  --backend "both"
 ```
 
 目录约定示例：
@@ -586,6 +610,7 @@ basename 配对模式：
 - GPU 高精度建议优先使用 `wsl2_gpu_high_accuracy`
 - `prepare-reference` 与 `refine` 默认按 `--remote-concurrency 2` 并发运行
 - `extract-audio` 与 `transcribe` 仍按单任务顺序执行，避免本地资源阶段过载
+- `--backend` 只覆盖本次批量任务的阶段 6 后端选择，可用值为 `codex_cli`、`gemini_cli`、`both`
 - 每次批量运行都会写出 `data/jobs/batches/<batch_id>/manifest.json`
 - 每次批量运行都会写出 `data/jobs/batches/<batch_id>/summary.json` 与 `summary.md`
 - 批量退出码：

@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", required=True, help="最终 Markdown 输出目录")
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
+    parser.add_argument("--backend", choices=["codex_cli", "gemini_cli", "both"], help="覆盖阶段 6 使用的后端")
     parser.add_argument("--book-name", help="可选书名，用于输出文件命名")
     parser.add_argument("--chapter", help="可选章节名，用于输出文件命名")
     parser.add_argument("--glossary-file", help="可选附加术语词表文件，一行一个词条")
@@ -46,6 +47,7 @@ def main() -> int:
             reference=args.reference,
             output_dir=args.output_dir,
             profile=args.profile,
+            backend=args.backend,
             book_name=args.book_name,
             chapter=args.chapter,
             glossary_file=args.glossary_file,

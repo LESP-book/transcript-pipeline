@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", help="最终 Markdown 输出目录")
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
+    parser.add_argument("--backend", choices=["codex_cli", "gemini_cli", "both"], help="覆盖阶段 6 使用的后端")
     parser.add_argument("--glossary-file", help="批量默认术语词表文件，一行一个词条")
     parser.add_argument("--remote-concurrency", type=int, default=2, help="远程阶段并发度，默认 2")
     parser.add_argument("--book-name", help="批量默认书名，用于输出文件命名")
@@ -62,6 +63,7 @@ def main() -> int:
             job_specs=job_specs,
             failed_runtimes=failed_runtimes,
             remote_concurrency=args.remote_concurrency,
+            backend_override=args.backend,
         )
     except JobRunnerError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)

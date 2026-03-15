@@ -818,6 +818,7 @@ def execute_batch_stage_for_runtime(
     runtime: BatchJobRuntime,
     project_root: Path,
     logger: logging.Logger,
+    backend_override: str | None = None,
 ) -> None:
     if runtime.status == "failed":
         return
@@ -827,7 +828,8 @@ def execute_batch_stage_for_runtime(
             settings_path=runtime.job_root / "settings.generated.yaml",
             project_root=project_root,
         )
-        exit_code = run_stage(stage_name, job_loaded_settings, logger)
+        current_backend_override = backend_override if stage_name == "refine" else None
+        exit_code = run_stage(stage_name, job_loaded_settings, logger, backend_override=current_backend_override)
         if exit_code != 0:
             raise JobRunnerError(f"job 主链失败: stage={stage_name} exit_code={exit_code}")
 
@@ -857,6 +859,7 @@ def run_jobs_with_limited_concurrency(
     project_root: Path,
     logger: logging.Logger,
     remote_concurrency: int,
+    backend_override: str | None = None,
 ) -> None:
     if not runtimes:
         return
@@ -870,6 +873,7 @@ def run_jobs_with_limited_concurrency(
                 runtime=runtime,
                 project_root=project_root,
                 logger=logger,
+                backend_override=backend_override,
             )
             for runtime in runtimes
         ]
@@ -884,6 +888,7 @@ def run_batch_stage(
     project_root: Path,
     logger: logging.Logger,
     remote_concurrency: int,
+    backend_override: str | None = None,
 ) -> None:
     active_runtimes = [runtime for runtime in runtimes if runtime.status != "failed"]
     if not active_runtimes:
@@ -896,6 +901,7 @@ def run_batch_stage(
             project_root=project_root,
             logger=logger,
             remote_concurrency=remote_concurrency,
+            backend_override=backend_override,
         )
         return
 
@@ -905,6 +911,7 @@ def run_batch_stage(
             runtime=runtime,
             project_root=project_root,
             logger=logger,
+            backend_override=backend_override,
         )
 
 
@@ -988,6 +995,7 @@ def run_batch_jobs(
     failed_runtimes: list[BatchJobRuntime] | None = None,
     remote_concurrency: int = 2,
     batch_id: str | None = None,
+    backend_override: str | None = None,
 ) -> BatchRunSummary:
     current_batch_id = batch_id or create_batch_id()
     logger = setup_logging(base_loaded_settings.settings.runtime.log_level)
@@ -1007,6 +1015,7 @@ def run_batch_jobs(
             project_root=project_root,
             logger=logger,
             remote_concurrency=remote_concurrency,
+            backend_override=backend_override,
         )
 
     success_count = sum(1 for item in runtimes if item.status == "success")
@@ -1030,7 +1039,11 @@ def get_batch_exit_code(summary: BatchRunSummary) -> int:
     return 1
 
 
-def run_job_pipeline(loaded_settings: LoadedSettings, logger: logging.Logger) -> None:
+def run_job_pipeline(
+    loaded_settings: LoadedSettings,
+    logger: logging.Logger,
+    backend_override: str | None = None,
+) -> None:
     raw_stages = loaded_settings.settings.pipeline.stages if loaded_settings.settings.pipeline else []
     if not raw_stages:
         raise JobRunnerError("当前配置未定义主链阶段列表。")
@@ -1039,7 +1052,8 @@ def run_job_pipeline(loaded_settings: LoadedSettings, logger: logging.Logger) ->
     logger.info("job 主链启动 | profile=%s | stages=%s", loaded_settings.active_profile_name, ",".join(stages))
     for stage_name in stages:
         logger.info("job 主链执行 | stage=%s", stage_name)
-        exit_code = run_stage(stage_name, loaded_settings, logger)
+        current_backend_override = backend_override if stage_name == "refine" else None
+        exit_code = run_stage(stage_name, loaded_settings, logger, backend_override=current_backend_override)
         if exit_code != 0:
             raise JobRunnerError(f"job 主链失败: stage={stage_name} exit_code={exit_code}")
 
@@ -1052,6 +1066,7 @@ def run_single_job(
     reference: str,
     output_dir: str,
     profile: str | None = None,
+    backend: str | None = None,
     book_name: str | None = None,
     chapter: str | None = None,
     glossary_file: str | None = None,
@@ -1100,7 +1115,7 @@ def run_single_job(
 
     logger = setup_logging(job_loaded_settings.settings.runtime.log_level)
     logger.info("job 启动 | job_id=%s | reference_type=%s", job_id, prepared_inputs.reference_type)
-    run_job_pipeline(job_loaded_settings, logger)
+    run_job_pipeline(job_loaded_settings, logger, backend_override=backend)
 
     final_source_path, copied_output_path = copy_final_output(
         job_paths,

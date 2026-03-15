@@ -213,8 +213,11 @@ def test_run_single_job_copies_final_markdown_to_output_dir(
 
     monkeypatch.setattr("src.job_runner.create_job_id", lambda: "job-fixed-id")
 
-    def fake_run_job_pipeline(job_loaded_settings, logger) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run_job_pipeline(job_loaded_settings, logger, backend_override=None) -> None:
         _ = logger
+        seen["backend_override"] = backend_override
         final_dir = job_loaded_settings.path_for("final_dir")
         final_dir.mkdir(parents=True, exist_ok=True)
         (final_dir / f"{CANONICAL_INPUT_BASENAME}.md").write_text("# 最终稿\n\n正文", encoding="utf-8")
@@ -227,12 +230,14 @@ def test_run_single_job_copies_final_markdown_to_output_dir(
         video=str(video_path),
         reference=str(reference_path),
         output_dir=str(output_dir),
+        backend="gemini_cli",
     )
 
     assert result.job_id == "job-fixed-id"
     assert result.final_markdown_path.read_text(encoding="utf-8") == "# 最终稿\n\n正文"
     assert result.copied_output_path == output_dir / "lesson.md"
     assert result.copied_output_path.read_text(encoding="utf-8") == "# 最终稿\n\n正文"
+    assert seen["backend_override"] == "gemini_cli"
     manifest_path = tmp_path / "data/jobs/job-fixed-id/manifest.json"
     assert manifest_path.exists()
 
@@ -444,12 +449,12 @@ def test_run_batch_jobs_marks_failed_stage_skips_later_stages_and_records_output
     created_job_ids = iter(["job-a", "job-b"])
     monkeypatch.setattr("src.job_runner.create_job_id", lambda: next(created_job_ids))
 
-    stage_calls: list[tuple[str, str]] = []
+    stage_calls: list[tuple[str, str, str | None]] = []
 
-    def fake_run_stage(stage_name, job_loaded_settings, logger) -> int:
+    def fake_run_stage(stage_name, job_loaded_settings, logger, backend_override=None) -> int:
         _ = logger
         job_id = job_loaded_settings.path_for("videos_dir").parents[1].name
-        stage_calls.append((stage_name, job_id))
+        stage_calls.append((stage_name, job_id, backend_override))
         if stage_name == "prepare-reference" and job_id == "job-b":
             return 1
         if stage_name == "export-markdown" and job_id == "job-a":
@@ -480,6 +485,7 @@ def test_run_batch_jobs_marks_failed_stage_skips_later_stages_and_records_output
         failed_runtimes=[],
         remote_concurrency=2,
         batch_id="batch-fixed",
+        backend_override="both",
     )
 
     assert summary.batch_id == "batch-fixed"
@@ -495,8 +501,9 @@ def test_run_batch_jobs_marks_failed_stage_skips_later_stages_and_records_output
     assert items_by_job_id["job-b"].failed_stage == "prepare-reference"
     assert "exit_code=1" in (items_by_job_id["job-b"].error_message or "")
 
-    assert ("refine", "job-b") not in stage_calls
-    assert ("export-markdown", "job-b") not in stage_calls
+    assert ("refine", "job-a", "both") in stage_calls
+    assert ("refine", "job-b", "both") not in stage_calls
+    assert ("export-markdown", "job-b", None) not in stage_calls
 
     summary_path = tmp_path / "data/jobs/batches/batch-fixed/summary.json"
     assert summary_path.exists()
