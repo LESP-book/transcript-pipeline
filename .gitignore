@@ -53,3 +53,4 @@ tmp_*
 *.tmp
 
 .serena/*
+.gemini/*
