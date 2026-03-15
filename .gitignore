@@ -53,3 +53,8 @@ tmp_*
 *.tmp
 
 .serena/*
+.gemini/*
+
+# Frontend
+frontend/node_modules/
+frontend/dist/

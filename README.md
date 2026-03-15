@@ -318,6 +318,64 @@ PY
 
 优先级从高到低依次为：CLI 参数、环境变量、配置文件默认值。
 
+## Web UI 使用方式
+
+当前仓库已经包含一个本地 Web UI：
+
+- 后端：FastAPI，默认监听 `127.0.0.1:8000`
+- 前端：Vue 3 + TypeScript + Naive UI，默认监听 `127.0.0.1:5173`
+
+### 1. 首次安装前端依赖
+
+```bash
+cd "frontend"
+npm install
+cd ".."
+```
+
+### 2. 启动后端 API
+
+在项目根目录执行：
+
+```bash
+.venv/bin/python "api_server.py"
+```
+
+启动后可直接访问：
+
+- `http://127.0.0.1:8000/docs`：FastAPI Swagger 文档
+- `http://127.0.0.1:8000/api/config`：当前 profile / backend 配置
+
+### 3. 启动前端开发服务器
+
+另开一个终端，在项目根目录执行：
+
+```bash
+cd "frontend"
+npm run dev -- --host 127.0.0.1
+```
+
+然后在浏览器打开：
+
+```text
+http://127.0.0.1:5173
+```
+
+### 4. 页面说明
+
+- `单任务`：对应 `scripts/08_run_job.py`
+- `批量任务`：对应 `scripts/09_run_batch_jobs.py`
+- `单阶段`：对应 `scripts/run_pipeline.py --stage`
+- `任务列表`：查看 `data/jobs/` 下已有任务状态
+
+### 5. 使用注意
+
+- Web UI 依赖后端 API，前端启动前最好先启动 `api_server.py`
+- 文件浏览器默认只允许浏览“当前用户 HOME 目录”和“项目根目录”
+- 目录选择模式下，不能确认选择文件
+- 单阶段页面运行的是**当前配置文件绑定的数据目录**，不是临时单文件运行器
+- 长任务使用 `state.json` 持久化状态，页面会通过轮询显示 `pending / running / success / failed`
+
 ## 运行方式
 
 直接运行音频抽取：
