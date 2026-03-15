@@ -1,6 +1,7 @@
 export interface ConfigResponse {
   profiles: string[];
   backends: string[];
+  configured_backends: string[];
   active_profile: string;
 }
 

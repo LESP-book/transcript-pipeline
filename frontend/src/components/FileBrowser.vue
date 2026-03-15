@@ -53,6 +53,14 @@ const segments = computed(() => {
 });
 
 const confirmDisabled = computed(() => {
+  if (props.mode === "dir") {
+    if (!currentPath.value) {
+      return true;
+    }
+    if (!selectedPath.value || selectedPath.value === currentPath.value) {
+      return false;
+    }
+  }
   if (!selectedPath.value) {
     return true;
   }
@@ -113,6 +121,14 @@ function confirmSelection() {
   emit("update:modelValue", selectedPath.value || currentPath.value);
   localStorage.setItem(storageKey.value, selectedPath.value || currentPath.value);
   close();
+}
+
+function confirmCurrentDirectory() {
+  if (props.mode !== "dir" || !currentPath.value) {
+    return;
+  }
+  selectedPath.value = currentPath.value;
+  confirmSelection();
 }
 
 watch(showHidden, () => {
@@ -177,12 +193,15 @@ watch(showHidden, () => {
 
         <n-flex justify="space-between" align="center">
           <span class="file-browser__hint">
-            {{ mode === "dir" ? "目录模式下不会确认文件。" : "双击文件可直接确认。" }}
+            {{ mode === "dir" ? "可直接选择当前目录，也可单击子目录后确认。" : "双击文件可直接确认。" }}
           </span>
           <n-flex>
+            <n-button v-if="mode === 'dir'" secondary type="primary" :disabled="!currentPath" @click="confirmCurrentDirectory">
+              选择当前目录
+            </n-button>
             <n-button @click="close">取消</n-button>
             <n-button type="primary" :disabled="confirmDisabled" @click="confirmSelection">
-              确认选择
+              {{ mode === "dir" ? "确认目录选择" : "确认选择" }}
             </n-button>
           </n-flex>
         </n-flex>
