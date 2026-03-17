@@ -82,6 +82,9 @@ class ReferenceSettings(AppBaseModel):
     prefer_existing_text: bool = True
     run_ocr_when_needed: bool = False
     sentence_split_enabled: bool = True
+    gemini_ocr_model: str = "gemini-3-flash-preview"
+    gemini_ocr_fallback_model: str = ""
+    ocr_timeout_seconds: int = 240
     ocr_languages: list[str] = Field(default_factory=list)
 
 

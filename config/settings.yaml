@@ -100,6 +100,9 @@ reference:
   prefer_existing_text: true
   run_ocr_when_needed: true
   sentence_split_enabled: true
+  gemini_ocr_model: gemini-3-flash-preview
+  gemini_ocr_fallback_model: ""
+  ocr_timeout_seconds: 240
   ocr_languages:
     - chi_sim
     - eng

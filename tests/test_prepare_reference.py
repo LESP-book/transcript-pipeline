@@ -13,6 +13,9 @@ from src.reference_utils import (
     iter_reference_files,
     prepare_reference_file,
     read_text_file,
+    sanitize_ocrmypdf_text,
+    sanitize_gemini_ocr_text,
+    run_gemini_pdf_ocr,
 )
 from tests.helpers import write_minimal_settings
 
@@ -228,3 +231,236 @@ def test_prepare_reference_file_keeps_pdf_failure_when_ocr_disabled(
         "Gemini OCR 失败，且当前未启用 OCR fallback。reason=disabled in test",
         "PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。",
     ]
+
+
+def test_run_gemini_pdf_ocr_stages_pdf_into_isolated_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    source = tmp_path / "external" / "scan.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4 fake")
+
+    seen: dict[str, object] = {}
+
+    def fake_run(command, *, text, capture_output, cwd, timeout, check):
+        seen["command"] = command
+        seen["cwd"] = cwd
+        seen["timeout"] = timeout
+
+        class Completed:
+            returncode = 0
+            stdout = "这是 Gemini OCR 的结果。"
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/gemini")
+    monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
+
+    text, warnings = run_gemini_pdf_ocr(source, loaded_settings)
+
+    command = seen["command"]
+    assert isinstance(command, list)
+    assert text == "这是 Gemini OCR 的结果。"
+    assert "Gemini OCR fallback" in " ".join(warnings)
+    assert command[2] == loaded_settings.settings.reference.gemini_ocr_model
+    assert seen["cwd"] != str(tmp_path)
+    assert seen["timeout"] == loaded_settings.settings.reference.ocr_timeout_seconds
+    assert str(seen["cwd"]).startswith(str(loaded_settings.path_for("ocr_dir")))
+    staged_pdf = Path(str(seen["cwd"])) / source.name
+    assert staged_pdf.exists()
+    assert staged_pdf.read_bytes() == source.read_bytes()
+    assert f"@{{{source.name}}}" in command[-1]
+    assert str(source) not in command[-1]
+
+
+def test_run_gemini_pdf_ocr_uses_reference_fallback_model_only_for_ocr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(
+        tmp_path,
+        reference_overrides={"gemini_ocr_model": "gemini-3-flash-preview", "gemini_ocr_fallback_model": "gemini-2.5-flash"},
+        llm_overrides={"gemini_model": "gemini-3.1-pro-preview", "gemini_fallback_model": "gemini-3-flash-preview"},
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    source = tmp_path / "external" / "scan.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4 fake")
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, *, text, capture_output, cwd, timeout, check):
+        commands.append(command)
+
+        class Completed:
+            def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        if command[2] == "gemini-3-flash-preview":
+            return Completed(1, "", "429 MODEL_CAPACITY_EXHAUSTED")
+        return Completed(0, "这是 Gemini OCR 的结果。", "")
+
+    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/gemini")
+    monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
+
+    text, warnings = run_gemini_pdf_ocr(source, loaded_settings)
+
+    assert text == "这是 Gemini OCR 的结果。"
+    assert commands == [
+        ["gemini", "-m", "gemini-3-flash-preview", "-p", commands[0][4]],
+        ["gemini", "-m", "gemini-2.5-flash", "-p", commands[1][4]],
+    ]
+    assert "model=gemini-2.5-flash" in " ".join(warnings)
+
+
+def test_sanitize_gemini_ocr_text_removes_leakage_page_markers_and_tail_repetition() -> None:
+    raw_text = """
+t>...
+CRITICAL INSTRUCTION 2: ...'
+
+Now I have the text content of the PDF.
+我将读取 PDF 文件并提取纯文本。
+
+[Page 1]
+t第二节 巩固国家统一的重要政策措施
+
+秦始皇坚持法家政治路线。
+201
+
+[Page 2]
+地主阶级专政进一步加强。
+202
+
+OK, I will output purely the text from these pages.
+Page 1:
+第二节 巩固国家统一的重要政策措施
+""".strip()
+
+    assert sanitize_gemini_ocr_text(raw_text) == (
+        "第二节 巩固国家统一的重要政策措施\n\n"
+        "秦始皇坚持法家政治路线。\n\n"
+        "地主阶级专政进一步加强。"
+    )
+
+
+def test_run_gemini_pdf_ocr_sanitizes_model_output_before_return_and_sidecar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    source = tmp_path / "external" / "scan.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4 fake")
+
+    polluted_output = """
+CRITICAL INSTRUCTION 2: ...'
+[Page 1]
+第二节 巩固国家统一的重要政策措施
+201
+
+OK, I will output purely the text from these pages.
+""".strip()
+
+    def fake_run(_command, *, text, capture_output, cwd, timeout, check):
+        class Completed:
+            returncode = 0
+            stdout = polluted_output
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/gemini")
+    monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
+
+    text, _warnings = run_gemini_pdf_ocr(source, loaded_settings)
+
+    sidecar_path = loaded_settings.path_for("ocr_dir") / f"{source.stem}.gemini_ocr.txt"
+    assert text == "第二节 巩固国家统一的重要政策措施"
+    assert sidecar_path.read_text(encoding="utf-8") == "第二节 巩固国家统一的重要政策措施"
+
+
+def test_sanitize_ocrmypdf_text_removes_repeated_headers_footers_and_page_numbers() -> None:
+    raw_text = (
+        "附一，中国革命的社会意义 395\n"
+        "第一段 正文内容。\n"
+        "326\n"
+        "\f"
+        "附一，中国革命的社会意义 396\n"
+        "第二段   正文内容。\n"
+        "327\n"
+        "\f"
+        "附一，中国革命的社会意义 397\n"
+        "第三段 正文内容。\n"
+        "328\n"
+    )
+
+    assert sanitize_ocrmypdf_text(raw_text) == (
+        "第一段 正文内容。\n\n"
+        "第二段 正文内容。\n\n"
+        "第三段 正文内容。"
+    )
+
+
+def test_sanitize_ocrmypdf_text_removes_garbled_lines_and_collapses_cjk_spaces() -> None:
+    raw_text = (
+        "第一段  正文内容。\n"
+        "新兴地主阶级专\n"
+        "政，扩大封建制的社会基础。\n"
+        "207\n"
+        "Be be\n"
+        "fis WET GRRE A EL, PMO WES\n"
+        "CBR). “PRAT” CK) 。\n"
+        "第二段 的 政治、军 事、文 化制度。\n"
+        "7}\n"
+        "= Il\n"
+    )
+
+    assert sanitize_ocrmypdf_text(raw_text) == (
+        "第一段 正文内容。\n"
+        "新兴地主阶级专政，扩大封建制的社会基础。\n"
+        "第二段 的政治、军事、文化制度。"
+    )
+
+
+def test_run_tesseract_pdf_ocr_sanitizes_sidecar_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.reference_utils import run_tesseract_pdf_ocr
+
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    source = tmp_path / "external" / "scan.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4 fake")
+
+    sidecar_payload = "附一，中国革命的社会意义 395\n正文内容。\n326\n"
+
+    def fake_run(_command, *, text, capture_output, check):
+        ocr_dir = loaded_settings.path_for("ocr_dir")
+        (ocr_dir / "scan.ocr.txt").write_text(sidecar_payload, encoding="utf-8")
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: f"/usr/bin/{_name}")
+    monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
+
+    text, warnings = run_tesseract_pdf_ocr(source, loaded_settings)
+
+    assert text == "正文内容。"
+    assert "ocrmypdf_tesseract" in " ".join(warnings)
