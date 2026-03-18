@@ -161,7 +161,10 @@ def resolve_cached_faster_whisper_model_path(model_size: str, download_root: Pat
 
 
 def find_python_package_dirs(package_name: str) -> list[Path]:
-    spec = importlib.util.find_spec(package_name)
+    try:
+        spec = importlib.util.find_spec(package_name)
+    except ModuleNotFoundError:
+        return []
     if spec is None:
         return []
 
@@ -257,8 +260,8 @@ def load_faster_whisper_model(loaded_settings: LoadedSettings) -> Any:
     device = profile.device.lower()
     compute_type = profile.asr_compute_type
     download_root = loaded_settings.resolve_path(profile.cache_dir) / settings.asr.model_cache_subdir
-    cuda_runtime_hint = build_cuda_runtime_fix_hint()
     if device == "cuda":
+        cuda_runtime_hint = build_cuda_runtime_fix_hint()
         try:
             configure_cuda_runtime_from_venv()
         except OSError as exc:
@@ -290,6 +293,7 @@ def load_faster_whisper_model(loaded_settings: LoadedSettings) -> Any:
     except Exception as exc:
         message = str(exc)
         if device == "cuda" and looks_like_cuda_error(message):
+            cuda_runtime_hint = build_cuda_runtime_fix_hint()
             raise CudaUnavailableError(
                 "当前 profile 配置为 cuda，但运行环境不可用。"
                 f" model_size={model_size}, compute_type={compute_type} | {message}. "
