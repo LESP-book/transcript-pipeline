@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import logging
+import threading
 from email.message import Message
 from pathlib import Path
 
@@ -510,6 +511,79 @@ def test_run_batch_jobs_marks_failed_stage_skips_later_stages_and_records_output
     summary_payload = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
     assert summary_payload["failed"] == 1
     assert summary_payload["items"][0]["copied_output_path"].endswith("lesson-a.md")
+
+
+def test_run_batch_jobs_starts_remote_pipeline_before_later_jobs_finish_transcribe(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    output_dir = tmp_path / "deliverables"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    video_a = tmp_path / "lesson-a.mp4"
+    video_b = tmp_path / "lesson-b.mp4"
+    reference_a = tmp_path / "lesson-a.txt"
+    reference_b = tmp_path / "lesson-b.txt"
+    video_a.write_bytes(b"video-a")
+    video_b.write_bytes(b"video-b")
+    reference_a.write_text("参考 A", encoding="utf-8")
+    reference_b.write_text("参考 B", encoding="utf-8")
+
+    created_job_ids = iter(["job-a", "job-b"])
+    monkeypatch.setattr("src.job_runner.create_job_id", lambda: next(created_job_ids))
+
+    prepare_started = threading.Event()
+    stage_calls: list[tuple[str, str, str | None]] = []
+
+    def fake_run_stage(stage_name, job_loaded_settings, logger, backend_override=None) -> int:
+        _ = logger
+        job_id = job_loaded_settings.path_for("videos_dir").parents[1].name
+        stage_calls.append((stage_name, job_id, backend_override))
+
+        if stage_name == "transcribe" and job_id == "job-b":
+            assert prepare_started.wait(timeout=1.0), "job-a 的远程阶段没有在 job-b 转写期间启动"
+
+        if stage_name == "prepare-reference" and job_id == "job-a":
+            prepare_started.set()
+
+        if stage_name == "export-markdown":
+            final_dir = job_loaded_settings.path_for("final_dir")
+            final_dir.mkdir(parents=True, exist_ok=True)
+            (final_dir / f"{CANONICAL_INPUT_BASENAME}.md").write_text("# 流水输出\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("src.job_runner.run_stage", fake_run_stage)
+
+    summary = run_batch_jobs(
+        project_root=tmp_path,
+        base_loaded_settings=loaded_settings,
+        job_specs=[
+            BatchJobSpec(
+                video=str(video_a),
+                reference=str(reference_a),
+                output_dir=str(output_dir),
+                mode="manifest",
+            ),
+            BatchJobSpec(
+                video=str(video_b),
+                reference=str(reference_b),
+                output_dir=str(output_dir),
+                mode="manifest",
+            ),
+        ],
+        failed_runtimes=[],
+        remote_concurrency=2,
+        batch_id="batch-streaming",
+        backend_override="both",
+    )
+
+    assert summary.success == 2
+    assert summary.failed == 0
+    assert ("prepare-reference", "job-a", None) in stage_calls
+    assert ("export-markdown", "job-a", None) in stage_calls
 
 
 def test_get_batch_exit_code_returns_expected_values(tmp_path: Path) -> None:

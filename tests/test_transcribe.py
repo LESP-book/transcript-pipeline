@@ -13,6 +13,7 @@ from src.asr_utils import (
     build_cuda_runtime_fix_hint,
     configure_cuda_runtime_from_venv,
     discover_cuda_runtime_library_dirs,
+    find_python_package_dirs,
     iter_audio_files,
     resolve_cached_faster_whisper_model_path,
     load_faster_whisper_model,
@@ -96,6 +97,17 @@ def test_discover_cuda_runtime_library_dirs_supports_namespace_packages(monkeypa
     discovered = discover_cuda_runtime_library_dirs()
 
     assert discovered == [Path("/tmp/cublas"), Path("/tmp/cudnn")]
+
+
+def test_find_python_package_dirs_returns_empty_when_parent_namespace_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_find_spec(_name: str):
+        raise ModuleNotFoundError("No module named 'nvidia'")
+
+    monkeypatch.setattr("src.asr_utils.importlib.util.find_spec", fake_find_spec)
+
+    assert find_python_package_dirs("nvidia.cublas.lib") == []
 
 
 def test_configure_cuda_runtime_from_venv_prepends_env_and_preloads_libs(tmp_path: Path, monkeypatch) -> None:
@@ -212,6 +224,7 @@ def test_load_faster_whisper_model_prefers_cached_snapshot(
 
     monkeypatch.setattr("src.asr_utils.resolve_cached_faster_whisper_model_path", lambda *_args, **_kwargs: cached_path)
     monkeypatch.setattr("src.asr_utils.import_whisper_model_class", lambda: FakeWhisperModel)
+    monkeypatch.setattr("src.asr_utils.build_cuda_runtime_fix_hint", lambda: (_ for _ in ()).throw(AssertionError("should not be called for cpu")))
 
     load_faster_whisper_model(loaded_settings)
 

@@ -84,6 +84,9 @@ def write_minimal_settings(
             "prefer_existing_text": True,
             "run_ocr_when_needed": False,
             "sentence_split_enabled": True,
+            "gemini_ocr_model": "gemini-3-flash-preview",
+            "gemini_ocr_fallback_model": "",
+            "ocr_timeout_seconds": 240,
             "ocr_languages": ["chi_sim", "eng"],
         },
         "segmentation": {

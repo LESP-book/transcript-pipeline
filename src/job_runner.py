@@ -881,6 +881,25 @@ def run_jobs_with_limited_concurrency(
             future.result()
 
 
+def execute_remote_pipeline_for_runtime(
+    *,
+    runtime: BatchJobRuntime,
+    project_root: Path,
+    logger: logging.Logger,
+    backend_override: str | None = None,
+) -> None:
+    for stage_name in ("prepare-reference", "refine", "export-markdown"):
+        execute_batch_stage_for_runtime(
+            stage_name=stage_name,
+            runtime=runtime,
+            project_root=project_root,
+            logger=logger,
+            backend_override=backend_override,
+        )
+        if runtime.status == "failed":
+            return
+
+
 def run_batch_stage(
     *,
     stage_name: str,
@@ -1008,15 +1027,37 @@ def run_batch_jobs(
         )
     )
 
-    for stage_name in ("extract-audio", "transcribe", "prepare-reference", "refine", "export-markdown"):
-        run_batch_stage(
-            stage_name=stage_name,
-            runtimes=runtimes,
-            project_root=project_root,
-            logger=logger,
-            remote_concurrency=remote_concurrency,
-            backend_override=backend_override,
-        )
+    active_runtimes = [runtime for runtime in runtimes if runtime.status != "failed"]
+    max_workers = max(1, remote_concurrency)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        remote_futures = []
+        for runtime in active_runtimes:
+            for stage_name in ("extract-audio", "transcribe"):
+                execute_batch_stage_for_runtime(
+                    stage_name=stage_name,
+                    runtime=runtime,
+                    project_root=project_root,
+                    logger=logger,
+                    backend_override=backend_override,
+                )
+                if runtime.status == "failed":
+                    break
+
+            if runtime.status == "failed":
+                continue
+
+            remote_futures.append(
+                executor.submit(
+                    execute_remote_pipeline_for_runtime,
+                    runtime=runtime,
+                    project_root=project_root,
+                    logger=logger,
+                    backend_override=backend_override,
+                )
+            )
+
+        for future in as_completed(remote_futures):
+            future.result()
 
     success_count = sum(1 for item in runtimes if item.status == "success")
     failed_count = sum(1 for item in runtimes if item.status == "failed")
