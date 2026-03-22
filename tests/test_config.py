@@ -21,6 +21,8 @@ def test_load_settings_success() -> None:
     assert loaded_settings.settings.reference.ocr_timeout_seconds == 240
     assert loaded_settings.settings.reference.gemini_ocr_model == "gemini-3-flash-preview"
     assert loaded_settings.settings.reference.gemini_ocr_fallback_model == ""
+    assert loaded_settings.settings.reference.codex_ocr_model == "gpt-5.4-mini"
+    assert loaded_settings.settings.reference.codex_ocr_reasoning_effort == "medium"
 
 
 def test_load_settings_local_cpu_profile() -> None:

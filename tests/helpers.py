@@ -86,6 +86,8 @@ def write_minimal_settings(
             "sentence_split_enabled": True,
             "gemini_ocr_model": "gemini-3-flash-preview",
             "gemini_ocr_fallback_model": "",
+            "codex_ocr_model": "gpt-5.4-mini",
+            "codex_ocr_reasoning_effort": "medium",
             "ocr_timeout_seconds": 240,
             "ocr_languages": ["chi_sim", "eng"],
         },

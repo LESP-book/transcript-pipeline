@@ -6,6 +6,7 @@ import logging
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -48,6 +49,10 @@ class PdfDependencyError(ReferencePreparationError):
 
 class GeminiOCRError(ReferencePreparationError):
     """Raised when Gemini CLI OCR fails."""
+
+
+class CodexOCRError(ReferencePreparationError):
+    """Raised when Codex CLI OCR fails."""
 
 
 @dataclass(frozen=True)
@@ -443,10 +448,38 @@ def build_gemini_ocr_prompt(reference_path: str | Path) -> str:
     )
 
 
+def build_codex_ocr_prompt(reference_path: str | Path) -> str:
+    return "\n".join(
+        [
+            "你现在要对一份中文 PDF 做 OCR 提取。",
+            "任务要求：",
+            "1. 只输出提取后的纯文本。",
+            "2. 不要解释，不要总结，不要添加说明。",
+            "3. 保留原文顺序，尽量保留自然段。",
+            "4. 不要输出 Markdown，不要输出 JSON。",
+            "5. 不要输出页码、分页标记、页眉、页尾、Page 1 之类的分页提示。",
+            "6. 强制要求：禁止调用本机的 OCR 工具、外部命令、脚本或系统程序。",
+            "7. 强制要求：只使用模型自身的视觉能力直接阅读这个 PDF。",
+            "",
+            f"请处理这个 PDF 文件：@{{{reference_path}}}",
+        ]
+    )
+
+
 def build_gemini_ocr_workspace(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[Path, Path]:
     ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
     source_fingerprint = hashlib.sha1(str(reference_path.resolve()).encode("utf-8")).hexdigest()[:10]
     workspace_dir = ensure_directory(ocr_dir / "gemini_cli_workspace" / f"{reference_path.stem}-{source_fingerprint}")
+    staged_pdf_path = workspace_dir / reference_path.name
+    if staged_pdf_path.resolve() != reference_path.resolve():
+        shutil.copy2(reference_path, staged_pdf_path)
+    return workspace_dir, staged_pdf_path
+
+
+def build_codex_ocr_workspace(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[Path, Path]:
+    ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
+    source_fingerprint = hashlib.sha1(str(reference_path.resolve()).encode("utf-8")).hexdigest()[:10]
+    workspace_dir = ensure_directory(ocr_dir / "codex_cli_workspace" / f"{reference_path.stem}-{source_fingerprint}")
     staged_pdf_path = workspace_dir / reference_path.name
     if staged_pdf_path.resolve() != reference_path.resolve():
         shutil.copy2(reference_path, staged_pdf_path)
@@ -501,6 +534,61 @@ def run_gemini_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) ->
         return text, [f"PDF 文字层为空，已使用 Gemini OCR fallback。model={model_name}"]
 
     raise GeminiOCRError(f"Gemini OCR 未返回有效文本: {reference_path.name} | {last_error or 'unknown error'}")
+
+
+def run_codex_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
+    if shutil.which("codex") is None:
+        raise CodexOCRError("未找到 codex CLI，无法执行 Codex OCR。")
+
+    reference_settings = loaded_settings.settings.reference
+    workspace_dir, staged_pdf_path = build_codex_ocr_workspace(reference_path, loaded_settings)
+    prompt = build_codex_ocr_prompt(staged_pdf_path.name)
+
+    command = [
+        "codex",
+        "exec",
+        "-C",
+        str(workspace_dir.resolve()),
+        "-s",
+        "read-only",
+    ]
+    configured_model = reference_settings.codex_ocr_model.strip()
+    configured_reasoning_effort = reference_settings.codex_ocr_reasoning_effort.strip()
+    if configured_model:
+        command.extend(["-m", configured_model])
+    if configured_reasoning_effort:
+        command.extend(["-c", f'model_reasoning_effort="{configured_reasoning_effort}"'])
+
+    with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix=".txt", delete=True, dir=workspace_dir) as output_file:
+        command.extend(["-o", output_file.name, "-"])
+        try:
+            completed = subprocess.run(
+                command,
+                input=prompt,
+                text=True,
+                capture_output=True,
+                cwd=str(workspace_dir),
+                timeout=reference_settings.ocr_timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CodexOCRError(f"Codex OCR 超时: {reference_path.name}") from exc
+        except OSError as exc:
+            raise CodexOCRError(f"Codex OCR 启动失败: {reference_path.name} | {exc}") from exc
+
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip() or completed.stdout.strip()
+            raise CodexOCRError(f"Codex OCR 失败: {reference_path.name} | {stderr or f'codex exited with code {completed.returncode}'}")
+
+        output_file.seek(0)
+        text = sanitize_gemini_ocr_text(output_file.read())
+        if is_effectively_empty_text(text):
+            raise CodexOCRError(f"Codex OCR 未返回有效文本: {reference_path.name}")
+
+    ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
+    sidecar_path = ocr_dir / f"{reference_path.stem}.codex_ocr.txt"
+    sidecar_path.write_text(text, encoding="utf-8")
+    return text, [f"PDF 文字层为空，已使用 Codex OCR fallback。model={configured_model or 'codex_default'}"]
 
 
 def run_tesseract_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
@@ -583,12 +671,22 @@ def read_pdf_reference(reference_path: Path, loaded_settings: LoadedSettings) ->
                 [f"Gemini OCR 失败，且当前未启用 OCR fallback。reason={exc}"] + warnings,
             )
 
-        ocr_text, ocr_warnings = run_tesseract_pdf_ocr(reference_path, loaded_settings)
-        return (
-            ocr_text,
-            "ocrmypdf_tesseract",
-            [f"Gemini OCR 失败，已回退到 ocrmypdf。reason={exc}"] + warnings + ocr_warnings,
-        )
+        try:
+            ocr_text, ocr_warnings = run_codex_pdf_ocr(reference_path, loaded_settings)
+            return (
+                ocr_text,
+                "codex_cli_pdf_ocr",
+                [f"Gemini OCR 失败，已回退到 Codex OCR。reason={exc}"] + warnings + ocr_warnings,
+            )
+        except CodexOCRError as codex_exc:
+            ocr_text, ocr_warnings = run_tesseract_pdf_ocr(reference_path, loaded_settings)
+            return (
+                ocr_text,
+                "ocrmypdf_tesseract",
+                [f"Gemini OCR 和 Codex OCR 都失败，已回退到 ocrmypdf。gemini_reason={exc}; codex_reason={codex_exc}"]
+                + warnings
+                + ocr_warnings,
+            )
 
 
 def prepare_reference_file(

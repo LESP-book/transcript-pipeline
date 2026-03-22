@@ -84,6 +84,8 @@ class ReferenceSettings(AppBaseModel):
     sentence_split_enabled: bool = True
     gemini_ocr_model: str = "gemini-3-flash-preview"
     gemini_ocr_fallback_model: str = ""
+    codex_ocr_model: str = "gpt-5.4-mini"
+    codex_ocr_reasoning_effort: str = "medium"
     ocr_timeout_seconds: int = 240
     ocr_languages: list[str] = Field(default_factory=list)
 
