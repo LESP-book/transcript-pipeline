@@ -464,6 +464,68 @@ def test_run_codex_api_pdf_ocr_uploads_file_and_references_file_id(
     assert sidecar_path.read_text(encoding="utf-8") == "这是 Codex API OCR 的结果。"
 
 
+def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_upload_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    monkeypatch.setenv("CODEX_LB_API_KEY", "test-key")
+    source = tmp_path / "external" / "scan.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4 fake")
+    seen: dict[str, object] = {"urlopen_urls": []}
+
+    class FakeResponse:
+        def __init__(self, payload: dict | str = "") -> None:
+            self.payload = payload
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            _ = exc_type, exc, tb
+
+        def read(self) -> bytes:
+            if isinstance(self.payload, dict):
+                return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+            return self.payload.encode("utf-8")
+
+    def fake_urlopen(request, timeout=None):
+        _ = timeout
+        seen["urlopen_urls"].append(request.full_url)
+        if request.full_url == "http://127.0.0.1:2455/backend-api/files":
+            return FakeResponse({"file_id": "file_123", "upload_url": "https://upload.example/blob"})
+        if request.full_url == "http://127.0.0.1:2455/backend-api/files/file_123/uploaded":
+            return FakeResponse({"status": "success"})
+        if request.full_url == "http://127.0.0.1:2455/v1/responses":
+            return FakeResponse({"output_text": "远程上传成功后的 OCR 结果。"})
+        pytest.fail(f"未预期的 urlopen 请求: {request.full_url}")
+
+    class Completed:
+        returncode = 0
+        stderr = ""
+        stdout = "\n200"
+
+    def fake_run(command, *, input, text, capture_output, check):
+        _ = input, text, capture_output, check
+        seen["curl_command"] = command
+        return Completed()
+
+    monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
+    monkeypatch.setattr("src.codex_lb_client.shutil.which", lambda name: "/usr/bin/curl" if name == "curl" else None)
+    monkeypatch.setattr("src.codex_lb_client.subprocess.run", fake_run)
+
+    text, _warnings = run_codex_api_pdf_ocr(source, loaded_settings)
+
+    assert text == "远程上传成功后的 OCR 结果。"
+    assert "https://upload.example/blob" not in seen["urlopen_urls"]
+    command = seen["curl_command"]
+    assert isinstance(command, list)
+    assert command[0] == "curl"
+    assert "https://upload.example/blob" in command
+
+
 def test_run_gemini_pdf_ocr_uses_reference_fallback_model_only_for_ocr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

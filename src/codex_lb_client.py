@@ -105,7 +105,12 @@ class CodexLBClient:
                 "Content-Length": str(len(file_bytes)),
             },
         )
-        read_http_response(request, label=label, timeout_seconds=self.timeout_seconds)
+        read_http_response(
+            request,
+            label=label,
+            timeout_seconds=self.timeout_seconds,
+            use_curl_first=should_use_curl_first(upload_url),
+        )
 
 
 def endpoint_url(base_url: str, path: str) -> str:
@@ -157,12 +162,12 @@ def should_use_curl_first(url: str) -> bool:
     if shutil.which("curl") is None:
         return False
     host = (urlparse(url).hostname or "").lower()
-    return host not in {"", "127.0.0.1", "localhost", "::1"}
+    return host not in {"", "127.0.0.1", "localhost", "::1"} and not host.endswith(".local")
 
 
 def read_http_response_with_curl(request: Request, *, label: str, timeout_seconds: float | None) -> str:
     # 用户的远程 codex-lb 反代域会用 Cloudflare 1010 拦截 Python urllib 的 TLS/客户端指纹；
-    # curl 已验证可通过同一 API 入口，因此远程 codex-lb API 入口优先使用 curl，本地仍走 urllib。
+    # curl 已验证可通过同一 API 入口和远程文件上传 URL，因此远程地址优先使用 curl，本地仍走 urllib。
     body_path: Path | None = None
     try:
         if request.data is not None:
