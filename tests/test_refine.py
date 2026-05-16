@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
 from src.config_loader import load_settings
 from src.refine_utils import (
+    BACKEND_CODEX_API,
     BACKEND_CODEX,
     BACKEND_FALLBACK,
     BACKEND_GEMINI,
@@ -30,6 +33,7 @@ from src.refine_utils import (
     parse_backend_document_result,
     refine_batch,
     resolve_requested_backends,
+    run_codex_api,
     resolve_refinement_input_paths,
     run_codex_cli,
     run_gemini_cli,
@@ -110,7 +114,8 @@ def test_build_fulltext_refine_prompt_contains_fulltext_context(tmp_path: Path) 
 
 
 def test_resolve_requested_backends_supports_single_and_dual_mode() -> None:
-    assert resolve_requested_backends(None, [BACKEND_CODEX]) == [BACKEND_CODEX]
+    assert resolve_requested_backends(None, [BACKEND_CODEX_API]) == [BACKEND_CODEX_API]
+    assert resolve_requested_backends("codex_api", [BACKEND_GEMINI]) == [BACKEND_CODEX_API]
     assert resolve_requested_backends("codex_cli", [BACKEND_GEMINI]) == [BACKEND_CODEX]
     assert resolve_requested_backends("gemini_cli", [BACKEND_CODEX]) == [BACKEND_GEMINI]
     assert resolve_requested_backends("both", [BACKEND_CODEX]) == [BACKEND_CODEX, BACKEND_GEMINI]
@@ -369,7 +374,7 @@ def test_refine_batch_uses_single_codex_call_with_reference_context(
             "refinement_reason": "single_pass_codex",
         }
 
-    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
 
     refine_batch(loaded_settings)
 
@@ -490,6 +495,137 @@ def test_run_codex_cli_uses_configured_model_and_reasoning_effort(
     assert seen["timeout_seconds"] == 1800
 
 
+def test_run_codex_api_uses_responses_api_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(
+        tmp_path,
+        llm_overrides={
+            "model": "gpt-5.4",
+            "reasoning_effort": "high",
+            "temperature": 0.9,
+            "max_output_tokens": 99,
+            "timeout_seconds": 1800,
+        },
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+    monkeypatch.setenv("CODEX_LB_API_KEY", "test-key")
+    seen: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            _ = exc_type, exc, tb
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "output_text": json.dumps(
+                        {
+                            "final_markdown": "# 标题\n\n完整精修文本",
+                            "refinement_strategy": "final_markdown_cleanup",
+                            "refinement_reason": "ok",
+                            "needs_review_sections": [],
+                            "refinement_notes": [],
+                        },
+                        ensure_ascii=False,
+                    )
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout=None):
+        seen["url"] = request.full_url
+        seen["method"] = request.get_method()
+        seen["headers"] = dict(request.header_items())
+        seen["payload"] = json.loads(request.data.decode("utf-8"))
+        seen["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
+
+    result = run_codex_api("prompt", loaded_settings)
+
+    assert result.backend == BACKEND_CODEX_API
+    assert result.model_name == "gpt-5.4"
+    assert "完整精修文本" in result.final_markdown
+    assert seen["url"] == "http://127.0.0.1:2455/v1/responses"
+    assert seen["method"] == "POST"
+    assert seen["headers"]["Authorization"] == "Bearer test-key"
+    assert seen["timeout"] == 1800
+    payload = seen["payload"]
+    assert isinstance(payload, dict)
+    assert payload["model"] == "gpt-5.4"
+    assert payload["reasoning"] == {"effort": "high"}
+    assert payload["text"] == {"format": {"type": "json_object"}}
+    assert payload["stream"] is False
+    assert payload["store"] is False
+    assert "temperature" not in payload
+    assert "max_output_tokens" not in payload
+
+
+def test_run_codex_api_retries_with_curl_on_cloudflare_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path, llm_overrides={"model": "gpt-5.4", "reasoning_effort": "high"})
+    loaded_settings = load_settings(project_root=tmp_path)
+    monkeypatch.setenv("CODEX_LB_API_KEY", "test-key")
+    seen: dict[str, object] = {}
+
+    def fake_urlopen(_request, timeout=None):
+        raise HTTPError(
+            "https://api.redworker.org/v1/responses",
+            403,
+            "Forbidden",
+            {},
+            BytesIO(b'{"cloudflare_error":true,"error_name":"browser_signature_banned"}'),
+        )
+
+    class Completed:
+        returncode = 0
+        stderr = ""
+        stdout = (
+            json.dumps(
+                {
+                    "output_text": json.dumps(
+                        {
+                            "final_markdown": "# 测试\n\n正文",
+                            "section_map": [],
+                            "refinement_notes": [],
+                            "needs_review_sections": [],
+                        },
+                        ensure_ascii=False,
+                    )
+                },
+                ensure_ascii=False,
+            )
+            + "\n200"
+        )
+
+    def fake_run(command, *, input, text, capture_output, check):
+        seen["command"] = command
+        seen["input"] = input
+        return Completed()
+
+    monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
+    monkeypatch.setattr("src.codex_lb_client.shutil.which", lambda name: "/usr/bin/curl" if name == "curl" else None)
+    monkeypatch.setattr("src.codex_lb_client.subprocess.run", fake_run)
+
+    result = run_codex_api("prompt", loaded_settings)
+
+    assert result.backend == BACKEND_CODEX_API
+    assert result.final_markdown == "# 测试\n\n正文"
+    command = seen["command"]
+    assert isinstance(command, list)
+    assert command[0] == "curl"
+    assert "test-key" not in command
+    assert "Authorization: Bearer test-key" in str(seen["input"])
+
+
 def test_run_gemini_cli_retries_with_fallback_model_on_capacity_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -593,19 +729,21 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
             "refinement_reason": "single_pass_codex",
         }
 
-    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
 
     summary = refine_batch(loaded_settings)
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
     result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
+    backend_path = output_path.json_path.with_name("demo.codex_api.json")
+    backend_result = json.loads(backend_path.read_text(encoding="utf-8"))
 
     assert summary.success == 1
     assert result["prompt_mode"] == "single_pass_safe_replace"
     assert result["source_asr_file"] == "data/intermediate/asr/demo.txt"
     assert result["source_reference_file"] == "data/intermediate/extracted_text/demo.txt"
-    assert result["refinement_backends"] == [BACKEND_CODEX]
-    assert result["backend_status"]["codex_cli"] == "returned_single_pass:model=codex_cli"
-    assert result["selected_backend"] == BACKEND_CODEX
+    assert result["refinement_backends"] == [BACKEND_CODEX_API]
+    assert result["backend_status"]["codex_api"] == "returned_single_pass:model=codex_api"
+    assert result["selected_backend"] == BACKEND_CODEX_API
     assert "final_markdown" in result
     assert result["final_markdown"].startswith("# demo")
     assert result["edited_plain_text"].startswith("九月零云至 崇尚敬江山")
@@ -614,6 +752,10 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     assert result["fidelity_report"]["passed"] is True
     assert result["refinement_notes"] == ["codex_note"]
     assert "classification_summary" not in result
+    assert backend_path.exists()
+    assert backend_result["selected_backend"] == BACKEND_CODEX_API
+    assert backend_result["backend_status"]["codex_api"] == "returned_single_pass:model=codex_api"
+    assert backend_result["final_markdown"].startswith("# demo")
 
 
 def test_build_single_pass_refine_prompt_adds_backend_specific_review_warning(tmp_path: Path) -> None:
@@ -750,8 +892,8 @@ def test_refine_batch_marks_programmatic_fallback_as_degraded_status(
 
     def fake_run_single_pass_backend_refinement(**_kwargs) -> BackendDocumentRefinementResult:
         return BackendDocumentRefinementResult(
-            backend=BACKEND_CODEX,
-            model_name=BACKEND_CODEX,
+            backend=BACKEND_CODEX_API,
+            model_name=BACKEND_CODEX_API,
             final_markdown="# demo\n\n降级稿",
             refinement_strategy="programmatic_markdown_fallback",
             refinement_reason="single_pass_backend_failed",
@@ -767,8 +909,8 @@ def test_refine_batch_marks_programmatic_fallback_as_degraded_status(
     result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
 
     assert result["prompt_mode"] == "programmatic_markdown_fallback"
-    assert result["backend_status"]["codex_cli"] == (
-        "degraded_to_programmatic_fallback:single_pass_backend_failed:model=codex_cli"
+    assert result["backend_status"]["codex_api"] == (
+        "degraded_to_programmatic_fallback:single_pass_backend_failed:model=codex_api"
     )
 
 
@@ -837,7 +979,7 @@ def test_refine_batch_uses_single_codex_call_for_long_line_based_asr(
             "refinement_reason": "single_pass_codex",
         }
 
-    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
 
     refine_batch(loaded_settings)
 
@@ -882,7 +1024,7 @@ def test_refine_batch_does_not_use_block_concurrency_in_single_pass_mode(
         }
 
     monkeypatch.setattr("src.refine_utils.ThreadPoolExecutor", FakeExecutor)
-    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
 
     refine_batch(loaded_settings)
 
@@ -913,7 +1055,7 @@ def test_refine_batch_logs_single_pass_progress(
             "refinement_reason": "single_pass_codex",
         }
 
-    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
 
     with caplog.at_level("INFO"):
         refine_batch(loaded_settings, logger=logging.getLogger("test-refine-progress"))
@@ -921,7 +1063,7 @@ def test_refine_batch_logs_single_pass_progress(
     progress_messages = [record.message for record in caplog.records if "阶段 6 单次调用" in record.message]
     assert len(progress_messages) == 1
     assert "file=progress-demo" in progress_messages[0]
-    assert "backend=codex_cli" in progress_messages[0]
+    assert "backend=codex_api" in progress_messages[0]
     assert "locked_segments=" in progress_messages[0]
     assert "total_segments=" in progress_messages[0]
 
@@ -944,8 +1086,8 @@ def test_refine_batch_uses_fallback_when_all_backends_fail(
     result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
 
     assert summary.success == 1
-    assert result["refinement_backends"] == [BACKEND_CODEX]
-    assert result["backend_status"]["codex_cli"] == "failed_on_file"
+    assert result["refinement_backends"] == [BACKEND_CODEX_API]
+    assert result["backend_status"]["codex_api"] == "failed_on_file"
     assert "gemini_cli" not in result["backend_status"]
     assert result["backend_status"]["fallback"] == "used"
     assert result["selected_backend"] == BACKEND_FALLBACK

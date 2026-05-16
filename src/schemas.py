@@ -82,6 +82,7 @@ class ReferenceSettings(AppBaseModel):
     prefer_existing_text: bool = True
     run_ocr_when_needed: bool = False
     sentence_split_enabled: bool = True
+    ai_ocr_backend: str = "codex_api"
     gemini_ocr_model: str = "gemini-3-flash-preview"
     gemini_ocr_fallback_model: str = ""
     codex_ocr_model: str = "gpt-5.4-mini"
@@ -146,7 +147,7 @@ class LLMSettings(AppBaseModel):
     model: str = ""
     gemini_model: str = "gemini-3.1-pro-preview"
     gemini_fallback_model: str = "gemini-3-flash-preview"
-    backends: list[str] = Field(default_factory=lambda: ["codex_cli"])
+    backends: list[str] = Field(default_factory=lambda: ["codex_api"])
     enable_fallback: bool = True
     block_batch_size: int = 2
     block_concurrency: int = 6
@@ -164,6 +165,15 @@ class LLMSettings(AppBaseModel):
     safe_replace_length_ratio_max: float = 1.2
     safe_replace_max_extra_content_ratio: float = 0.12
     safe_replace_min_run_length: int = 2
+
+
+class CodexLBSettings(AppBaseModel):
+    base_url: str = "http://127.0.0.1:2455"
+    base_url_env: str = "CODEX_LB_BASE_URL"
+    api_key_env: str = "CODEX_LB_API_KEY"
+    responses_path: str = "/v1/responses"
+    files_create_path: str = "/backend-api/files"
+    files_finalize_path_template: str = "/backend-api/files/{file_id}/uploaded"
 
 
 class OutputSettings(AppBaseModel):
@@ -193,6 +203,7 @@ class AppSettings(AppBaseModel):
     alignment: AlignmentSettings
     classification: ClassificationSettings
     llm: LLMSettings
+    codex_lb: CodexLBSettings = Field(default_factory=CodexLBSettings)
     prompts: PromptSettings | None = None
     output: OutputSettings | None = None
     pipeline: PipelineSettings | None = None

@@ -11,7 +11,7 @@ class SingleJobRequest(BaseModel):
     output_dir: str
     config: str | None = None
     profile: str | None = None
-    backend: Literal["codex_cli", "gemini_cli", "both"] | None = None
+    backend: Literal["codex_api", "codex_cli", "gemini_cli", "both"] | None = None
     book_name: str | None = None
     chapter: str | None = None
     glossary_file: str | None = None
@@ -25,7 +25,7 @@ class BatchJobRequest(BaseModel):
     output_dir: str | None = None
     config: str | None = None
     profile: str | None = None
-    backend: Literal["codex_cli", "gemini_cli", "both"] | None = None
+    backend: Literal["codex_api", "codex_cli", "gemini_cli", "both"] | None = None
     glossary_file: str | None = None
     remote_concurrency: int = Field(default=2, ge=1)
     book_name: str | None = None
@@ -35,4 +35,4 @@ class BatchJobRequest(BaseModel):
 class StageRunRequest(BaseModel):
     config: str | None = None
     profile: str | None = None
-    backend: Literal["codex_cli", "gemini_cli", "both"] | None = None
+    backend: Literal["codex_api", "codex_cli", "gemini_cli", "both"] | None = None

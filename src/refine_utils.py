@@ -13,14 +13,17 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
+from src.codex_lb_client import CodexLBClient, CodexLBClientError
 from src.runtime_utils import ensure_directory, relativize_path
 from src.schemas import LoadedSettings
 
 PROMPT_MISSING_ERROR = "缺少阶段 6 提示词配置，请检查 prompts.classify_and_correct"
+BACKEND_CODEX_API = "codex_api"
 BACKEND_CODEX = "codex_cli"
 BACKEND_GEMINI = "gemini_cli"
 BACKEND_FALLBACK = "local_fallback"
-VALID_REFINEMENT_BACKENDS = (BACKEND_CODEX, BACKEND_GEMINI)
+LEGACY_DUAL_REFINEMENT_BACKENDS = (BACKEND_CODEX, BACKEND_GEMINI)
+VALID_REFINEMENT_BACKENDS = (BACKEND_CODEX_API, BACKEND_CODEX, BACKEND_GEMINI)
 TARGET_MINIMAL_EDIT_BLOCKS = 20
 
 
@@ -37,11 +40,11 @@ class PromptLoadError(RefinementError):
 
 
 class CLIBackendError(RefinementError):
-    """Raised when a local CLI backend fails."""
+    """Raised when an AI backend fails."""
 
 
 class CLIBackendRetryableError(CLIBackendError):
-    """Raised when a local CLI backend fails in a retryable way."""
+    """Raised when an AI backend fails in a retryable way."""
 
 
 @dataclass(frozen=True)
@@ -137,7 +140,7 @@ def build_backend_output_json_path(output_path: RefinementOutputPath, backend: s
 
 def resolve_requested_backends(requested_backend: str | None, configured_backends: list[str]) -> list[str]:
     if requested_backend == "both":
-        return list(VALID_REFINEMENT_BACKENDS)
+        return list(LEGACY_DUAL_REFINEMENT_BACKENDS)
 
     if requested_backend:
         if requested_backend not in VALID_REFINEMENT_BACKENDS:
@@ -896,6 +899,52 @@ def run_codex_cli_payload(prompt: str, loaded_settings: LoadedSettings) -> dict[
         return extract_json_payload(output_file.read())
 
 
+def run_codex_api_payload(prompt: str, loaded_settings: LoadedSettings) -> dict[str, Any]:
+    llm_settings = loaded_settings.settings.llm
+    configured_model = llm_settings.model.strip()
+    if not configured_model:
+        raise CLIBackendError("codex_api 需要配置 llm.model。")
+
+    payload: dict[str, Any] = {
+        "model": configured_model,
+        "input": [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            }
+        ],
+        "text": {"format": {"type": "json_object"}},
+        "stream": False,
+        "store": False,
+    }
+    configured_reasoning_effort = llm_settings.reasoning_effort.strip()
+    if configured_reasoning_effort:
+        payload["reasoning"] = {"effort": configured_reasoning_effort}
+
+    client = CodexLBClient(loaded_settings.settings.codex_lb, timeout_seconds=llm_settings.timeout_seconds)
+    try:
+        result = extract_json_payload(client.responses_text(payload))
+    except CodexLBClientError as exc:
+        raise CLIBackendError(f"codex_api 调用失败: {exc}") from exc
+    result.setdefault("model_name", configured_model)
+    return result
+
+
+def run_codex_api(prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
+    payload = run_codex_api_payload(prompt, loaded_settings)
+    result = parse_backend_document_result(BACKEND_CODEX_API, payload)
+    return BackendDocumentRefinementResult(
+        backend=result.backend,
+        model_name=result.model_name or loaded_settings.settings.llm.model.strip() or BACKEND_CODEX_API,
+        final_markdown=result.final_markdown,
+        refinement_strategy=result.refinement_strategy,
+        refinement_reason=result.refinement_reason,
+        needs_review_sections=result.needs_review_sections,
+        refinement_notes=result.refinement_notes,
+        section_map=result.section_map,
+    )
+
+
 def run_codex_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
     llm_settings = loaded_settings.settings.llm
     configured_model = llm_settings.model.strip()
@@ -956,6 +1005,8 @@ def run_gemini_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocum
 
 
 def run_backend_cli(backend: str, prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
+    if backend == BACKEND_CODEX_API:
+        return run_codex_api(prompt, loaded_settings)
     if backend == BACKEND_CODEX:
         return run_codex_cli(prompt, loaded_settings)
     if backend == BACKEND_GEMINI:
@@ -964,6 +1015,8 @@ def run_backend_cli(backend: str, prompt: str, loaded_settings: LoadedSettings) 
 
 
 def run_backend_payload(backend: str, prompt: str, loaded_settings: LoadedSettings) -> dict[str, Any]:
+    if backend == BACKEND_CODEX_API:
+        return run_codex_api_payload(prompt, loaded_settings)
     if backend == BACKEND_CODEX:
         return run_codex_cli_payload(prompt, loaded_settings)
     if backend == BACKEND_GEMINI:
@@ -1067,7 +1120,7 @@ def run_two_step_backend_refinement(
     deletion_candidates: list[dict[str, Any]] = []
     needs_review_sections: list[dict[str, Any]] = []
     refinement_notes: list[str] = []
-    model_name = llm_settings.model.strip() if backend == BACKEND_CODEX else llm_settings.gemini_model
+    model_name = llm_settings.model.strip() if backend in (BACKEND_CODEX_API, BACKEND_CODEX) else llm_settings.gemini_model
 
     block_concurrency = max(1, getattr(llm_settings, "block_concurrency", 1))
     block_results: dict[int, MinimalEditBlockResult] = {}
@@ -1460,9 +1513,6 @@ def write_refinement_result(
     with output_path.json_path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False, indent=2)
 
-    if len(model_results) <= 1:
-        return
-
     for result in backend_results:
         if result.backend == BACKEND_FALLBACK:
             continue
@@ -1503,7 +1553,13 @@ def refine_batch(
             try:
                 result = run_single_pass_backend_refinement(
                     backend=backend,
-                    fallback_backend=BACKEND_CODEX if backend == BACKEND_GEMINI and BACKEND_CODEX not in active_backends else None,
+                    fallback_backend=(
+                        BACKEND_CODEX
+                        if backend == BACKEND_GEMINI
+                        and BACKEND_CODEX not in active_backends
+                        and BACKEND_CODEX_API not in active_backends
+                        else None
+                    ),
                     input_paths=input_paths,
                     loaded_settings=loaded_settings,
                     markdown_prompt_text=markdown_prompt_text,

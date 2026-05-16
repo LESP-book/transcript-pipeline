@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
-    parser.add_argument("--backend", choices=["codex_cli", "gemini_cli", "both"], help="仅 refine 阶段生效，覆盖后端选择")
+    parser.add_argument("--backend", choices=["codex_api", "codex_cli", "gemini_cli", "both"], help="仅 refine 阶段生效，覆盖后端选择")
     return parser
 
 

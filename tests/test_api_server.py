@@ -21,14 +21,14 @@ def request_json(app, method: str, path: str, *, json_body: dict | None = None, 
 def test_get_config_returns_profiles_and_backends(tmp_path: Path) -> None:
     from api_server import create_app
 
-    write_minimal_settings(tmp_path, llm_overrides={"backends": ["codex_cli"]})
+    write_minimal_settings(tmp_path, llm_overrides={"backends": ["codex_api"]})
     response = request_json(create_app(project_root=tmp_path), "GET", "/api/config")
 
     assert response.status_code == 200
     assert response.json() == {
         "profiles": ["local_cpu"],
-        "backends": ["codex_cli", "gemini_cli", "both"],
-        "configured_backends": ["codex_cli"],
+        "backends": ["codex_api", "codex_cli", "gemini_cli", "both"],
+        "configured_backends": ["codex_api"],
         "active_profile": "local_cpu",
     }
 

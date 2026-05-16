@@ -49,6 +49,7 @@ def test_iter_refined_json_files_filters_json_only(tmp_path: Path) -> None:
     (refined_dir / "a.json").write_text("{}", encoding="utf-8")
     (refined_dir / "a.codex_cli.json").write_text("{}", encoding="utf-8")
     (refined_dir / "a.gemini_cli.json").write_text("{}", encoding="utf-8")
+    (refined_dir / "a.codex_api.json").write_text("{}", encoding="utf-8")
     (refined_dir / "b.txt").write_text("ignore", encoding="utf-8")
 
     result = iter_refined_json_files(refined_dir)

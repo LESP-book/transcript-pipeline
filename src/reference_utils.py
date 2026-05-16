@@ -11,10 +11,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
+from src.codex_lb_client import CodexLBClient, CodexLBClientError
 from src.runtime_utils import ensure_directory
 from src.schemas import LoadedSettings
 
 MIN_EXTRACTED_PDF_TEXT_LENGTH = 10
+AI_OCR_BACKEND_CODEX_API = "codex_api"
+AI_OCR_BACKEND_CODEX_CLI = "codex_cli"
+AI_OCR_BACKEND_GEMINI_CLI = "gemini_cli"
+VALID_AI_OCR_BACKENDS = (AI_OCR_BACKEND_CODEX_API, AI_OCR_BACKEND_GEMINI_CLI, AI_OCR_BACKEND_CODEX_CLI)
 META_LINE_MARKERS = (
     "CRITICAL INSTRUCTION",
     "EPHEMERAL_MESSAGE",
@@ -52,7 +57,7 @@ class GeminiOCRError(ReferencePreparationError):
 
 
 class CodexOCRError(ReferencePreparationError):
-    """Raised when Codex CLI OCR fails."""
+    """Codex OCR 调用失败。"""
 
 
 @dataclass(frozen=True)
@@ -466,6 +471,30 @@ def build_codex_ocr_prompt(reference_path: str | Path) -> str:
     )
 
 
+def describe_ai_ocr_backend(backend: str) -> str:
+    if backend == AI_OCR_BACKEND_CODEX_API:
+        return "Codex API"
+    if backend == AI_OCR_BACKEND_CODEX_CLI:
+        return "Codex CLI"
+    if backend == AI_OCR_BACKEND_GEMINI_CLI:
+        return "Gemini"
+    return backend
+
+
+def ai_ocr_method_name(backend: str) -> str:
+    if backend == AI_OCR_BACKEND_CODEX_API:
+        return "codex_api_pdf_ocr"
+    if backend == AI_OCR_BACKEND_CODEX_CLI:
+        return "codex_cli_pdf_ocr"
+    if backend == AI_OCR_BACKEND_GEMINI_CLI:
+        return "gemini_cli_pdf_ocr"
+    raise ReferencePreparationError(f"未知 PDF AI OCR 后端: {backend}")
+
+
+def build_ai_ocr_fallback_backends(primary_backend: str) -> list[str]:
+    return [backend for backend in VALID_AI_OCR_BACKENDS if backend != primary_backend]
+
+
 def build_gemini_ocr_workspace(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[Path, Path]:
     ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
     source_fingerprint = hashlib.sha1(str(reference_path.resolve()).encode("utf-8")).hexdigest()[:10]
@@ -484,6 +513,46 @@ def build_codex_ocr_workspace(reference_path: Path, loaded_settings: LoadedSetti
     if staged_pdf_path.resolve() != reference_path.resolve():
         shutil.copy2(reference_path, staged_pdf_path)
     return workspace_dir, staged_pdf_path
+
+
+def run_codex_api_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
+    reference_settings = loaded_settings.settings.reference
+    configured_model = reference_settings.codex_ocr_model.strip()
+    if not configured_model:
+        raise CodexOCRError("codex_api OCR 需要配置 reference.codex_ocr_model。")
+
+    client = CodexLBClient(loaded_settings.settings.codex_lb, timeout_seconds=reference_settings.ocr_timeout_seconds)
+    try:
+        file_id = client.upload_file(reference_path, use_case="codex")
+        prompt = build_codex_ocr_prompt(reference_path.name)
+        payload: dict[str, object] = {
+            "model": configured_model,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_file", "file_id": file_id},
+                    ],
+                }
+            ],
+            "stream": False,
+            "store": False,
+        }
+        configured_reasoning_effort = reference_settings.codex_ocr_reasoning_effort.strip()
+        if configured_reasoning_effort:
+            payload["reasoning"] = {"effort": configured_reasoning_effort}
+        text = sanitize_gemini_ocr_text(strip_fenced_text(client.responses_text(payload)))
+    except CodexLBClientError as exc:
+        raise CodexOCRError(f"Codex API OCR 失败: {reference_path.name} | {exc}") from exc
+
+    if is_effectively_empty_text(text):
+        raise CodexOCRError(f"Codex API OCR 未返回有效文本: {reference_path.name}")
+
+    ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
+    sidecar_path = ocr_dir / f"{reference_path.stem}.codex_api_ocr.txt"
+    sidecar_path.write_text(text, encoding="utf-8")
+    return text, [f"PDF 文字层为空，已使用 Codex API OCR fallback。model={configured_model}"]
 
 
 def run_gemini_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
@@ -591,6 +660,19 @@ def run_codex_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> 
     return text, [f"PDF 文字层为空，已使用 Codex OCR fallback。model={configured_model or 'codex_default'}"]
 
 
+def run_pdf_ai_ocr_backend(reference_path: Path, loaded_settings: LoadedSettings, backend: str) -> tuple[str, str, list[str]]:
+    if backend == AI_OCR_BACKEND_CODEX_API:
+        text, warnings = run_codex_api_pdf_ocr(reference_path, loaded_settings)
+        return text, ai_ocr_method_name(backend), warnings
+    if backend == AI_OCR_BACKEND_GEMINI_CLI:
+        text, warnings = run_gemini_pdf_ocr(reference_path, loaded_settings)
+        return text, ai_ocr_method_name(backend), warnings
+    if backend == AI_OCR_BACKEND_CODEX_CLI:
+        text, warnings = run_codex_pdf_ocr(reference_path, loaded_settings)
+        return text, ai_ocr_method_name(backend), warnings
+    raise ReferencePreparationError(f"未知 PDF AI OCR 后端: {backend}")
+
+
 def run_tesseract_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
     if shutil.which("ocrmypdf") is None:
         raise ReferencePreparationError("未找到 ocrmypdf，无法对扫描版 PDF 执行 OCR。")
@@ -652,41 +734,48 @@ def read_md_reference(reference_path: Path) -> tuple[str, str, list[str]]:
 
 
 def read_pdf_reference(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, str, list[str]]:
+    primary_backend = loaded_settings.settings.reference.ai_ocr_backend.strip() or AI_OCR_BACKEND_CODEX_API
+    if primary_backend not in VALID_AI_OCR_BACKENDS:
+        raise ReferencePreparationError(f"未知 PDF AI OCR 后端: {primary_backend}")
+    primary_label = describe_ai_ocr_backend(primary_backend)
+
     try:
-        ocr_text, ocr_warnings = run_gemini_pdf_ocr(reference_path, loaded_settings)
-        return ocr_text, "gemini_cli_pdf_ocr", ocr_warnings
-    except GeminiOCRError as exc:
+        return run_pdf_ai_ocr_backend(reference_path, loaded_settings, primary_backend)
+    except (GeminiOCRError, CodexOCRError) as exc:
         extracted_text, warnings = extract_pdf_text(reference_path)
         if not is_effectively_empty_text(extracted_text):
             return (
                 extracted_text,
                 "pypdf_text_extract",
-                [f"Gemini OCR 失败，已回退到 PDF 文字层提取。reason={exc}"] + warnings,
+                [f"{primary_label} OCR 失败，已回退到 PDF 文字层提取。reason={exc}"] + warnings,
             )
 
         if not loaded_settings.settings.reference.run_ocr_when_needed:
             return (
                 extracted_text,
                 "pypdf_text_extract",
-                [f"Gemini OCR 失败，且当前未启用 OCR fallback。reason={exc}"] + warnings,
+                [f"{primary_label} OCR 失败，且当前未启用 OCR fallback。reason={exc}"] + warnings,
             )
 
-        try:
-            ocr_text, ocr_warnings = run_codex_pdf_ocr(reference_path, loaded_settings)
-            return (
-                ocr_text,
-                "codex_cli_pdf_ocr",
-                [f"Gemini OCR 失败，已回退到 Codex OCR。reason={exc}"] + warnings + ocr_warnings,
-            )
-        except CodexOCRError as codex_exc:
-            ocr_text, ocr_warnings = run_tesseract_pdf_ocr(reference_path, loaded_settings)
-            return (
-                ocr_text,
-                "ocrmypdf_tesseract",
-                [f"Gemini OCR 和 Codex OCR 都失败，已回退到 ocrmypdf。gemini_reason={exc}; codex_reason={codex_exc}"]
-                + warnings
-                + ocr_warnings,
-            )
+        failure_reasons = [f"{primary_label}_reason={exc}"]
+        for fallback_backend in build_ai_ocr_fallback_backends(primary_backend):
+            fallback_label = describe_ai_ocr_backend(fallback_backend)
+            try:
+                ocr_text, method, ocr_warnings = run_pdf_ai_ocr_backend(reference_path, loaded_settings, fallback_backend)
+                return (
+                    ocr_text,
+                    method,
+                    [f"{primary_label} OCR 失败，已回退到 {fallback_label} OCR。reason={exc}"] + warnings + ocr_warnings,
+                )
+            except (GeminiOCRError, CodexOCRError) as fallback_exc:
+                failure_reasons.append(f"{fallback_label}_reason={fallback_exc}")
+
+        ocr_text, ocr_warnings = run_tesseract_pdf_ocr(reference_path, loaded_settings)
+        return (
+            ocr_text,
+            "ocrmypdf_tesseract",
+            [f"{'；'.join(failure_reasons)}，已回退到 ocrmypdf。"] + warnings + ocr_warnings,
+        )
 
 
 def prepare_reference_file(

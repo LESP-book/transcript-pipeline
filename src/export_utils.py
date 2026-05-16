@@ -9,7 +9,7 @@ from typing import Any
 from src.runtime_utils import ensure_directory
 from src.schemas import LoadedSettings
 
-REFINEMENT_SIDECAR_SUFFIXES = (".codex_cli.json", ".gemini_cli.json")
+REFINEMENT_SIDECAR_SUFFIXES = (".codex_api.json", ".codex_cli.json", ".gemini_cli.json")
 
 
 class ExportError(RuntimeError):

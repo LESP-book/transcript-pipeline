@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from src.reference_utils import (
     iter_reference_files,
     prepare_reference_file,
     read_text_file,
+    run_codex_api_pdf_ocr,
     run_codex_pdf_ocr,
     sanitize_ocrmypdf_text,
     sanitize_gemini_ocr_text,
@@ -100,23 +102,23 @@ def test_prepare_reference_file_uses_ocr_fallback_when_pdf_text_layer_empty(
         lambda _path: ("", ["PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。"]),
     )
     monkeypatch.setattr(
-        "src.reference_utils.run_gemini_pdf_ocr",
-        lambda _path, _settings: ("这是 Gemini OCR 提取出来的中文文本内容。", ["PDF 文字层为空，已使用 Gemini OCR fallback。model=gemini-3-flash-preview"]),
+        "src.reference_utils.run_codex_api_pdf_ocr",
+        lambda _path, _settings: ("这是 Codex API OCR 提取出来的中文文本内容。", ["PDF 文字层为空，已使用 Codex API OCR fallback。model=gpt-5.4-mini"]),
     )
 
     result = prepare_reference_file(source, loaded_settings)
 
     assert result.success is True
-    assert result.extraction_method == "gemini_cli_pdf_ocr"
-    assert "Gemini OCR fallback" in " ".join(result.warnings)
-    assert "Gemini OCR 提取出来的中文文本内容" in result.extracted_text
+    assert result.extraction_method == "codex_api_pdf_ocr"
+    assert "Codex API OCR fallback" in " ".join(result.warnings)
+    assert "Codex API OCR 提取出来的中文文本内容" in result.extracted_text
 
 
 def test_prepare_reference_file_prefers_gemini_ocr_even_when_pdf_has_text_layer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True})
+    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True, "ai_ocr_backend": "gemini_cli"})
     reference_dir = tmp_path / "data/input/reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
     source = reference_dir / "book.pdf"
@@ -145,7 +147,7 @@ def test_prepare_reference_file_falls_back_to_text_layer_when_gemini_ocr_fails_a
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True})
+    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True, "ai_ocr_backend": "gemini_cli"})
     reference_dir = tmp_path / "data/input/reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
     source = reference_dir / "book.pdf"
@@ -174,7 +176,7 @@ def test_prepare_reference_file_falls_back_to_codex_ocr_when_gemini_ocr_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True})
+    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True, "ai_ocr_backend": "gemini_cli"})
     reference_dir = tmp_path / "data/input/reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
     source = reference_dir / "scan.pdf"
@@ -192,6 +194,10 @@ def test_prepare_reference_file_falls_back_to_codex_ocr_when_gemini_ocr_fails(
 
     monkeypatch.setattr("src.reference_utils.run_gemini_pdf_ocr", fake_gemini_ocr)
     monkeypatch.setattr(
+        "src.reference_utils.run_codex_api_pdf_ocr",
+        lambda _path, _settings: (_ for _ in ()).throw(CodexOCRError("codex api unavailable")),
+    )
+    monkeypatch.setattr(
         "src.reference_utils.run_codex_pdf_ocr",
         lambda _path, _settings: ("这是 Codex OCR 提取出来的中文文本内容。", ["PDF 文字层为空，已使用 Codex OCR fallback。model=gpt-5.4-mini"]),
     )
@@ -204,7 +210,7 @@ def test_prepare_reference_file_falls_back_to_codex_ocr_when_gemini_ocr_fails(
 
     assert result.success is True
     assert result.extraction_method == "codex_cli_pdf_ocr"
-    assert "Gemini OCR 失败，已回退到 Codex OCR" in " ".join(result.warnings)
+    assert "Gemini OCR 失败，已回退到 Codex CLI OCR" in " ".join(result.warnings)
     assert "Codex OCR 提取出来的中文文本内容" in result.extracted_text
 
 
@@ -231,6 +237,10 @@ def test_prepare_reference_file_falls_back_to_ocrmypdf_when_codex_ocr_also_fails
     def fake_codex_ocr(_path: Path, _settings) -> tuple[str, list[str]]:
         raise CodexOCRError("codex cli timeout")
 
+    monkeypatch.setattr(
+        "src.reference_utils.run_codex_api_pdf_ocr",
+        lambda _path, _settings: (_ for _ in ()).throw(CodexOCRError("codex api timeout")),
+    )
     monkeypatch.setattr("src.reference_utils.run_gemini_pdf_ocr", fake_gemini_ocr)
     monkeypatch.setattr("src.reference_utils.run_codex_pdf_ocr", fake_codex_ocr)
     monkeypatch.setattr(
@@ -242,7 +252,7 @@ def test_prepare_reference_file_falls_back_to_ocrmypdf_when_codex_ocr_also_fails
 
     assert result.success is True
     assert result.extraction_method == "ocrmypdf_tesseract"
-    assert "Gemini OCR 和 Codex OCR 都失败，已回退到 ocrmypdf" in " ".join(result.warnings)
+    assert "已回退到 ocrmypdf" in " ".join(result.warnings)
     assert "ocrmypdf OCR 提取出来的中文文本内容" in result.extracted_text
 
 
@@ -263,8 +273,8 @@ def test_prepare_reference_file_keeps_pdf_failure_when_ocr_disabled(
         lambda _path: ("", ["PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。"]),
     )
     monkeypatch.setattr(
-        "src.reference_utils.run_gemini_pdf_ocr",
-        lambda _path, _settings: (_ for _ in ()).throw(GeminiOCRError("disabled in test")),
+        "src.reference_utils.run_codex_api_pdf_ocr",
+        lambda _path, _settings: (_ for _ in ()).throw(CodexOCRError("disabled in test")),
     )
 
     result = prepare_reference_file(source, loaded_settings)
@@ -272,7 +282,7 @@ def test_prepare_reference_file_keeps_pdf_failure_when_ocr_disabled(
     assert result.success is False
     assert result.extraction_method == "pypdf_text_extract"
     assert result.warnings == [
-        "Gemini OCR 失败，且当前未启用 OCR fallback。reason=disabled in test",
+        "Codex API OCR 失败，且当前未启用 OCR fallback。reason=disabled in test",
         "PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。",
     ]
 
@@ -370,6 +380,88 @@ def test_run_codex_pdf_ocr_uses_configured_model_prompt_and_reasoning_effort(
     assert "禁止调用本机的 OCR 工具" in str(seen["input"])
     assert "只使用模型自身的视觉能力" in str(seen["input"])
     assert f"@{{{source.name}}}" in str(seen["input"])
+
+
+def test_run_codex_api_pdf_ocr_uploads_file_and_references_file_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(
+        tmp_path,
+        reference_overrides={"codex_ocr_model": "gpt-5.4-mini", "codex_ocr_reasoning_effort": "medium"},
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+    monkeypatch.setenv("CODEX_LB_API_KEY", "test-key")
+
+    source = tmp_path / "external" / "scan.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4 fake")
+    seen: dict[str, object] = {"requests": []}
+
+    class FakeResponse:
+        def __init__(self, payload: dict | str = "") -> None:
+            self.payload = payload
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            _ = exc_type, exc, tb
+
+        def read(self) -> bytes:
+            if isinstance(self.payload, dict):
+                return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+            return self.payload.encode("utf-8")
+
+    def fake_urlopen(request, timeout=None):
+        body = request.data or b""
+        request_record = {
+            "url": request.full_url,
+            "method": request.get_method(),
+            "headers": {key.lower(): value for key, value in request.header_items()},
+            "body": body,
+            "timeout": timeout,
+        }
+        seen["requests"].append(request_record)
+        if request.full_url == "http://127.0.0.1:2455/backend-api/files":
+            return FakeResponse({"file_id": "file_123", "upload_url": "http://upload.local/blob"})
+        if request.full_url == "http://upload.local/blob":
+            return FakeResponse("")
+        if request.full_url == "http://127.0.0.1:2455/backend-api/files/file_123/uploaded":
+            return FakeResponse({"status": "success", "download_url": "http://download.local/file_123"})
+        if request.full_url == "http://127.0.0.1:2455/v1/responses":
+            seen["response_payload"] = json.loads(body.decode("utf-8"))
+            return FakeResponse({"output_text": "这是 Codex API OCR 的结果。"})
+        pytest.fail(f"未预期的请求: {request.full_url}")
+
+    monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
+
+    text, warnings = run_codex_api_pdf_ocr(source, loaded_settings)
+
+    assert text == "这是 Codex API OCR 的结果。"
+    assert "Codex API OCR fallback" in " ".join(warnings)
+    requests = seen["requests"]
+    assert isinstance(requests, list)
+    assert requests[0]["method"] == "POST"
+    assert json.loads(requests[0]["body"].decode("utf-8")) == {
+        "file_name": "scan.pdf",
+        "file_size": len(b"%PDF-1.4 fake"),
+        "use_case": "codex",
+    }
+    assert requests[0]["headers"]["authorization"] == "Bearer test-key"
+    assert requests[1]["method"] == "PUT"
+    assert requests[1]["body"] == b"%PDF-1.4 fake"
+    assert requests[1]["headers"]["x-ms-blob-type"] == "BlockBlob"
+    assert requests[2]["method"] == "POST"
+    response_payload = seen["response_payload"]
+    assert isinstance(response_payload, dict)
+    assert response_payload["model"] == "gpt-5.4-mini"
+    assert response_payload["reasoning"] == {"effort": "medium"}
+    content = response_payload["input"][0]["content"]
+    assert {"type": "input_file", "file_id": "file_123"} in content
+    assert "禁止调用本机的 OCR 工具" in content[0]["text"]
+    sidecar_path = loaded_settings.path_for("ocr_dir") / f"{source.stem}.codex_api_ocr.txt"
+    assert sidecar_path.read_text(encoding="utf-8") == "这是 Codex API OCR 的结果。"
 
 
 def test_run_gemini_pdf_ocr_uses_reference_fallback_model_only_for_ocr(

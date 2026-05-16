@@ -100,6 +100,7 @@ reference:
   prefer_existing_text: true
   run_ocr_when_needed: true
   sentence_split_enabled: true
+  ai_ocr_backend: codex_api
   gemini_ocr_model: gemini-3-flash-preview
   gemini_ocr_fallback_model: ""
   codex_ocr_model: gpt-5.4-mini
@@ -173,7 +174,7 @@ llm:
   gemini_model: gemini-3.1-pro-preview
   gemini_fallback_model: gemini-3-flash-preview
   backends:
-    - codex_cli
+    - codex_api
   enable_fallback: true
   block_batch_size: 2
   block_concurrency: 6
@@ -191,6 +192,14 @@ llm:
   safe_replace_length_ratio_max: 1.2
   safe_replace_max_extra_content_ratio: 0.12
   safe_replace_min_run_length: 2
+
+codex_lb:
+  base_url: "http://127.0.0.1:2455"
+  base_url_env: "CODEX_LB_BASE_URL"
+  api_key_env: "CODEX_LB_API_KEY"
+  responses_path: "/v1/responses"
+  files_create_path: "/backend-api/files"
+  files_finalize_path_template: "/backend-api/files/{file_id}/uploaded"
 
 prompts:
   classify_and_correct: config/prompts/classify_and_correct.md

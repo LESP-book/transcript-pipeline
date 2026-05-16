@@ -13,16 +13,21 @@ def test_load_settings_success() -> None:
 
     assert loaded_settings.settings.project.name == "transcript-pipeline"
     assert loaded_settings.settings_path == (PROJECT_ROOT / "config/settings.yaml").resolve()
-    assert loaded_settings.settings.llm.backends == ["codex_cli"]
+    assert loaded_settings.settings.llm.backends == ["codex_api"]
     assert loaded_settings.settings.llm.model == "gpt-5.4"
     assert loaded_settings.settings.llm.gemini_model == "gemini-3.1-pro-preview"
     assert loaded_settings.settings.llm.gemini_fallback_model == "gemini-3-flash-preview"
     assert loaded_settings.settings.llm.reasoning_effort == "high"
     assert loaded_settings.settings.reference.ocr_timeout_seconds == 240
+    assert loaded_settings.settings.reference.ai_ocr_backend == "codex_api"
     assert loaded_settings.settings.reference.gemini_ocr_model == "gemini-3-flash-preview"
     assert loaded_settings.settings.reference.gemini_ocr_fallback_model == ""
     assert loaded_settings.settings.reference.codex_ocr_model == "gpt-5.4-mini"
     assert loaded_settings.settings.reference.codex_ocr_reasoning_effort == "medium"
+    assert loaded_settings.settings.codex_lb.base_url == "http://127.0.0.1:2455"
+    assert loaded_settings.settings.codex_lb.base_url_env == "CODEX_LB_BASE_URL"
+    assert loaded_settings.settings.codex_lb.api_key_env == "CODEX_LB_API_KEY"
+    assert loaded_settings.settings.codex_lb.responses_path == "/v1/responses"
 
 
 def test_load_settings_local_cpu_profile() -> None:
