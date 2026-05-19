@@ -45,6 +45,9 @@ class CodexLBClient:
         response_payload = self.post_json(self.settings.responses_path, payload, label="Responses API")
         return extract_response_text(response_payload)
 
+    def responses_stream_text(self, payload: dict[str, Any]) -> str:
+        return self.post_event_stream(self.settings.responses_path, payload, label="Responses API")
+
     def codex_responses_text(self, payload: dict[str, Any]) -> str:
         return self.post_event_stream(self.settings.codex_responses_path, payload, label="Codex Responses API")
 

@@ -15,6 +15,7 @@ from src.reference_utils import (
     iter_reference_files,
     prepare_reference_file,
     read_text_file,
+    render_pdf_pages_as_png_data_urls,
     run_codex_api_pdf_ocr,
     run_codex_pdf_ocr,
     sanitize_ocrmypdf_text,
@@ -103,14 +104,14 @@ def test_prepare_reference_file_uses_ocr_fallback_when_pdf_text_layer_empty(
     )
     monkeypatch.setattr(
         "src.reference_utils.run_codex_api_pdf_ocr",
-        lambda _path, _settings: ("这是 Codex API OCR 提取出来的中文文本内容。", ["PDF 文字层为空，已使用 Codex API OCR fallback。model=gpt-5.4-mini"]),
+        lambda _path, _settings: ("这是 Codex API OCR 提取出来的中文文本内容。", ["已使用 Codex API OCR。model=gpt-5.4-mini"]),
     )
 
     result = prepare_reference_file(source, loaded_settings)
 
     assert result.success is True
     assert result.extraction_method == "codex_api_pdf_ocr"
-    assert "Codex API OCR fallback" in " ".join(result.warnings)
+    assert "Codex API OCR" in " ".join(result.warnings)
     assert "Codex API OCR 提取出来的中文文本内容" in result.extracted_text
 
 
@@ -338,7 +339,7 @@ def test_run_codex_pdf_ocr_uses_configured_model_prompt_and_reasoning_effort(
 ) -> None:
     write_minimal_settings(
         tmp_path,
-        reference_overrides={"codex_ocr_model": "gpt-5.4-mini", "codex_ocr_reasoning_effort": "medium"},
+        reference_overrides={"codex_ocr_model": "gpt-5.4-mini", "codex_ocr_reasoning_effort": "high"},
     )
     loaded_settings = load_settings(project_root=tmp_path)
 
@@ -375,20 +376,55 @@ def test_run_codex_pdf_ocr_uses_configured_model_prompt_and_reasoning_effort(
     assert command[:4] == ["codex", "exec", "-C", str(Path(str(seen["cwd"])).resolve())]
     assert ["-m", "gpt-5.4-mini"] == command[6:8]
     assert '-c' in command
-    assert 'model_reasoning_effort="medium"' in command
+    assert 'model_reasoning_effort="high"' in command
     assert seen["timeout"] == loaded_settings.settings.reference.ocr_timeout_seconds
     assert "禁止调用本机的 OCR 工具" in str(seen["input"])
     assert "只使用模型自身的视觉能力" in str(seen["input"])
     assert f"@{{{source.name}}}" in str(seen["input"])
 
 
-def test_run_codex_api_pdf_ocr_uploads_file_and_references_file_id(
+def test_render_pdf_pages_as_png_data_urls_uses_pdftoppm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "scan.pdf"
+    source.write_bytes(b"%PDF-1.4 fake")
+    seen: dict[str, object] = {}
+
+    def fake_run(command, *, text, capture_output, check):
+        seen["command"] = command
+        assert text is True
+        assert capture_output is True
+        assert check is False
+        output_prefix = Path(command[-1])
+        output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        (output_prefix.parent / "page-1.png").write_bytes(b"page-one")
+        (output_prefix.parent / "page-2.png").write_bytes(b"page-two")
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr("src.reference_utils.shutil.which", lambda name: "/usr/bin/pdftoppm" if name == "pdftoppm" else None)
+    monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
+
+    data_urls = render_pdf_pages_as_png_data_urls(source)
+
+    assert data_urls == ["data:image/png;base64,cGFnZS1vbmU=", "data:image/png;base64,cGFnZS10d28="]
+    assert seen["command"][:2] == ["pdftoppm", "-png"]
+    assert seen["command"][2] == str(source)
+
+
+def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_settings(
         tmp_path,
-        reference_overrides={"codex_ocr_model": "gpt-5.4-mini", "codex_ocr_reasoning_effort": "medium"},
+        reference_overrides={"codex_ocr_model": "gpt-5.4-mini", "codex_ocr_reasoning_effort": "high"},
     )
     loaded_settings = load_settings(project_root=tmp_path)
     monkeypatch.setenv("CODEX_LB_API_KEY", "test-key")
@@ -423,48 +459,46 @@ def test_run_codex_api_pdf_ocr_uploads_file_and_references_file_id(
             "timeout": timeout,
         }
         seen["requests"].append(request_record)
-        if request.full_url == "http://127.0.0.1:2455/backend-api/files":
-            return FakeResponse({"file_id": "file_123", "upload_url": "http://upload.local/blob"})
-        if request.full_url == "http://upload.local/blob":
-            return FakeResponse("")
-        if request.full_url == "http://127.0.0.1:2455/backend-api/files/file_123/uploaded":
-            return FakeResponse({"status": "success", "download_url": "http://download.local/file_123"})
         if request.full_url == "http://127.0.0.1:2455/v1/responses":
             seen["response_payload"] = json.loads(body.decode("utf-8"))
-            return FakeResponse({"output_text": "这是 Codex API OCR 的结果。"})
+            event_payload = json.dumps(
+                {"type": "response.output_text.delta", "delta": "这是 Codex API OCR 的结果。"},
+                ensure_ascii=False,
+            )
+            return FakeResponse(f"event: response.output_text.delta\ndata: {event_payload}\n\n")
         pytest.fail(f"未预期的请求: {request.full_url}")
 
+    monkeypatch.setattr(
+        "src.reference_utils.render_pdf_pages_as_png_data_urls",
+        lambda _path: ["data:image/png;base64,Zmlyc3Q=", "data:image/png;base64,c2Vjb25k"],
+    )
     monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
 
     text, warnings = run_codex_api_pdf_ocr(source, loaded_settings)
 
     assert text == "这是 Codex API OCR 的结果。"
-    assert "Codex API OCR fallback" in " ".join(warnings)
+    assert "Codex API OCR" in " ".join(warnings)
     requests = seen["requests"]
     assert isinstance(requests, list)
+    assert len(requests) == 1
     assert requests[0]["method"] == "POST"
-    assert json.loads(requests[0]["body"].decode("utf-8")) == {
-        "file_name": "scan.pdf",
-        "file_size": len(b"%PDF-1.4 fake"),
-        "use_case": "codex",
-    }
     assert requests[0]["headers"]["authorization"] == "Bearer test-key"
-    assert requests[1]["method"] == "PUT"
-    assert requests[1]["body"] == b"%PDF-1.4 fake"
-    assert requests[1]["headers"]["x-ms-blob-type"] == "BlockBlob"
-    assert requests[2]["method"] == "POST"
+    assert requests[0]["headers"]["accept"] == "text/event-stream"
     response_payload = seen["response_payload"]
     assert isinstance(response_payload, dict)
     assert response_payload["model"] == "gpt-5.4-mini"
-    assert response_payload["reasoning"] == {"effort": "medium"}
+    assert response_payload["reasoning"] == {"effort": "high"}
+    assert response_payload["stream"] is True
     content = response_payload["input"][0]["content"]
-    assert {"type": "input_file", "file_id": "file_123"} in content
-    assert "禁止调用本机的 OCR 工具" in content[0]["text"]
+    assert "页面图片做 OCR 提取" in content[0]["text"]
+    assert "页面数量：2" in content[0]["text"]
+    assert {"type": "input_image", "image_url": "data:image/png;base64,Zmlyc3Q="} in content
+    assert {"type": "input_image", "image_url": "data:image/png;base64,c2Vjb25k"} in content
     sidecar_path = loaded_settings.path_for("ocr_dir") / f"{source.stem}.codex_api_ocr.txt"
     assert sidecar_path.read_text(encoding="utf-8") == "这是 Codex API OCR 的结果。"
 
 
-def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_upload_url(
+def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_responses(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -474,56 +508,39 @@ def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_upload_url(
     source = tmp_path / "external" / "scan.pdf"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(b"%PDF-1.4 fake")
-    seen: dict[str, object] = {"urlopen_urls": []}
-
-    class FakeResponse:
-        def __init__(self, payload: dict | str = "") -> None:
-            self.payload = payload
-
-        def __enter__(self) -> "FakeResponse":
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            _ = exc_type, exc, tb
-
-        def read(self) -> bytes:
-            if isinstance(self.payload, dict):
-                return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
-            return self.payload.encode("utf-8")
+    seen: dict[str, object] = {}
 
     def fake_urlopen(request, timeout=None):
         _ = timeout
-        seen["urlopen_urls"].append(request.full_url)
-        if request.full_url == "http://127.0.0.1:2455/backend-api/files":
-            return FakeResponse({"file_id": "file_123", "upload_url": "https://upload.example/blob"})
-        if request.full_url == "http://127.0.0.1:2455/backend-api/files/file_123/uploaded":
-            return FakeResponse({"status": "success"})
-        if request.full_url == "http://127.0.0.1:2455/v1/responses":
-            return FakeResponse({"output_text": "远程上传成功后的 OCR 结果。"})
-        pytest.fail(f"未预期的 urlopen 请求: {request.full_url}")
+        pytest.fail(f"远程 codex-lb 请求应优先使用 curl，不应走 urlopen: {request.full_url}")
 
     class Completed:
         returncode = 0
         stderr = ""
-        stdout = "\n200"
+        payload = json.dumps(
+            {"type": "response.output_text.delta", "delta": "远程流式 OCR 结果。"},
+            ensure_ascii=False,
+        )
+        stdout = f"event: response.output_text.delta\ndata: {payload}\n\n\n200"
 
     def fake_run(command, *, input, text, capture_output, check):
         _ = input, text, capture_output, check
         seen["curl_command"] = command
         return Completed()
 
+    monkeypatch.setenv("CODEX_LB_BASE_URL", "https://api.redworker.org")
+    monkeypatch.setattr("src.reference_utils.render_pdf_pages_as_png_data_urls", lambda _path: ["data:image/png;base64,Zmlyc3Q="])
     monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
     monkeypatch.setattr("src.codex_lb_client.shutil.which", lambda name: "/usr/bin/curl" if name == "curl" else None)
     monkeypatch.setattr("src.codex_lb_client.subprocess.run", fake_run)
 
     text, _warnings = run_codex_api_pdf_ocr(source, loaded_settings)
 
-    assert text == "远程上传成功后的 OCR 结果。"
-    assert "https://upload.example/blob" not in seen["urlopen_urls"]
+    assert text == "远程流式 OCR 结果。"
     command = seen["curl_command"]
     assert isinstance(command, list)
     assert command[0] == "curl"
-    assert "https://upload.example/blob" in command
+    assert "https://api.redworker.org/v1/responses" in command
 
 
 def test_run_gemini_pdf_ocr_uses_reference_fallback_model_only_for_ocr(

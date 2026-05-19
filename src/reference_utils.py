@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
+import base64
 import hashlib
+import json
 import logging
 import re
 import shutil
@@ -471,6 +472,57 @@ def build_codex_ocr_prompt(reference_path: str | Path) -> str:
     )
 
 
+def build_codex_api_image_ocr_prompt(reference_path: str | Path, page_count: int) -> str:
+    return "\n".join(
+        [
+            "你现在要对一份中文 PDF 的页面图片做 OCR 提取。",
+            "任务要求：",
+            "1. 只输出提取后的纯文本。",
+            "2. 不要解释，不要总结，不要添加说明。",
+            "3. 保留原文顺序，尽量保留自然段。",
+            "4. 不要输出 Markdown，不要输出 JSON。",
+            "5. 不要输出页码、分页标记、页眉、页尾、Page 1 之类的分页提示。",
+            "6. 下面的图片已经按 PDF 页序渲染，请直接识别图片中的正文。",
+            "",
+            f"PDF 文件名：{Path(reference_path).name}",
+            f"页面数量：{page_count}",
+        ]
+    )
+
+
+def render_pdf_pages_as_png_data_urls(reference_path: Path) -> list[str]:
+    if shutil.which("pdftoppm") is None:
+        raise CodexOCRError("未找到 pdftoppm，无法将 PDF 页面渲染为图片供 Codex API OCR。")
+
+    with tempfile.TemporaryDirectory(prefix=f"{reference_path.stem}.codex_api_pages_") as temp_dir:
+        output_prefix = Path(temp_dir) / "page"
+        command = ["pdftoppm", "-png", str(reference_path), str(output_prefix)]
+        completed = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip() or completed.stdout.strip()
+            raise CodexOCRError(
+                f"Codex API OCR 页面渲染失败: {reference_path.name} | {stderr or f'pdftoppm exited with code {completed.returncode}'}"
+            )
+
+        page_paths = sorted(Path(temp_dir).glob("page-*.png"))
+        if not page_paths:
+            raise CodexOCRError(f"Codex API OCR 页面渲染未生成图片: {reference_path.name}")
+
+        data_urls: list[str] = []
+        for page_path in page_paths:
+            try:
+                encoded = base64.b64encode(page_path.read_bytes()).decode("ascii")
+            except OSError as exc:
+                raise CodexOCRError(f"Codex API OCR 无法读取渲染图片: {page_path.name} | {exc}") from exc
+            data_urls.append(f"data:image/png;base64,{encoded}")
+        return data_urls
+
+
 def describe_ai_ocr_backend(backend: str) -> str:
     if backend == AI_OCR_BACKEND_CODEX_API:
         return "Codex API"
@@ -523,26 +575,29 @@ def run_codex_api_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings)
 
     client = CodexLBClient(loaded_settings.settings.codex_lb, timeout_seconds=reference_settings.ocr_timeout_seconds)
     try:
-        file_id = client.upload_file(reference_path, use_case="codex")
-        prompt = build_codex_ocr_prompt(reference_path.name)
+        page_images = render_pdf_pages_as_png_data_urls(reference_path)
+        content: list[dict[str, str]] = [
+            {"type": "input_text", "text": build_codex_api_image_ocr_prompt(reference_path.name, len(page_images))}
+        ]
+        for index, image_url in enumerate(page_images, start=1):
+            content.append({"type": "input_text", "text": f"\n\n[第 {index} 页]"})
+            content.append({"type": "input_image", "image_url": image_url})
+
         payload: dict[str, object] = {
             "model": configured_model,
             "input": [
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": prompt},
-                        {"type": "input_file", "file_id": file_id},
-                    ],
+                    "content": content,
                 }
             ],
-            "stream": False,
+            "stream": True,
             "store": False,
         }
         configured_reasoning_effort = reference_settings.codex_ocr_reasoning_effort.strip()
         if configured_reasoning_effort:
             payload["reasoning"] = {"effort": configured_reasoning_effort}
-        text = sanitize_gemini_ocr_text(strip_fenced_text(client.responses_text(payload)))
+        text = sanitize_gemini_ocr_text(strip_fenced_text(client.responses_stream_text(payload)))
     except CodexLBClientError as exc:
         raise CodexOCRError(f"Codex API OCR 失败: {reference_path.name} | {exc}") from exc
 
@@ -552,7 +607,7 @@ def run_codex_api_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings)
     ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
     sidecar_path = ocr_dir / f"{reference_path.stem}.codex_api_ocr.txt"
     sidecar_path.write_text(text, encoding="utf-8")
-    return text, [f"PDF 文字层为空，已使用 Codex API OCR fallback。model={configured_model}"]
+    return text, [f"已使用 Codex API OCR。model={configured_model}"]
 
 
 def run_gemini_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
