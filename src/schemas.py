@@ -87,7 +87,7 @@ class ReferenceSettings(AppBaseModel):
     gemini_ocr_fallback_model: str = ""
     codex_ocr_model: str = "gpt-5.4-mini"
     codex_ocr_reasoning_effort: str = "high"
-    ocr_timeout_seconds: int = 240
+    ocr_timeout_seconds: int = 480
     ocr_languages: list[str] = Field(default_factory=list)
 
 
