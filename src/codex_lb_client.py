@@ -45,6 +45,9 @@ class CodexLBClient:
         response_payload = self.post_json(self.settings.responses_path, payload, label="Responses API")
         return extract_response_text(response_payload)
 
+    def codex_responses_text(self, payload: dict[str, Any]) -> str:
+        return self.post_event_stream(self.settings.codex_responses_path, payload, label="Codex Responses API")
+
     def upload_file(self, file_path: Path, *, use_case: str = "codex") -> str:
         try:
             file_bytes = file_path.read_bytes()
@@ -92,6 +95,28 @@ class CodexLBClient:
                 use_curl_first=should_use_curl_first(self.base_url),
             ),
             label=label,
+        )
+
+    def post_event_stream(self, path: str, payload: dict[str, Any], *, label: str) -> str:
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        request = Request(
+            endpoint_url(self.base_url, path),
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "text/event-stream",
+                "Content-Type": "application/json",
+                "User-Agent": "codex_cli_rs/0.130.0 transcript-pipeline",
+            },
+        )
+        return extract_event_stream_text(
+            read_http_response(
+                request,
+                label=label,
+                timeout_seconds=self.timeout_seconds,
+                use_curl_first=should_use_curl_first(self.base_url),
+            )
         )
 
     def put_file_bytes(self, upload_url: str, file_bytes: bytes, *, label: str) -> None:
@@ -271,6 +296,71 @@ def extract_response_text(payload: dict[str, Any]) -> str:
     if not text:
         raise CodexLBClientError(f"Responses API 返回中未找到 output_text: {payload}")
     return text
+
+
+def extract_event_stream_text(stream_text: str) -> str:
+    parts: list[str] = []
+    completed_text: str | None = None
+    failed_payload: dict[str, Any] | None = None
+    for block in iter_sse_blocks(stream_text):
+        event_name, data_text = parse_sse_block(block)
+        if not data_text or data_text == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data_text)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        event_type = str(payload.get("type") or event_name or "")
+        if event_type in {"response.output_text.delta", "response.text.delta"}:
+            delta = payload.get("delta")
+            if isinstance(delta, str):
+                parts.append(delta)
+            continue
+        if event_type in {"response.failed", "response.incomplete"}:
+            failed_payload = payload
+            continue
+        if event_type == "response.completed":
+            response = payload.get("response")
+            if isinstance(response, dict):
+                output_text = response.get("output_text")
+                if isinstance(output_text, str) and output_text.strip():
+                    completed_text = output_text.strip()
+
+    if failed_payload is not None:
+        raise CodexLBClientError(f"Codex Responses API 返回失败事件: {failed_payload}")
+    text = "".join(parts).strip() or (completed_text or "").strip()
+    if text:
+        return text
+    raise CodexLBClientError("Codex Responses API 流中未找到 output_text。")
+
+
+def iter_sse_blocks(stream_text: str) -> list[list[str]]:
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for raw_line in stream_text.splitlines():
+        line = raw_line.rstrip("\r")
+        if line:
+            current.append(line)
+            continue
+        if current:
+            blocks.append(current)
+            current = []
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def parse_sse_block(lines: list[str]) -> tuple[str | None, str]:
+    event_name: str | None = None
+    data_lines: list[str] = []
+    for line in lines:
+        if line.startswith("event:"):
+            event_name = line.split(":", 1)[1].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line.split(":", 1)[1].lstrip())
+    return event_name, "\n".join(data_lines).strip()
 
 
 def collect_text_parts(content: Any, parts: list[str]) -> None:

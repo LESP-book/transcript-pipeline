@@ -28,6 +28,7 @@ def test_load_settings_success() -> None:
     assert loaded_settings.settings.codex_lb.base_url_env == "CODEX_LB_BASE_URL"
     assert loaded_settings.settings.codex_lb.api_key_env == "CODEX_LB_API_KEY"
     assert loaded_settings.settings.codex_lb.responses_path == "/v1/responses"
+    assert loaded_settings.settings.codex_lb.codex_responses_path == "/backend-api/codex/responses"
 
 
 def test_load_settings_local_cpu_profile() -> None:

@@ -907,14 +907,9 @@ def run_codex_api_payload(prompt: str, loaded_settings: LoadedSettings) -> dict[
 
     payload: dict[str, Any] = {
         "model": configured_model,
-        "input": [
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": prompt}],
-            }
-        ],
-        "text": {"format": {"type": "json_object"}},
-        "stream": False,
+        "instructions": "你是阶段 6 文稿校对助手。严格遵守用户输入中的 JSON 输出要求，只返回最终 JSON。",
+        "input": prompt,
+        "stream": True,
         "store": False,
     }
     configured_reasoning_effort = llm_settings.reasoning_effort.strip()
@@ -923,7 +918,7 @@ def run_codex_api_payload(prompt: str, loaded_settings: LoadedSettings) -> dict[
 
     client = CodexLBClient(loaded_settings.settings.codex_lb, timeout_seconds=llm_settings.timeout_seconds)
     try:
-        result = extract_json_payload(client.responses_text(payload))
+        result = extract_json_payload(client.codex_responses_text(payload))
     except CodexLBClientError as exc:
         raise CLIBackendError(f"codex_api 调用失败: {exc}") from exc
     result.setdefault("model_name", configured_model)

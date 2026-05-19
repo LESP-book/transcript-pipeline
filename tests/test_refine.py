@@ -8,6 +8,7 @@ from urllib.error import HTTPError
 
 import pytest
 
+from src.codex_lb_client import CodexLBClientError, extract_event_stream_text
 from src.config_loader import load_settings
 from src.refine_utils import (
     BACKEND_CODEX_API,
@@ -372,6 +373,7 @@ def test_refine_batch_uses_single_codex_call_with_reference_context(
             "needs_review_sections": [],
             "refinement_strategy": "single_pass_with_safe_replace",
             "refinement_reason": "single_pass_codex",
+            "model_name": "gpt-5.4",
         }
 
     monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
@@ -400,6 +402,23 @@ def test_parse_backend_document_result_requires_fulltext() -> None:
     assert result.final_markdown == "# 标题\n\n> 完整精修文本"
     assert result.needs_review_sections[0]["excerpt"] == "片段"
     assert result.refinement_notes == ["note"]
+
+
+def test_extract_event_stream_text_raises_on_failed_event() -> None:
+    failed_event = json.dumps(
+        {
+            "type": "response.failed",
+            "response": {
+                "status": "failed",
+                "error": {"code": "stream_idle_timeout", "message": "Upstream stream idle timeout"},
+            },
+        },
+        ensure_ascii=False,
+    )
+    stream_text = f"event: response.failed\ndata: {failed_event}\n\n"
+
+    with pytest.raises(CodexLBClientError, match="stream_idle_timeout"):
+        extract_event_stream_text(stream_text)
 
 
 def test_run_gemini_cli_uses_configured_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -521,9 +540,10 @@ def test_run_codex_api_uses_responses_api_payload(
             _ = exc_type, exc, tb
 
         def read(self) -> bytes:
-            return json.dumps(
+            payload = json.dumps(
                 {
-                    "output_text": json.dumps(
+                    "type": "response.output_text.delta",
+                    "delta": json.dumps(
                         {
                             "final_markdown": "# 标题\n\n完整精修文本",
                             "refinement_strategy": "final_markdown_cleanup",
@@ -532,10 +552,11 @@ def test_run_codex_api_uses_responses_api_payload(
                             "refinement_notes": [],
                         },
                         ensure_ascii=False,
-                    )
+                    ),
                 },
                 ensure_ascii=False,
-            ).encode("utf-8")
+            )
+            return f"event: response.output_text.delta\ndata: {payload}\n\n".encode("utf-8")
 
     def fake_urlopen(request, timeout=None):
         seen["url"] = request.full_url
@@ -552,16 +573,18 @@ def test_run_codex_api_uses_responses_api_payload(
     assert result.backend == BACKEND_CODEX_API
     assert result.model_name == "gpt-5.4"
     assert "完整精修文本" in result.final_markdown
-    assert seen["url"] == "http://127.0.0.1:2455/v1/responses"
+    assert seen["url"] == "http://127.0.0.1:2455/backend-api/codex/responses"
     assert seen["method"] == "POST"
     assert seen["headers"]["Authorization"] == "Bearer test-key"
     assert seen["timeout"] == 1800
     payload = seen["payload"]
     assert isinstance(payload, dict)
     assert payload["model"] == "gpt-5.4"
+    assert payload["instructions"]
+    assert payload["input"] == "prompt"
     assert payload["reasoning"] == {"effort": "high"}
-    assert payload["text"] == {"format": {"type": "json_object"}}
-    assert payload["stream"] is False
+    assert "text" not in payload
+    assert payload["stream"] is True
     assert payload["store"] is False
     assert "temperature" not in payload
     assert "max_output_tokens" not in payload
@@ -578,7 +601,7 @@ def test_run_codex_api_retries_with_curl_on_cloudflare_block(
 
     def fake_urlopen(_request, timeout=None):
         raise HTTPError(
-            "https://api.redworker.org/v1/responses",
+            "https://api.redworker.org/backend-api/codex/responses",
             403,
             "Forbidden",
             {},
@@ -588,22 +611,19 @@ def test_run_codex_api_retries_with_curl_on_cloudflare_block(
     class Completed:
         returncode = 0
         stderr = ""
+        payload = json.dumps(
+            {
+                "type": "response.output_text.delta",
+                "delta": json.dumps(
+                    {"final_markdown": "# 测试\n\n正文", "section_map": [], "refinement_notes": [], "needs_review_sections": []},
+                    ensure_ascii=False,
+                ),
+            },
+            ensure_ascii=False,
+        )
         stdout = (
-            json.dumps(
-                {
-                    "output_text": json.dumps(
-                        {
-                            "final_markdown": "# 测试\n\n正文",
-                            "section_map": [],
-                            "refinement_notes": [],
-                            "needs_review_sections": [],
-                        },
-                        ensure_ascii=False,
-                    )
-                },
-                ensure_ascii=False,
-            )
-            + "\n200"
+            f"event: response.output_text.delta\ndata: {payload}\n\n"
+            "\n200"
         )
 
     def fake_run(command, *, input, text, capture_output, check):
@@ -727,6 +747,7 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
             "needs_review_sections": [],
             "refinement_strategy": "single_pass_with_safe_replace",
             "refinement_reason": "single_pass_codex",
+            "model_name": "gpt-5.4",
         }
 
     monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
@@ -742,7 +763,7 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     assert result["source_asr_file"] == "data/intermediate/asr/demo.txt"
     assert result["source_reference_file"] == "data/intermediate/extracted_text/demo.txt"
     assert result["refinement_backends"] == [BACKEND_CODEX_API]
-    assert result["backend_status"]["codex_api"] == "returned_single_pass:model=codex_api"
+    assert result["backend_status"]["codex_api"] == "returned_single_pass:model=gpt-5.4"
     assert result["selected_backend"] == BACKEND_CODEX_API
     assert "final_markdown" in result
     assert result["final_markdown"].startswith("# demo")
@@ -754,7 +775,7 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     assert "classification_summary" not in result
     assert backend_path.exists()
     assert backend_result["selected_backend"] == BACKEND_CODEX_API
-    assert backend_result["backend_status"]["codex_api"] == "returned_single_pass:model=codex_api"
+    assert backend_result["backend_status"]["codex_api"] == "returned_single_pass:model=gpt-5.4"
     assert backend_result["final_markdown"].startswith("# demo")
 
 
@@ -951,7 +972,7 @@ def test_refine_batch_falls_back_to_codex_when_single_gemini_backend_fails(
     assert result["model_results"][BACKEND_CODEX]["final_markdown"] == "# demo\n\nCodex 回退结果"
 
 
-def test_refine_batch_uses_single_codex_call_for_long_line_based_asr(
+def test_refine_batch_uses_single_codex_api_call_for_long_line_based_asr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -977,15 +998,25 @@ def test_refine_batch_uses_single_codex_call_for_long_line_based_asr(
             "needs_review_sections": [],
             "refinement_strategy": "single_pass_with_safe_replace",
             "refinement_reason": "single_pass_codex",
+            "model_name": "gpt-5.4",
         }
 
     monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
 
     refine_batch(loaded_settings)
+    output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
+    result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
+    sidecar = json.loads(output_path.json_path.with_name("long-demo.codex_api.json").read_text(encoding="utf-8"))
 
     assert len(prompts) == 1
     assert "整篇参考原文" in prompts[0]
     assert "预替换全文" in prompts[0]
+    assert "当前块正文" not in prompts[0]
+    assert result["prompt_mode"] == "single_pass_safe_replace"
+    assert result["backend_status"]["codex_api"] == "returned_single_pass:model=gpt-5.4"
+    assert "第0000行转写文本" in result["final_markdown"]
+    assert "第0199行转写文本" in result["final_markdown"]
+    assert sidecar["prompt_mode"] == "single_pass_safe_replace"
 
 
 def test_refine_batch_does_not_use_block_concurrency_in_single_pass_mode(
