@@ -10,10 +10,11 @@ from fastapi import FastAPI, HTTPException, Query
 import uvicorn
 
 from src.config_loader import ConfigLoadError, load_settings
-from src.job_runner import create_batch_id, create_job_id
+from src.job_runner import create_batch_id, create_job_id, supported_reference_extensions, supported_video_extensions
 from src.refine_utils import VALID_REFINEMENT_BACKENDS
 from src.runtime_utils import normalize_stage_name
 from src.web.fs_browser import list_fs_items, resolve_allowed_browse_path, resolve_parent_path
+from src.web.frontend_settings import FrontendSettingsUpdate, frontend_settings_response, save_frontend_settings
 from src.web.models import BatchJobRequest, SingleJobRequest, StageRunRequest
 from src.web.state_store import collect_state_items, create_initial_state, read_json_file, update_state, write_json_file
 from src.web.tasks import execute_batch_job, execute_single_job, execute_stage_run, submit_task
@@ -53,7 +54,18 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             "backends": [*VALID_REFINEMENT_BACKENDS, "both"],
             "configured_backends": list(loaded_settings.settings.llm.backends),
             "active_profile": loaded_settings.active_profile_name,
+            "video_extensions": sorted(supported_video_extensions(loaded_settings)),
+            "reference_extensions": list(supported_reference_extensions()),
         }
+
+    @app.get("/api/frontend-settings")
+    async def get_frontend_settings() -> dict[str, object]:
+        return frontend_settings_response(root)
+
+    @app.put("/api/frontend-settings")
+    async def put_frontend_settings(request: FrontendSettingsUpdate) -> dict[str, object]:
+        save_frontend_settings(root, request)
+        return frontend_settings_response(root)
 
     @app.get("/api/fs/list")
     async def list_fs_entries(
@@ -114,6 +126,10 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             raise HTTPException(status_code=404, detail=f"batch 不存在: {batch_id}")
         return read_json_file(state_path)
 
+    @app.get("/api/batches")
+    async def list_batches() -> dict[str, list[dict]]:
+        return {"items": collect_state_items(root / "data/jobs/batches")}
+
     @app.post("/api/stages/{stage_name}", status_code=202)
     async def post_stage_run(stage_name: str, request: StageRunRequest) -> dict[str, str]:
         run_id = uuid.uuid4().hex[:12]
@@ -136,6 +152,10 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         if not state_path.exists():
             raise HTTPException(status_code=404, detail=f"stage run 不存在: {run_id}")
         return read_json_file(state_path)
+
+    @app.get("/api/stage-runs")
+    async def list_stage_runs() -> dict[str, list[dict]]:
+        return {"items": collect_state_items(root / "data/jobs/stage-runs")}
 
     return app
 

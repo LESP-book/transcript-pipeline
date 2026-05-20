@@ -22,6 +22,11 @@ from src.job_runner import (
     write_job_settings,
 )
 from src.runtime_utils import normalize_stage_name, setup_logging
+from src.settings_overrides import ModelOverrides, apply_model_overrides
+from src.web.frontend_settings import (
+    codex_lb_environment,
+    load_frontend_settings,
+)
 from src.web.models import BatchJobRequest, SingleJobRequest, StageRunRequest
 
 
@@ -54,6 +59,13 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
 
     try:
         request = SingleJobRequest.model_validate(payload)
+        frontend_settings = load_frontend_settings(root)
+        model_overrides = ModelOverrides(
+            llm_model=request.model or frontend_settings.model or None,
+            llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+            ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
+            ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
+        )
         base_loaded_settings = load_settings(
             settings_path=request.config,
             profile_name=request.profile,
@@ -77,6 +89,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             glossary_file=request.glossary_file,
             book_name=request.book_name,
             chapter=request.chapter,
+            model_overrides=model_overrides,
         )
         write_job_manifest(
             loaded_settings=base_loaded_settings,
@@ -99,16 +112,17 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
         logger = setup_logging(job_loaded_settings.settings.runtime.log_level)
         stages = [normalize_stage_name(stage_name) for stage_name in job_loaded_settings.settings.pipeline.stages]
 
-        for stage_name in stages:
-            app.state.update_state(
-                state_path,
-                status="running",
-                current_stage=stage_name,
-            )
-            current_backend = request.backend if stage_name == "refine" else None
-            exit_code = run_stage(stage_name, job_loaded_settings, logger, backend_override=current_backend)
-            if exit_code != 0:
-                raise JobRunnerError(f"job 主链失败: stage={stage_name} exit_code={exit_code}")
+        with codex_lb_environment(frontend_settings):
+            for stage_name in stages:
+                app.state.update_state(
+                    state_path,
+                    status="running",
+                    current_stage=stage_name,
+                )
+                current_backend = request.backend if stage_name == "refine" else None
+                exit_code = run_stage(stage_name, job_loaded_settings, logger, backend_override=current_backend)
+                if exit_code != 0:
+                    raise JobRunnerError(f"job 主链失败: stage={stage_name} exit_code={exit_code}")
 
         _, copied_output_path = copy_final_output(
             job_paths,
@@ -139,6 +153,13 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
 
     try:
         request = BatchJobRequest.model_validate(payload)
+        frontend_settings = load_frontend_settings(root)
+        model_overrides = ModelOverrides(
+            llm_model=request.model or frontend_settings.model or None,
+            llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+            ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
+            ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
+        )
         base_loaded_settings = load_settings(
             settings_path=request.config,
             profile_name=request.profile,
@@ -161,6 +182,7 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
                 project_root=root,
                 base_loaded_settings=base_loaded_settings,
                 job_specs=job_specs,
+                model_overrides=model_overrides,
             )
         )
 
@@ -173,23 +195,24 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
         )
 
         logger = setup_logging(base_loaded_settings.settings.runtime.log_level)
-        for stage_name in ("extract-audio", "transcribe", "prepare-reference", "refine", "export-markdown"):
-            app.state.update_state(
-                state_path,
-                status="running",
-                current_stage=stage_name,
-                items=[serialize_batch_runtime(item) for item in runtimes],
-            )
-            from src.job_runner import run_batch_stage  # local import keeps surface small
+        with codex_lb_environment(frontend_settings):
+            for stage_name in ("extract-audio", "transcribe", "prepare-reference", "refine", "export-markdown"):
+                app.state.update_state(
+                    state_path,
+                    status="running",
+                    current_stage=stage_name,
+                    items=[serialize_batch_runtime(item) for item in runtimes],
+                )
+                from src.job_runner import run_batch_stage  # local import keeps surface small
 
-            run_batch_stage(
-                stage_name=stage_name,
-                runtimes=runtimes,
-                project_root=root,
-                logger=logger,
-                remote_concurrency=request.remote_concurrency,
-                backend_override=request.backend,
-            )
+                run_batch_stage(
+                    stage_name=stage_name,
+                    runtimes=runtimes,
+                    project_root=root,
+                    logger=logger,
+                    remote_concurrency=request.remote_concurrency,
+                    backend_override=request.backend,
+                )
 
         success_count = sum(1 for item in runtimes if item.status == "success")
         failed_count = sum(1 for item in runtimes if item.status == "failed")
@@ -226,11 +249,21 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
 
     try:
         request = StageRunRequest.model_validate(payload)
+        frontend_settings = load_frontend_settings(root)
         normalized_stage_name = normalize_stage_name(stage_name)
         loaded_settings = load_settings(
             settings_path=request.config,
             profile_name=request.profile,
             project_root=root,
+        )
+        apply_model_overrides(
+            loaded_settings,
+            ModelOverrides(
+                llm_model=request.model or frontend_settings.model or None,
+                llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+                ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
+                ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
+            ),
         )
         logger = setup_logging(loaded_settings.settings.runtime.log_level)
         app.state.update_state(
@@ -238,12 +271,13 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
             status="running",
             current_stage=normalized_stage_name,
         )
-        exit_code = run_stage(
-            normalized_stage_name,
-            loaded_settings,
-            logger,
-            backend_override=request.backend,
-        )
+        with codex_lb_environment(frontend_settings):
+            exit_code = run_stage(
+                normalized_stage_name,
+                loaded_settings,
+                logger,
+                backend_override=request.backend,
+            )
         if exit_code != 0:
             raise JobRunnerError(f"stage 运行失败: stage={normalized_stage_name} exit_code={exit_code}")
 

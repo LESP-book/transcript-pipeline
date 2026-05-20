@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from "vue-router";
 
 import BatchJobView from "../views/BatchJobView.vue";
 import JobListView from "../views/JobListView.vue";
+import SettingsView from "../views/SettingsView.vue";
 import SingleJobView from "../views/SingleJobView.vue";
 import StageRunnerView from "../views/StageRunnerView.vue";
 
@@ -31,6 +32,11 @@ export const router = createRouter({
       path: "/jobs",
       name: "jobs",
       component: JobListView,
+    },
+    {
+      path: "/settings",
+      name: "settings",
+      component: SettingsView,
     },
   ],
 });

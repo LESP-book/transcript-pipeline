@@ -65,7 +65,10 @@ async function refreshStage(runId: string) {
 function startPolling(runId: string) {
   stopPolling();
   pollHandle.value = window.setInterval(() => {
-    void refreshStage(runId);
+    void refreshStage(runId).catch((caught) => {
+      message.error(caught instanceof Error ? caught.message : "刷新阶段任务状态失败");
+      stopPolling();
+    });
   }, 2000);
 }
 

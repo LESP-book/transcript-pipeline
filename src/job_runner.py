@@ -387,21 +387,7 @@ def load_batch_job_specs(
             if not video_path.is_file():
                 continue
             if video_path.suffix.lower() not in allowed_video_extensions:
-                failed_items.append(
-                    build_failed_batch_runtime(
-                        spec=resolve_batch_job_spec(
-                            mode="paired-dir" if reference_dir else "shared-reference",
-                            video=str(video_path),
-                            reference=str(shared_reference or ""),
-                            output_dir=str(output_path),
-                            book_name=book_name,
-                            chapter=chapter,
-                            glossary_file=glossary_file,
-                        ),
-                        failed_stage="input-validation",
-                        error_message=f"不支持的视频扩展名: {video_path.name}",
-                    )
-                )
+                # 批量目录只以受支持的视频文件建任务，允许同目录混放参考文本或 PDF。
                 continue
 
             if reference_path is not None:

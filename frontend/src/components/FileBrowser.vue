@@ -87,9 +87,24 @@ async function loadEntries(targetPath: string | null) {
 
 function open() {
   visible.value = true;
-  selectedPath.value = props.modelValue;
+  selectedPath.value = looksLikeLocalPath(props.modelValue) ? props.modelValue : "";
   const rememberedPath = localStorage.getItem(storageKey.value);
-  void loadEntries(props.modelValue || rememberedPath);
+  void loadEntries(initialBrowsePath(props.modelValue, rememberedPath));
+}
+
+function looksLikeLocalPath(value: string): boolean {
+  return value.startsWith("/") || value.startsWith("~");
+}
+
+function initialBrowsePath(value: string, rememberedPath: string | null): string | null {
+  if (!looksLikeLocalPath(value)) {
+    return rememberedPath;
+  }
+  if (props.mode === "dir") {
+    return value;
+  }
+  const slashIndex = value.lastIndexOf("/");
+  return slashIndex > 0 ? value.slice(0, slashIndex) : rememberedPath;
 }
 
 function close() {
@@ -141,7 +156,12 @@ watch(showHidden, () => {
 
 <template>
   <div class="file-browser-field">
-    <n-input :value="modelValue" :placeholder="`${label} 路径`" readonly />
+    <n-input
+      :value="modelValue"
+      :placeholder="`${label} 路径，可直接粘贴`"
+      clearable
+      @update:value="emit('update:modelValue', $event)"
+    />
     <n-button tertiary type="primary" @click="open">
       {{ buttonText ?? `选择${label}` }}
     </n-button>

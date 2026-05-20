@@ -346,7 +346,7 @@ def test_load_batch_job_specs_from_manifest_keeps_valid_items_and_records_invali
     assert "缺少必填字段" in (failed_items[0].error_message or "")
 
 
-def test_load_batch_job_specs_pairs_directory_inputs_and_marks_missing_reference_and_invalid_extension(
+def test_load_batch_job_specs_pairs_directory_inputs_and_ignores_non_video_files(
     tmp_path: Path,
 ) -> None:
     write_minimal_settings(tmp_path)
@@ -376,10 +376,10 @@ def test_load_batch_job_specs_pairs_directory_inputs_and_marks_missing_reference
     assert Path(specs[0].reference) == (reference_dir / "lesson-a.txt").resolve()
     assert Path(specs[0].output_dir) == output_dir.resolve()
 
-    assert len(failed_items) == 2
+    assert len(failed_items) == 1
     error_messages = {item.error_message or "" for item in failed_items}
     assert any("缺少匹配的 reference" in message for message in error_messages)
-    assert any("不支持的视频扩展名" in message for message in error_messages)
+    assert not any("不支持的视频扩展名" in message for message in error_messages)
 
 
 def test_load_batch_job_specs_marks_duplicate_targets_as_failed(tmp_path: Path) -> None:

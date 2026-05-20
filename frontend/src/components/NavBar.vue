@@ -22,6 +22,10 @@ const menuOptions = computed<MenuOption[]>(() => [
     key: "/jobs",
     label: () => h(RouterLink, { to: "/jobs" }, { default: () => "任务列表" }),
   },
+  {
+    key: "/settings",
+    label: () => h(RouterLink, { to: "/settings" }, { default: () => "设置" }),
+  },
 ]);
 </script>
 

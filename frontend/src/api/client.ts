@@ -3,6 +3,30 @@ export interface ConfigResponse {
   backends: string[];
   configured_backends: string[];
   active_profile: string;
+  video_extensions: string[];
+  reference_extensions: string[];
+}
+
+export interface FrontendSettings {
+  codex_lb_base_url: string;
+  codex_lb_api_key: string;
+  has_codex_lb_api_key: boolean;
+  model: string;
+  reasoning_effort: string;
+  ocr_model: string;
+  ocr_reasoning_effort: string;
+  api_key_env: string;
+  settings_path: string;
+}
+
+export interface FrontendSettingsPayload {
+  codex_lb_base_url?: string | null;
+  codex_lb_api_key?: string | null;
+  clear_codex_lb_api_key?: boolean;
+  model?: string | null;
+  reasoning_effort?: string | null;
+  ocr_model?: string | null;
+  ocr_reasoning_effort?: string | null;
 }
 
 export interface FileItem {
@@ -44,6 +68,10 @@ export interface SingleJobPayload {
   profile?: string | null;
   backend?: string | null;
   config?: string | null;
+  model?: string | null;
+  reasoning_effort?: string | null;
+  ocr_model?: string | null;
+  ocr_reasoning_effort?: string | null;
   book_name?: string | null;
   chapter?: string | null;
   glossary_file?: string | null;
@@ -58,6 +86,10 @@ export interface BatchJobPayload {
   profile?: string | null;
   backend?: string | null;
   config?: string | null;
+  model?: string | null;
+  reasoning_effort?: string | null;
+  ocr_model?: string | null;
+  ocr_reasoning_effort?: string | null;
   remote_concurrency: number;
   book_name?: string | null;
   chapter?: string | null;
@@ -68,6 +100,39 @@ export interface StageRunPayload {
   profile?: string | null;
   backend?: string | null;
   config?: string | null;
+  model?: string | null;
+  reasoning_effort?: string | null;
+  ocr_model?: string | null;
+  ocr_reasoning_effort?: string | null;
+}
+
+function formatApiError(status: number, rawBody: string): string {
+  if (!rawBody) {
+    return `请求失败：HTTP ${status}`;
+  }
+
+  try {
+    const parsed = JSON.parse(rawBody) as { detail?: unknown };
+    if (typeof parsed.detail === "string") {
+      return parsed.detail;
+    }
+    if (Array.isArray(parsed.detail)) {
+      return parsed.detail
+        .map((item) => {
+          if (!item || typeof item !== "object") {
+            return String(item);
+          }
+          const record = item as Record<string, unknown>;
+          const loc = Array.isArray(record.loc) ? record.loc.join(".") : "";
+          const msg = typeof record.msg === "string" ? record.msg : JSON.stringify(record);
+          return loc ? `${loc}: ${msg}` : msg;
+        })
+        .join("；");
+    }
+    return JSON.stringify(parsed);
+  } catch {
+    return rawBody;
+  }
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -81,7 +146,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(detail || `Request failed: ${response.status}`);
+    throw new Error(formatApiError(response.status, detail));
   }
 
   return (await response.json()) as T;
@@ -103,6 +168,17 @@ export function getConfig(): Promise<ConfigResponse> {
   return requestJson<ConfigResponse>("/api/config");
 }
 
+export function getFrontendSettings(): Promise<FrontendSettings> {
+  return requestJson<FrontendSettings>("/api/frontend-settings");
+}
+
+export function saveFrontendSettings(payload: FrontendSettingsPayload): Promise<FrontendSettings> {
+  return requestJson<FrontendSettings>("/api/frontend-settings", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function listFs(path: string | null, type: "file" | "dir" | "all", showHidden: boolean): Promise<FileListResponse> {
   return requestJson<FileListResponse>(`/api/fs/list${buildQuery({ path, type, show_hidden: showHidden })}`);
 }
@@ -120,6 +196,10 @@ export function getJob(jobId: string): Promise<JobState> {
 
 export function listJobs(): Promise<JobListResponse> {
   return requestJson<JobListResponse>("/api/jobs");
+}
+
+export function listBatches(): Promise<JobListResponse> {
+  return requestJson<JobListResponse>("/api/batches");
 }
 
 export function submitBatchJob(payload: BatchJobPayload): Promise<{ batch_id: string }> {
@@ -142,4 +222,8 @@ export function submitStageRun(stageName: string, payload: StageRunPayload): Pro
 
 export function getStageRun(runId: string): Promise<JobState> {
   return requestJson<JobState>(`/api/stage-runs/${runId}`);
+}
+
+export function listStageRuns(): Promise<JobListResponse> {
+  return requestJson<JobListResponse>("/api/stage-runs");
 }

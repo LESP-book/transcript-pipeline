@@ -478,10 +478,12 @@ http://127.0.0.1:5173
 - `批量任务`：对应 `scripts/09_run_batch_jobs.py`
 - `单阶段`：对应 `scripts/run_pipeline.py --stage`
 - `任务列表`：查看 `data/jobs/` 下已有任务状态
+- `设置`：配置 Codex API 的 base URL、API key、阶段 6 模型和 PDF OCR 模型
 
 ### 5. 使用注意
 
 - Web UI 依赖后端 API，前端启动前最好先启动 `api_server.py`
+- Web UI 设置会保存到 `data/jobs/frontend-settings.json`，该路径默认被 `.gitignore` 忽略
 - 文件浏览器默认只允许浏览“当前用户 HOME 目录”和“项目根目录”
 - 目录选择模式下，不能确认选择文件
 - 单阶段页面运行的是**当前配置文件绑定的数据目录**，不是临时单文件运行器

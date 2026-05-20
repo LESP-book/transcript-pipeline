@@ -14,20 +14,20 @@ import NavBar from "./components/NavBar.vue";
 const themeOverrides: GlobalThemeOverrides = {
   common: {
     primaryColor: "#1f6feb",
-    primaryColorHover: "#387ded",
-    primaryColorPressed: "#1957ba",
-    borderRadius: "12px",
+    primaryColorHover: "#2f7df3",
+    primaryColorPressed: "#174ea6",
+    borderRadius: "8px",
   },
   Card: {
-    borderRadius: "18px",
+    borderRadius: "8px",
   },
   Input: {
-    borderRadius: "12px",
+    borderRadius: "8px",
   },
   Select: {
     peers: {
       InternalSelection: {
-        borderRadius: "12px",
+        borderRadius: "8px",
       },
     },
   },

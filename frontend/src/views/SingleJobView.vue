@@ -61,7 +61,10 @@ async function refreshJob(jobId: string) {
 function startPolling(jobId: string) {
   stopPolling();
   pollHandle.value = window.setInterval(() => {
-    void refreshJob(jobId);
+    void refreshJob(jobId).catch((caught) => {
+      message.error(caught instanceof Error ? caught.message : "刷新任务状态失败");
+      stopPolling();
+    });
   }, 2000);
 }
 

@@ -43,6 +43,15 @@ const statusType = computed(() => {
       <n-descriptions-item label="类型">
         {{ String(state.kind ?? "-") || "-" }}
       </n-descriptions-item>
+      <n-descriptions-item v-if="state.total !== undefined" label="总数">
+        {{ String(state.total ?? "-") || "-" }}
+      </n-descriptions-item>
+      <n-descriptions-item v-if="state.success !== undefined" label="成功">
+        {{ String(state.success ?? "-") || "-" }}
+      </n-descriptions-item>
+      <n-descriptions-item v-if="state.failed !== undefined" label="失败">
+        {{ String(state.failed ?? "-") || "-" }}
+      </n-descriptions-item>
     </n-descriptions>
     <n-alert
       v-if="String(state.error_message ?? '')"
