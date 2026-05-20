@@ -15,12 +15,15 @@ from src.reference_utils import (
     summarize_reference_results,
 )
 from src.runtime_utils import setup_logging
+from src.settings_overrides import ModelOverrides, SettingsOverrideError, apply_model_overrides
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="准备参考原文，统一提取为纯文本。")
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
+    parser.add_argument("--ocr-model", help="覆盖 Codex API OCR 使用的模型，例如 gpt-5.4-mini")
+    parser.add_argument("--ocr-reasoning-effort", help="覆盖 Codex API OCR reasoning effort，例如 low / medium / high")
     return parser
 
 
@@ -34,6 +37,14 @@ def main() -> int:
             project_root=PROJECT_ROOT,
         )
     except ConfigLoadError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    try:
+        apply_model_overrides(
+            loaded_settings,
+            ModelOverrides(ocr_model=args.ocr_model, ocr_reasoning_effort=args.ocr_reasoning_effort),
+        )
+    except SettingsOverrideError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
 

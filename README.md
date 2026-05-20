@@ -14,12 +14,12 @@
 - 第三阶段：参考原文统一提取
 - 第四阶段：块级对齐与分段增强版（保留为辅助调试链路）
 - 第五阶段：块级内容候选分类（保留为辅助调试链路）
-- 第六阶段：本地 CLI 模型整篇整理，直接读取 `asr.txt + reference.txt` 产出最终 Markdown 草稿（`codex` / `gemini`，含保守降级后端）
+- 第六阶段：AI 后端整篇整理，直接读取 `asr.txt + reference.txt` 产出最终 Markdown 草稿（默认 `codex_api`，旧 `codex_cli` / `gemini_cli` 可显式指定）
 - 第七阶段：将阶段 6 的 Markdown 结果写入最终输出目录
 - 第八阶段：单任务 job 入口，支持显式指定视频、参考源和输出目录
 - 第九阶段：批量 job 入口，支持按 manifest、basename 配对和共享参考三种模式批量运行
 
-当前仍不包含 OCR、最终分类定稿或自动发布能力。
+当前仍不包含最终分类定稿或自动发布能力。
 
 ## 当前阶段已实现
 
@@ -38,14 +38,13 @@
 - 对齐阶段支持更细粒度分段、文本 normalization 和 top-k 匹配候选
 - 基于 aligned 结果输出保守的候选分类到 `data/intermediate/classified/`（可选辅助）
 - 基于 `asr.txt + extracted_text.txt + 提示词` 直接输出整篇 Markdown 草稿到 `data/intermediate/refined/`
-- 阶段 6 支持本地 `codex` 与 `gemini` CLI 双后端整篇比较后生成单一 `final_markdown`
+- 阶段 6 默认使用 `codex_api`，也支持本地 `codex` 与 `gemini` CLI 双后端整篇比较后生成单一 `final_markdown`
 - 阶段 7 将阶段 6 的 `final_markdown` 写入 `data/output/final/`
 - 十个最小 CLI 入口
 - 最基本单元测试
 
 ## 当前阶段未实现
 
-- OCR
 - 参考原文结构化分析
 - 复杂对齐路径搜索
 - 最终分类定稿
@@ -131,6 +130,8 @@ transcript-pipeline/
 
 1. Python 3.12
 2. 系统已安装 `ffmpeg`
+3. 如需 PDF Codex API OCR，系统需安装 `pdftoppm`（通常来自 `poppler-utils`）
+4. 如使用远程 Cloudflare 反代的 `codex-lb`，建议系统安装 `curl`
 
 安装依赖：
 
@@ -138,6 +139,116 @@ transcript-pipeline/
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+## Codex API 模式
+
+当前默认 AI 后端已经切到 `codex_api`。使用前先启动 `codex-lb`，再在当前 shell 配置 API 地址和 key：
+
+本地 `codex-lb`：
+
+```bash
+export CODEX_LB_BASE_URL="http://127.0.0.1:2455"
+export CODEX_LB_API_KEY="你的 codex-lb API key"
+```
+
+远程反代 `codex-lb`：
+
+```bash
+export CODEX_LB_BASE_URL="https://你的反代域名"
+export CODEX_LB_API_KEY="你的 codex-lb API key"
+```
+
+注意：`CODEX_LB_BASE_URL` 填项目根地址，不要带 `/v1`。程序会按配置自动拼接 `/v1/responses` 和 `/backend-api/codex/responses`。
+
+阶段 3 参考原文准备会按配置默认使用 Codex API 做 PDF OCR：
+
+```bash
+.venv/bin/python scripts/03_prepare_reference.py
+```
+
+阶段 6 精修默认读取 `llm.backends`，当前默认也是 `codex_api`：
+
+```bash
+.venv/bin/python scripts/06_refine.py
+```
+
+如果想显式指定 API 后端：
+
+```bash
+.venv/bin/python scripts/06_refine.py --backend codex_api
+```
+
+统一入口也可以显式指定：
+
+```bash
+.venv/bin/python scripts/run_pipeline.py --stage refine --backend codex_api
+```
+
+单任务入口：
+
+```bash
+.venv/bin/python scripts/08_run_job.py \
+  --video "/path/to/video.mp4" \
+  --reference "/path/to/reference.pdf" \
+  --output-dir "/path/to/output" \
+  --backend "codex_api"
+```
+
+批量入口：
+
+```bash
+.venv/bin/python scripts/09_run_batch_jobs.py \
+  --profile "wsl2_gpu_high_accuracy" \
+  --manifest "/path/to/jobs.yaml" \
+  --remote-concurrency 2 \
+  --backend "codex_api" \
+  --model "gpt-5.5" \
+  --reasoning-effort "high" \
+  --ocr-model "gpt-5.4-mini" \
+  --ocr-reasoning-effort "high"
+```
+
+相关默认配置：
+
+- 阶段 6：`llm.backends = ["codex_api"]`
+- 阶段 6 默认模型：`llm.model = gpt-5.5`
+- 阶段 6 默认 reasoning：`llm.reasoning_effort = high`
+- PDF OCR：`reference.ai_ocr_backend = codex_api`
+- PDF OCR 模型：`reference.codex_ocr_model = gpt-5.4-mini`
+- PDF OCR reasoning：`reference.codex_ocr_reasoning_effort = high`
+- PDF OCR 等待时间：`reference.ocr_timeout_seconds = 480`
+- `--backend both` 保持旧语义，只同时运行 `codex_cli` 和 `gemini_cli`
+
+临时指定阶段 6 模型和 reasoning：
+
+```bash
+.venv/bin/python scripts/06_refine.py \
+  --backend codex_api \
+  --model "gpt-5.5" \
+  --reasoning-effort "high"
+```
+
+临时指定 PDF OCR 模型和 reasoning：
+
+```bash
+.venv/bin/python scripts/03_prepare_reference.py \
+  --ocr-model "gpt-5.4-mini" \
+  --ocr-reasoning-effort "high"
+```
+
+完整主链里也可以同时覆盖：
+
+```bash
+.venv/bin/python scripts/08_run_job.py \
+  --video "/path/to/video.mp4" \
+  --reference "/path/to/reference.pdf" \
+  --output-dir "/path/to/output" \
+  --backend "codex_api" \
+  --model "gpt-5.5" \
+  --reasoning-effort "high" \
+  --ocr-model "gpt-5.4-mini" \
+  --ocr-reasoning-effort "high"
 ```
 
 ## WSL2 Debian GPU 部署清单
@@ -175,7 +286,7 @@ wsl --set-version Debian 2
 
 ```bash
 sudo apt update
-sudo apt install -y git ffmpeg python3 python3-venv python3-pip
+sudo apt install -y git ffmpeg poppler-utils curl python3 python3-venv python3-pip
 ```
 
 检查 Python 版本：
@@ -456,7 +567,22 @@ http://127.0.0.1:5173
 .venv/bin/python scripts/06_refine.py --backend gemini_cli
 ```
 
-同时运行 Codex 和 Gemini：
+显式运行 Codex API：
+
+```bash
+.venv/bin/python scripts/06_refine.py --backend codex_api
+```
+
+指定 Codex API 模型和 reasoning：
+
+```bash
+.venv/bin/python scripts/06_refine.py \
+  --backend codex_api \
+  --model "gpt-5.5" \
+  --reasoning-effort "high"
+```
+
+同时运行旧 Codex CLI 和 Gemini CLI：
 
 ```bash
 .venv/bin/python scripts/06_refine.py --backend both
@@ -470,13 +596,18 @@ http://127.0.0.1:5173
 
 阶段 6 说明：
 
-- 默认按 `config/settings.yaml` 中的 `llm.backends` 运行后端，也可用 `--backend codex_cli|gemini_cli|both` 临时覆盖
+- 默认按 `config/settings.yaml` 中的 `llm.backends` 运行后端，当前默认是 `codex_api`
+- 可用 `--backend codex_api|codex_cli|gemini_cli|both` 临时覆盖
+- `codex_api` 通过 `codex-lb` 调用，`CODEX_LB_BASE_URL` 和 `CODEX_LB_API_KEY` 必须在环境变量中可用
+- 阶段 6 模型可用 `--model` 临时覆盖，reasoning 可用 `--reasoning-effort` 临时覆盖
+- `both` 保持旧语义，只展开为 `codex_cli + gemini_cli`
 - Gemini 主模型默认是 `gemini-3.1-pro-preview`
 - 主输入是 `data/intermediate/asr/*.txt` 和同 basename 的 `data/intermediate/extracted_text/*.txt`
 - 不再依赖 `classified.json` 作为阶段 6 的主输入
 - 提示词贴近网页端单轮整理模式，直接要求输出最终 Markdown
 - 单模型模式会继续写单一 `final_markdown`
-- 双模型模式会写主索引文件 `basename.json`，并额外写：
+- 非 fallback AI 后端会写主索引文件 `basename.json`，并按后端额外写侧车文件，例如：
+  - `basename.codex_api.json`
   - `basename.codex_cli.json`
   - `basename.gemini_cli.json`
 - 双模型模式下主索引文件不会自动选主结果，`final_markdown` 留空，需人工决定使用哪一份
@@ -553,7 +684,31 @@ http://127.0.0.1:5173
   --backend "gemini_cli"
 ```
 
-同时运行 Codex 和 Gemini：
+指定阶段 6 使用 Codex API：
+
+```bash
+.venv/bin/python scripts/08_run_job.py \
+  --video "/path/to/video.mp4" \
+  --reference "/path/to/reference.pdf" \
+  --output-dir "/path/to/output" \
+  --backend "codex_api"
+```
+
+指定阶段 6 与 PDF OCR 的 Codex API 模型：
+
+```bash
+.venv/bin/python scripts/08_run_job.py \
+  --video "/path/to/video.mp4" \
+  --reference "/path/to/reference.pdf" \
+  --output-dir "/path/to/output" \
+  --backend "codex_api" \
+  --model "gpt-5.5" \
+  --reasoning-effort "high" \
+  --ocr-model "gpt-5.4-mini" \
+  --ocr-reasoning-effort "high"
+```
+
+同时运行旧 Codex CLI 和 Gemini CLI：
 
 ```bash
 .venv/bin/python scripts/08_run_job.py \
@@ -588,7 +743,8 @@ http://127.0.0.1:5173
 - 最终 Markdown 会额外复制到 `--output-dir`
 - `config/glossaries/marxism_common.txt` 会默认参与构造本次任务的 `asr.initial_prompt`
 - `--book-name`、`--chapter`、`--glossary-file` 会追加到本次任务的 `initial_prompt`
-- `--backend` 只覆盖本次任务的阶段 6 后端选择，可用值为 `codex_cli`、`gemini_cli`、`both`
+- `--backend` 只覆盖本次任务的阶段 6 后端选择，可用值为 `codex_api`、`codex_cli`、`gemini_cli`、`both`
+- 单任务入口同样支持 `--model`、`--reasoning-effort`、`--ocr-model`、`--ocr-reasoning-effort`
 - 附加词表文件格式为一行一个词条
 - `local_cpu` 与 `wsl2_gpu` 使用 `beam_size = 5`
 - `local_cpu_high_accuracy` 与 `wsl2_gpu_high_accuracy` 使用 `beam_size = 8`
@@ -603,7 +759,11 @@ manifest 模式：
   --profile "wsl2_gpu_high_accuracy" \
   --manifest "/path/to/jobs.yaml" \
   --remote-concurrency 2 \
-  --backend "gemini_cli"
+  --backend "codex_api" \
+  --model "gpt-5.5" \
+  --reasoning-effort "high" \
+  --ocr-model "gpt-5.4-mini" \
+  --ocr-reasoning-effort "high"
 ```
 
 `jobs.yaml` 示例：
@@ -668,7 +828,8 @@ basename 配对模式：
 - GPU 高精度建议优先使用 `wsl2_gpu_high_accuracy`
 - `prepare-reference` 与 `refine` 默认按 `--remote-concurrency 2` 并发运行
 - `extract-audio` 与 `transcribe` 仍按单任务顺序执行，避免本地资源阶段过载
-- `--backend` 只覆盖本次批量任务的阶段 6 后端选择，可用值为 `codex_cli`、`gemini_cli`、`both`
+- `--backend` 只覆盖本次批量任务的阶段 6 后端选择，可用值为 `codex_api`、`codex_cli`、`gemini_cli`、`both`
+- 批量入口同样支持 `--model`、`--reasoning-effort`、`--ocr-model`、`--ocr-reasoning-effort`
 - 每次批量运行都会写出 `data/jobs/batches/<batch_id>/manifest.json`
 - 每次批量运行都会写出 `data/jobs/batches/<batch_id>/summary.json` 与 `summary.md`
 - 批量退出码：
@@ -750,9 +911,13 @@ JSON 中间结果至少包含：
 
 PDF 支持边界：
 
-- 当前 PDF 默认优先尝试 `gemini` CLI OCR
-- 如果 Gemini OCR 失败，但 PDF 自带文字层可提取，则回退到文字层提取
-- 如果 Gemini OCR 失败，且文字层为空或接近空，并且 `reference.run_ocr_when_needed = true`，会回退到 `ocrmypdf + tesseract`
+- 当前 PDF 默认优先尝试 `codex_api` OCR
+- `codex_api` OCR 会先在本地用 `pdftoppm` 将 PDF 页面渲染成 PNG，再通过 codex-lb `/v1/responses` 发送 `input_image`
+- `codex_api` OCR 默认模型是 `gpt-5.4-mini`，reasoning effort 是 `high`
+- 直接运行阶段 3 时，可用 `--ocr-model` 和 `--ocr-reasoning-effort` 临时覆盖 OCR 模型与 reasoning
+- 如果 Codex API OCR 失败，但 PDF 自带文字层可提取，则回退到文字层提取
+- 如果 Codex API OCR 失败，且文字层为空或接近空，并且 `reference.run_ocr_when_needed = true`，会继续尝试其他 AI OCR 后端，最后回退到 `ocrmypdf + tesseract`
+- OCR sidecar 默认写入 `data/intermediate/ocr/*.codex_api_ocr.txt`
 - 当前 OCR 路线面向中文扫描版 PDF
 - 如果 OCR 结果仍为空或接近空，会提示当前 PDF 质量可能较差
 

@@ -144,7 +144,7 @@ class ClassificationSettings(AppBaseModel):
 class LLMSettings(AppBaseModel):
     enabled: bool = True
     provider: str = "local_cli"
-    model: str = ""
+    model: str = "gpt-5.5"
     gemini_model: str = "gemini-3.1-pro-preview"
     gemini_fallback_model: str = "gemini-3-flash-preview"
     backends: list[str] = Field(default_factory=lambda: ["codex_api"])
@@ -155,7 +155,7 @@ class LLMSettings(AppBaseModel):
     top_matches_for_prompt: int = 3
     max_asr_chars_for_prompt: int = 120
     max_reference_chars_for_prompt: int = 120
-    reasoning_effort: str = "medium"
+    reasoning_effort: str = "high"
     temperature: float = 0.1
     max_output_tokens: int = 4000
     timeout_seconds: int = 1800

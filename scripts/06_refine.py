@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.config_loader import ConfigLoadError, load_settings
 from src.refine_utils import RefinementError, refine_batch, resolve_requested_backends, summarize_refinement_results
 from src.runtime_utils import setup_logging
+from src.settings_overrides import ModelOverrides, SettingsOverrideError, apply_model_overrides
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,6 +19,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
     parser.add_argument("--backend", choices=["codex_api", "codex_cli", "gemini_cli", "both"], help="覆盖阶段 6 使用的后端")
+    parser.add_argument("--model", help="覆盖阶段 6 使用的模型，例如 gpt-5.5")
+    parser.add_argument("--reasoning-effort", help="覆盖阶段 6 reasoning effort，例如 low / medium / high")
     return parser
 
 
@@ -31,6 +34,14 @@ def main() -> int:
             project_root=PROJECT_ROOT,
         )
     except ConfigLoadError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    try:
+        apply_model_overrides(
+            loaded_settings,
+            ModelOverrides(llm_model=args.model, llm_reasoning_effort=args.reasoning_effort),
+        )
+    except SettingsOverrideError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
 

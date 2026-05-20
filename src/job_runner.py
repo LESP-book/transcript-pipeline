@@ -22,6 +22,7 @@ from src.config_loader import ConfigLoadError, load_settings
 from src.glossary_utils import build_initial_prompt, load_glossary_terms, merge_glossary_terms
 from src.runtime_utils import ensure_directory, normalize_stage_name, relativize_path, setup_logging
 from src.schemas import LoadedSettings
+from src.settings_overrides import ModelOverrides, SettingsOverrideError, apply_model_overrides_to_raw_settings
 
 CANONICAL_INPUT_BASENAME = "source"
 WEB_REQUEST_TIMEOUT_SECONDS = 60
@@ -652,8 +653,13 @@ def write_job_settings(
     glossary_file: str | None = None,
     book_name: str | None = None,
     chapter: str | None = None,
+    model_overrides: ModelOverrides | None = None,
 ) -> Path:
     payload = load_raw_settings(loaded_settings)
+    try:
+        apply_model_overrides_to_raw_settings(payload, model_overrides or ModelOverrides())
+    except SettingsOverrideError as exc:
+        raise JobRunnerError(str(exc)) from exc
     payload.setdefault("runtime", {})
     payload["runtime"]["profile"] = profile_name
     payload.setdefault("asr", {})
@@ -754,6 +760,7 @@ def prepare_batch_jobs(
     project_root: Path,
     base_loaded_settings: LoadedSettings,
     job_specs: list[BatchJobSpec],
+    model_overrides: ModelOverrides | None = None,
 ) -> list[BatchJobRuntime]:
     runtimes: list[BatchJobRuntime] = []
     profile_name = base_loaded_settings.active_profile_name
@@ -775,6 +782,7 @@ def prepare_batch_jobs(
                 glossary_file=spec.glossary_file,
                 book_name=spec.book_name,
                 chapter=spec.chapter,
+                model_overrides=model_overrides,
             )
             write_job_manifest(
                 loaded_settings=base_loaded_settings,
@@ -1015,6 +1023,7 @@ def run_batch_jobs(
     remote_concurrency: int = 2,
     batch_id: str | None = None,
     backend_override: str | None = None,
+    model_overrides: ModelOverrides | None = None,
 ) -> BatchRunSummary:
     current_batch_id = batch_id or create_batch_id()
     logger = setup_logging(base_loaded_settings.settings.runtime.log_level)
@@ -1024,6 +1033,7 @@ def run_batch_jobs(
             project_root=project_root,
             base_loaded_settings=base_loaded_settings,
             job_specs=job_specs,
+            model_overrides=model_overrides,
         )
     )
 
@@ -1108,6 +1118,10 @@ def run_single_job(
     output_dir: str,
     profile: str | None = None,
     backend: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    ocr_model: str | None = None,
+    ocr_reasoning_effort: str | None = None,
     book_name: str | None = None,
     chapter: str | None = None,
     glossary_file: str | None = None,
@@ -1131,6 +1145,12 @@ def run_single_job(
         glossary_file=glossary_file,
         book_name=book_name,
         chapter=chapter,
+        model_overrides=ModelOverrides(
+            llm_model=model,
+            llm_reasoning_effort=reasoning_effort,
+            ocr_model=ocr_model,
+            ocr_reasoning_effort=ocr_reasoning_effort,
+        ),
     )
     write_job_manifest(
         loaded_settings=base_loaded_settings,

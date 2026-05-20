@@ -26,6 +26,7 @@ from src.job_runner import (
     run_single_job,
     write_job_settings,
 )
+from src.settings_overrides import ModelOverrides
 from tests.helpers import write_minimal_settings
 
 
@@ -160,6 +161,35 @@ def test_write_job_settings_rewrites_paths_into_job_workspace(tmp_path: Path) ->
     assert payload["asr"]["initial_prompt"]
 
 
+def test_write_job_settings_applies_model_overrides(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path)
+    glossary_dir = tmp_path / "config/glossaries"
+    glossary_dir.mkdir(parents=True, exist_ok=True)
+    (glossary_dir / "marxism_common.txt").write_text("马克思\n", encoding="utf-8")
+    loaded_settings = load_settings(project_root=tmp_path)
+    job_paths = build_job_paths(tmp_path, "job-model-settings")
+
+    settings_path = write_job_settings(
+        project_root=tmp_path,
+        loaded_settings=loaded_settings,
+        job_paths=job_paths,
+        profile_name="local_cpu",
+        model_overrides=ModelOverrides(
+            llm_model="gpt-5.5",
+            llm_reasoning_effort="low",
+            ocr_model="gpt-5.4-mini",
+            ocr_reasoning_effort="high",
+        ),
+    )
+
+    payload = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+
+    assert payload["llm"]["model"] == "gpt-5.5"
+    assert payload["llm"]["reasoning_effort"] == "low"
+    assert payload["reference"]["codex_ocr_model"] == "gpt-5.4-mini"
+    assert payload["reference"]["codex_ocr_reasoning_effort"] == "high"
+
+
 def test_build_job_initial_prompt_includes_title_and_extra_glossary(tmp_path: Path) -> None:
     glossary_dir = tmp_path / "config/glossaries"
     glossary_dir.mkdir(parents=True, exist_ok=True)
@@ -219,6 +249,10 @@ def test_run_single_job_copies_final_markdown_to_output_dir(
     def fake_run_job_pipeline(job_loaded_settings, logger, backend_override=None) -> None:
         _ = logger
         seen["backend_override"] = backend_override
+        seen["llm_model"] = job_loaded_settings.settings.llm.model
+        seen["llm_reasoning_effort"] = job_loaded_settings.settings.llm.reasoning_effort
+        seen["ocr_model"] = job_loaded_settings.settings.reference.codex_ocr_model
+        seen["ocr_reasoning_effort"] = job_loaded_settings.settings.reference.codex_ocr_reasoning_effort
         final_dir = job_loaded_settings.path_for("final_dir")
         final_dir.mkdir(parents=True, exist_ok=True)
         (final_dir / f"{CANONICAL_INPUT_BASENAME}.md").write_text("# 最终稿\n\n正文", encoding="utf-8")
@@ -232,6 +266,10 @@ def test_run_single_job_copies_final_markdown_to_output_dir(
         reference=str(reference_path),
         output_dir=str(output_dir),
         backend="gemini_cli",
+        model="gpt-5.5",
+        reasoning_effort="medium",
+        ocr_model="gpt-5.4-mini",
+        ocr_reasoning_effort="high",
     )
 
     assert result.job_id == "job-fixed-id"
@@ -239,6 +277,10 @@ def test_run_single_job_copies_final_markdown_to_output_dir(
     assert result.copied_output_path == output_dir / "lesson.md"
     assert result.copied_output_path.read_text(encoding="utf-8") == "# 最终稿\n\n正文"
     assert seen["backend_override"] == "gemini_cli"
+    assert seen["llm_model"] == "gpt-5.5"
+    assert seen["llm_reasoning_effort"] == "medium"
+    assert seen["ocr_model"] == "gpt-5.4-mini"
+    assert seen["ocr_reasoning_effort"] == "high"
     manifest_path = tmp_path / "data/jobs/job-fixed-id/manifest.json"
     assert manifest_path.exists()
 

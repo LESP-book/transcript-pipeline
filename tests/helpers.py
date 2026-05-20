@@ -125,7 +125,7 @@ def write_minimal_settings(
         "llm": {
             "enabled": True,
             "provider": "local_cli",
-            "model": "gpt-5.4",
+            "model": "gpt-5.5",
             "gemini_model": "gemini-3.1-pro-preview",
             "gemini_fallback_model": "gemini-3-flash-preview",
             "backends": ["codex_api"],

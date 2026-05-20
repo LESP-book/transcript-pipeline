@@ -10,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config_loader import ConfigLoadError, load_settings
 from src.job_runner import JobRunnerError, get_batch_exit_code, load_batch_job_specs, run_batch_jobs
+from src.settings_overrides import ModelOverrides
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,6 +23,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
     parser.add_argument("--backend", choices=["codex_api", "codex_cli", "gemini_cli", "both"], help="覆盖阶段 6 使用的后端")
+    parser.add_argument("--model", help="覆盖阶段 6 使用的模型，例如 gpt-5.5")
+    parser.add_argument("--reasoning-effort", help="覆盖阶段 6 reasoning effort，例如 low / medium / high")
+    parser.add_argument("--ocr-model", help="覆盖 Codex API OCR 使用的模型，例如 gpt-5.4-mini")
+    parser.add_argument("--ocr-reasoning-effort", help="覆盖 Codex API OCR reasoning effort，例如 low / medium / high")
     parser.add_argument("--glossary-file", help="批量默认术语词表文件，一行一个词条")
     parser.add_argument("--remote-concurrency", type=int, default=2, help="远程阶段并发度，默认 2")
     parser.add_argument("--book-name", help="批量默认书名，用于输出文件命名")
@@ -64,6 +69,12 @@ def main() -> int:
             failed_runtimes=failed_runtimes,
             remote_concurrency=args.remote_concurrency,
             backend_override=args.backend,
+            model_overrides=ModelOverrides(
+                llm_model=args.model,
+                llm_reasoning_effort=args.reasoning_effort,
+                ocr_model=args.ocr_model,
+                ocr_reasoning_effort=args.ocr_reasoning_effort,
+            ),
         )
     except JobRunnerError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
