@@ -106,6 +106,16 @@ export interface StageRunPayload {
   ocr_reasoning_effort?: string | null;
 }
 
+export interface JobRerunPayload {
+  start_stage: string;
+  profile?: string | null;
+  backend?: string | null;
+  model?: string | null;
+  reasoning_effort?: string | null;
+  ocr_model?: string | null;
+  ocr_reasoning_effort?: string | null;
+}
+
 function formatApiError(status: number, rawBody: string): string {
   if (!rawBody) {
     return `请求失败：HTTP ${status}`;
@@ -231,6 +241,13 @@ export function listStageRuns(): Promise<JobListResponse> {
 export function deleteJob(jobId: string): Promise<{ success: boolean }> {
   return requestJson<{ success: boolean }>(`/api/jobs/${jobId}`, {
     method: "DELETE",
+  });
+}
+
+export function rerunJob(jobId: string, payload: JobRerunPayload): Promise<{ job_id: string }> {
+  return requestJson<{ job_id: string }>(`/api/jobs/${jobId}/rerun`, {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 

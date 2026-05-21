@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { NAlert, NCard, NDescriptions, NDescriptionsItem, NTag, NFlex, NButton, useMessage, useDialog } from "naive-ui";
-import { computed, ref } from "vue";
-import { deleteJob, deleteBatch, deleteStageRun } from "../api/client";
+import { NAlert, NCard, NDescriptions, NDescriptionsItem, NTag, NFlex, NButton, NSelect, useMessage, useDialog } from "naive-ui";
+import { computed, ref, watch } from "vue";
+import { deleteJob, deleteBatch, deleteStageRun, rerunJob } from "../api/client";
 
 const props = defineProps<{
   title?: string;
@@ -10,16 +10,25 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "deleted"): void;
+  (e: "rerun", jobId: string): void;
 }>();
 
 const message = useMessage();
 const dialog = useDialog();
 
 const isDeleting = ref(false);
+const isRerunning = ref(false);
+const rerunStage = ref("refine");
 
 const canDelete = computed(() => {
   const status = String(props.state.status ?? "");
   return status !== "running" && status !== "pending";
+});
+
+const canRerun = computed(() => {
+  const status = String(props.state.status ?? "");
+  const kind = String(props.state.kind ?? "");
+  return kind === "job" && status !== "running" && status !== "pending";
 });
 
 function handleDelete() {
@@ -79,6 +88,40 @@ const PIPELINE_STAGES = [
   { key: "refine", label: "校对润色", index: 6 },
   { key: "export-markdown", label: "导出文档", index: 7 },
 ];
+
+const rerunStageOptions = PIPELINE_STAGES.map((stage) => ({
+  label: `${stage.label} (${stage.key})`,
+  value: stage.key,
+}));
+const rerunStageKeys = new Set(PIPELINE_STAGES.map((stage) => stage.key));
+
+watch(
+  () => String(props.state.current_stage ?? ""),
+  (currentStage) => {
+    if (rerunStageKeys.has(currentStage)) {
+      rerunStage.value = currentStage;
+    }
+  },
+  { immediate: true },
+);
+
+async function handleRerun() {
+  const id = String(props.state.id ?? "");
+  if (!id) {
+    message.error("缺少任务 ID，无法重跑。");
+    return;
+  }
+  isRerunning.value = true;
+  try {
+    await rerunJob(id, { start_stage: rerunStage.value });
+    message.success(`已从 ${rerunStage.value} 重新启动任务`);
+    emit("rerun", id);
+  } catch (caught) {
+    message.error(caught instanceof Error ? caught.message : "重跑任务失败");
+  } finally {
+    isRerunning.value = false;
+  }
+}
 
 // Intelligently calculate state of each step
 function getStepState(stageKey: string): "completed" | "active" | "failed" | "pending" {
@@ -177,6 +220,28 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
         </div>
       </div>
 
+      <div v-if="canRerun" class="rerun-section">
+        <div>
+          <h4 class="rerun-title">从指定阶段重新运行</h4>
+          <p class="rerun-copy">复用当前任务的输入、中间目录和生成配置，只从所选阶段继续执行后续流水线。</p>
+        </div>
+        <n-flex align="center" :size="10" wrap>
+          <n-select
+            v-model:value="rerunStage"
+            :options="rerunStageOptions"
+            class="rerun-select"
+          />
+          <n-button
+            type="primary"
+            secondary
+            :loading="isRerunning"
+            @click="handleRerun"
+          >
+            从该阶段重跑
+          </n-button>
+        </n-flex>
+      </div>
+
       <!-- Compact & Elegant Descriptions Grid -->
       <n-descriptions label-placement="left" :column="2" size="medium" bordered class="status-grid">
         <n-descriptions-item label="当前运行阶段">
@@ -250,6 +315,35 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
   letter-spacing: 0.02em;
 }
 
+.rerun-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border: 1px solid rgba(79, 70, 229, 0.16);
+  border-radius: 12px;
+  background: rgba(79, 70, 229, 0.06);
+}
+
+.rerun-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.rerun-copy {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.rerun-select {
+  min-width: 260px;
+}
+
 .status-grid {
   background: #ffffff;
   border-radius: 12px;
@@ -303,5 +397,16 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
 }
 .delete-btn:active {
   transform: translateY(0) scale(0.95);
+}
+
+@media (max-width: 760px) {
+  .rerun-section {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .rerun-select {
+    min-width: 100%;
+  }
 }
 </style>

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -27,7 +29,7 @@ from src.web.frontend_settings import (
     codex_lb_environment,
     load_frontend_settings,
 )
-from src.web.models import BatchJobRequest, SingleJobRequest, StageRunRequest
+from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageRunRequest
 
 
 def stage_output_path(loaded_settings, stage_name: str) -> str:
@@ -51,6 +53,28 @@ def submit_task(fastapi_app: FastAPI, func, **kwargs) -> None:
         func(**kwargs)
         return
     fastapi_app.state.executor.submit(func, **kwargs)
+
+
+def read_job_manifest(manifest_path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise JobRunnerError(f"无法读取 job manifest: {manifest_path} | {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise JobRunnerError(f"job manifest JSON 解析失败: {manifest_path} | {exc}") from exc
+    if not isinstance(payload, dict):
+        raise JobRunnerError(f"job manifest 结构无效: {manifest_path}")
+    return payload
+
+
+def resolve_rerun_stages(raw_stages: list[str], start_stage: str) -> list[str]:
+    stages = [normalize_stage_name(stage_name) for stage_name in raw_stages]
+    normalized_start_stage = normalize_stage_name(start_stage)
+    if normalized_start_stage not in stages:
+        raise JobRunnerError(
+            f"无法从指定阶段重跑: {normalized_start_stage} 不在当前 job 流水线中，当前阶段为: {', '.join(stages)}"
+        )
+    return stages[stages.index(normalized_start_stage) :]
 
 
 def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
@@ -139,6 +163,91 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             status="success",
             current_stage="done",
             output_path=str(copied_output_path),
+        )
+    except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
+        app.state.update_state(
+            state_path,
+            status="failed",
+            error_message=str(exc),
+        )
+    finally:
+        app.state.active_jobs.discard(job_id)
+
+
+def execute_job_rerun(*, app: FastAPI, job_id: str, payload: dict) -> None:
+    state_path = app.state.job_state_path(job_id)
+    root = app.state.project_root
+
+    app.state.active_jobs.add(job_id)
+    try:
+        request = JobRerunRequest.model_validate(payload)
+        frontend_settings = load_frontend_settings(root)
+        job_paths = build_job_paths(root, job_id)
+        if not job_paths.settings_path.exists():
+            raise JobRunnerError(f"job 缺少生成配置，无法重跑: {job_paths.settings_path}")
+        if not job_paths.manifest_path.exists():
+            raise JobRunnerError(f"job 缺少 manifest，无法重跑: {job_paths.manifest_path}")
+
+        manifest = read_job_manifest(job_paths.manifest_path)
+        loaded_settings = load_settings(
+            settings_path=job_paths.settings_path,
+            profile_name=request.profile or str(manifest.get("profile") or ""),
+            project_root=root,
+        )
+        apply_model_overrides(
+            loaded_settings,
+            ModelOverrides(
+                llm_model=request.model or frontend_settings.model or None,
+                llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+                ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
+                ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
+            ),
+        )
+        raw_stages = loaded_settings.settings.pipeline.stages if loaded_settings.settings.pipeline else []
+        stages = resolve_rerun_stages(raw_stages, request.start_stage)
+        logger = setup_logging(loaded_settings.settings.runtime.log_level)
+
+        app.state.update_state(
+            state_path,
+            status="running",
+            current_stage=stages[0],
+            error_message="",
+            output_path="",
+        )
+        with codex_lb_environment(frontend_settings):
+            for stage_name in stages:
+                app.state.update_state(
+                    state_path,
+                    status="running",
+                    current_stage=stage_name,
+                )
+                current_backend = request.backend if stage_name == "refine" else None
+                exit_code = run_stage(stage_name, loaded_settings, logger, backend_override=current_backend)
+                if exit_code != 0:
+                    raise JobRunnerError(f"job 重跑失败: stage={stage_name} exit_code={exit_code}")
+
+        output_path = stage_output_path(loaded_settings, stages[-1])
+        if "export-markdown" in stages:
+            output_dir = str(manifest.get("output_dir") or "").strip()
+            video_source = str(manifest.get("video_source") or "").strip()
+            if not output_dir or not video_source:
+                raise JobRunnerError("job manifest 缺少 output_dir 或 video_source，无法复制最终输出。")
+            _, copied_output_path = copy_final_output(
+                job_paths,
+                Path(output_dir).expanduser().resolve(),
+                build_final_output_filename(
+                    Path(video_source),
+                    book_name=str(manifest.get("book_name") or "") or None,
+                    chapter=str(manifest.get("chapter") or "") or None,
+                ),
+            )
+            output_path = str(copied_output_path)
+
+        app.state.update_state(
+            state_path,
+            status="success",
+            current_stage="done",
+            output_path=output_path,
         )
     except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
         app.state.update_state(

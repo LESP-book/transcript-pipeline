@@ -47,7 +47,14 @@ onMounted(load);
       <n-tab-pane :name="'jobs'" :tab="`单任务 ${jobs.length}`">
         <n-space vertical :size="16">
           <n-empty v-if="jobs.length === 0" description="暂无单任务记录。" />
-          <JobStatusCard v-for="item in jobs" :key="item.id" :title="`单任务 ${item.id}`" :state="item" @deleted="load" />
+          <JobStatusCard
+            v-for="item in jobs"
+            :key="item.id"
+            :title="`单任务 ${item.id}`"
+            :state="item"
+            @deleted="load"
+            @rerun="load"
+          />
         </n-space>
       </n-tab-pane>
       <n-tab-pane :name="'batches'" :tab="`批量任务 ${batches.length}`">

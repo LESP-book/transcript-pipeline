@@ -16,9 +16,9 @@ from src.refine_utils import VALID_REFINEMENT_BACKENDS
 from src.runtime_utils import normalize_stage_name
 from src.web.fs_browser import list_fs_items, resolve_allowed_browse_path, resolve_parent_path
 from src.web.frontend_settings import FrontendSettingsUpdate, frontend_settings_response, save_frontend_settings
-from src.web.models import BatchJobRequest, SingleJobRequest, StageRunRequest
+from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageRunRequest
 from src.web.state_store import collect_state_items, create_initial_state, read_json_file, update_state, write_json_file
-from src.web.tasks import execute_batch_job, execute_single_job, execute_stage_run, submit_task
+from src.web.tasks import execute_batch_job, execute_job_rerun, execute_single_job, execute_stage_run, submit_task
 
 
 def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = False) -> FastAPI:
@@ -40,6 +40,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     app.state.stage_run_state_path = lambda run_id: root / "data/jobs/stage-runs" / run_id / "state.json"
     app.state.update_state = lambda path, **changes: update_state(path, **changes)
     app.state.execute_single_job = execute_single_job
+    app.state.execute_job_rerun = execute_job_rerun
     app.state.execute_batch_job = execute_batch_job
     app.state.execute_stage_run = execute_stage_run
     
@@ -140,6 +141,23 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"无法删除任务目录: {exc}")
         return {"success": True}
+
+    @app.post("/api/jobs/{job_id}/rerun", status_code=202)
+    async def post_job_rerun(job_id: str, request: JobRerunRequest) -> dict[str, str]:
+        state_path = app.state.job_state_path(job_id)
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail=f"job 不存在: {job_id}")
+        if job_id in app.state.active_jobs:
+            raise HTTPException(status_code=400, detail="不能重跑正在运行的任务")
+        app.state.active_jobs.add(job_id)
+        submit_task(
+            app,
+            app.state.execute_job_rerun,
+            app=app,
+            job_id=job_id,
+            payload=request.model_dump(),
+        )
+        return {"job_id": job_id}
 
     @app.post("/api/batch-jobs", status_code=202)
     async def post_batch_jobs(request: BatchJobRequest) -> dict[str, str]:

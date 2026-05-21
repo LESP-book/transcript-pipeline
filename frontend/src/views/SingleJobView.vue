@@ -68,6 +68,11 @@ function startPolling(jobId: string) {
   }, 2000);
 }
 
+async function handleJobRerun(jobId: string) {
+  await refreshJob(jobId);
+  startPolling(jobId);
+}
+
 async function submit() {
   if (!form.video || !form.reference || !form.output_dir) {
     message.warning("视频、参考源和输出目录是必填项。");
@@ -191,7 +196,7 @@ onBeforeUnmount(stopPolling);
     </n-card>
 
     <!-- Visual status result -->
-    <JobStatusCard v-if="jobState" title="流水线当前实时状态" :state="jobState" />
+    <JobStatusCard v-if="jobState" title="流水线当前实时状态" :state="jobState" @rerun="handleJobRerun" />
   </n-space>
 </template>
 

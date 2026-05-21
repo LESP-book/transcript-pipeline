@@ -366,6 +366,180 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
     }
 
 
+def test_post_job_rerun_returns_job_id_and_updates_existing_state(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    job_dir = tmp_path / "data/jobs/job-test-001"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "job-test-001",
+                "kind": "job",
+                "status": "failed",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:40:00+08:00",
+                "current_stage": "refine",
+                "error_message": "旧错误",
+                "output_path": "",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+
+    def fake_execute_job_rerun(*, app, job_id: str, payload: dict) -> None:
+        assert payload["start_stage"] == "refine"
+        app.state.update_state(
+            app.state.job_state_path(job_id),
+            status="success",
+            current_stage="done",
+            error_message="",
+            output_path=str(tmp_path / "deliverables/final.md"),
+        )
+        app.state.active_jobs.discard(job_id)
+
+    app.state.execute_job_rerun = fake_execute_job_rerun
+
+    response = request_json(
+        app,
+        "POST",
+        "/api/jobs/job-test-001/rerun",
+        json_body={"start_stage": "refine"},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["job_id"] == "job-test-001"
+    state = json.loads((job_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "success"
+    assert state["current_stage"] == "done"
+    assert state["error_message"] == ""
+
+
+def test_post_job_rerun_rejects_active_job(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    job_dir = tmp_path / "data/jobs/job-test-001"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "job-test-001",
+                "kind": "job",
+                "status": "running",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:40:00+08:00",
+                "current_stage": "transcribe",
+                "error_message": "",
+                "output_path": "",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+    app.state.active_jobs.add("job-test-001")
+
+    response = request_json(
+        app,
+        "POST",
+        "/api/jobs/job-test-001/rerun",
+        json_body={"start_stage": "refine"},
+    )
+
+    assert response.status_code == 400
+    assert "不能重跑正在运行的任务" in response.text
+
+
+def test_resolve_rerun_stages_returns_selected_suffix() -> None:
+    from src.web.tasks import resolve_rerun_stages
+
+    assert resolve_rerun_stages(
+        ["extract_audio", "transcribe", "prepare_reference", "refine", "export_markdown"],
+        "prepare-reference",
+    ) == ["prepare-reference", "refine", "export-markdown"]
+
+
+def test_post_job_rerun_executes_selected_stage_suffix(tmp_path: Path, monkeypatch) -> None:
+    from api_server import create_app
+    from src.config_loader import load_settings
+    from src.job_runner import build_job_paths, write_job_settings
+
+    write_minimal_settings(tmp_path)
+    base_loaded_settings = load_settings(project_root=tmp_path)
+    job_id = "job-test-001"
+    job_paths = build_job_paths(tmp_path, job_id)
+    write_job_settings(
+        project_root=tmp_path,
+        loaded_settings=base_loaded_settings,
+        job_paths=job_paths,
+        profile_name="local_cpu",
+    )
+    (job_paths.manifest_path).write_text(
+        json.dumps(
+            {
+                "job_id": job_id,
+                "profile": "local_cpu",
+                "video_source": str(tmp_path / "lesson.mp4"),
+                "reference_source": str(tmp_path / "reference.txt"),
+                "output_dir": str(tmp_path / "deliverables"),
+                "book_name": "",
+                "chapter": "",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (job_paths.job_root / "state.json").write_text(
+        json.dumps(
+            {
+                "id": job_id,
+                "kind": "job",
+                "status": "failed",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:40:00+08:00",
+                "current_stage": "refine",
+                "error_message": "旧错误",
+                "output_path": "",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    called_stages: list[str] = []
+
+    def fake_run_stage(stage_name, job_loaded_settings, logger, backend_override=None) -> int:
+        _ = logger, backend_override
+        called_stages.append(stage_name)
+        if stage_name == "export-markdown":
+            final_dir = job_loaded_settings.path_for("final_dir")
+            final_dir.mkdir(parents=True, exist_ok=True)
+            (final_dir / "source.md").write_text("# 重跑结果\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("src.web.tasks.run_stage", fake_run_stage)
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+
+    response = request_json(
+        app,
+        "POST",
+        f"/api/jobs/{job_id}/rerun",
+        json_body={"start_stage": "prepare-reference"},
+    )
+
+    assert response.status_code == 202
+    assert called_stages == ["prepare-reference", "refine", "export-markdown"]
+    state = json.loads((job_paths.job_root / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "success"
+    assert state["current_stage"] == "done"
+    assert state["error_message"] == ""
+    assert state["output_path"].endswith("lesson.md")
+    assert Path(state["output_path"]).exists()
+
+
 def test_post_batch_jobs_returns_batch_id_and_persists_state(tmp_path: Path) -> None:
     from api_server import create_app
 

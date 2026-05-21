@@ -48,3 +48,13 @@ class StageRunRequest(BaseModel):
     reasoning_effort: str | None = None
     ocr_model: str | None = None
     ocr_reasoning_effort: str | None = None
+
+
+class JobRerunRequest(BaseModel):
+    start_stage: str
+    profile: str | None = None
+    backend: Literal["codex_api", "codex_cli", "gemini_cli", "both"] | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    ocr_model: str | None = None
+    ocr_reasoning_effort: str | None = None
