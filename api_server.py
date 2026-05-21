@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -41,6 +42,26 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     app.state.execute_single_job = execute_single_job
     app.state.execute_batch_job = execute_batch_job
     app.state.execute_stage_run = execute_stage_run
+    
+    # Active jobs in-memory tracker
+    app.state.active_jobs = set()
+
+    def reconcile_state(state: dict) -> dict:
+        """Self-heal tasks that are stuck in 'running' or 'pending' state but not active in the executor."""
+        if state.get("status") in ("running", "pending"):
+            job_id = state.get("id")
+            kind = state.get("kind", "job")
+            if job_id not in app.state.active_jobs:
+                state["status"] = "failed"
+                state["error_message"] = "任务已意外中断或服务重启"
+                if kind == "job":
+                    path = app.state.job_state_path(job_id)
+                elif kind == "batch":
+                    path = app.state.batch_state_path(job_id)
+                else:  # stage-run
+                    path = app.state.stage_run_state_path(job_id)
+                app.state.update_state(path, status="failed", error_message="任务已意外中断或服务重启")
+        return state
 
     @app.get("/api/config")
     async def get_config() -> dict[str, object]:
@@ -82,18 +103,21 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
 
     @app.get("/api/jobs")
     async def list_jobs() -> dict[str, list[dict]]:
-        return {"items": collect_state_items(root / "data/jobs")}
+        items = collect_state_items(root / "data/jobs")
+        return {"items": [reconcile_state(item) for item in items]}
 
     @app.get("/api/jobs/{job_id}")
     async def get_job_status(job_id: str) -> dict:
         state_path = app.state.job_state_path(job_id)
         if not state_path.exists():
             raise HTTPException(status_code=404, detail=f"job 不存在: {job_id}")
-        return read_json_file(state_path)
+        state = read_json_file(state_path)
+        return reconcile_state(state)
 
     @app.post("/api/jobs", status_code=202)
     async def post_job(request: SingleJobRequest) -> dict[str, str]:
         job_id = create_job_id()
+        app.state.active_jobs.add(job_id)
         write_json_file(app.state.job_state_path(job_id), create_initial_state(job_id, "job"))
         submit_task(
             app,
@@ -104,9 +128,23 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         )
         return {"job_id": job_id}
 
+    @app.delete("/api/jobs/{job_id}")
+    async def delete_job(job_id: str) -> dict[str, bool]:
+        if job_id in app.state.active_jobs:
+            raise HTTPException(status_code=400, detail="不能删除正在运行的任务")
+        job_dir = root / "data/jobs" / job_id
+        if not job_dir.exists():
+            raise HTTPException(status_code=404, detail=f"job 不存在: {job_id}")
+        try:
+            shutil.rmtree(job_dir)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"无法删除任务目录: {exc}")
+        return {"success": True}
+
     @app.post("/api/batch-jobs", status_code=202)
     async def post_batch_jobs(request: BatchJobRequest) -> dict[str, str]:
         batch_id = create_batch_id()
+        app.state.active_jobs.add(batch_id)
         state = create_initial_state(batch_id, "batch")
         state["items"] = []
         write_json_file(app.state.batch_state_path(batch_id), state)
@@ -124,15 +162,31 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         state_path = app.state.batch_state_path(batch_id)
         if not state_path.exists():
             raise HTTPException(status_code=404, detail=f"batch 不存在: {batch_id}")
-        return read_json_file(state_path)
+        state = read_json_file(state_path)
+        return reconcile_state(state)
 
     @app.get("/api/batches")
     async def list_batches() -> dict[str, list[dict]]:
-        return {"items": collect_state_items(root / "data/jobs/batches")}
+        items = collect_state_items(root / "data/jobs/batches")
+        return {"items": [reconcile_state(item) for item in items]}
+
+    @app.delete("/api/batches/{batch_id}")
+    async def delete_batch(batch_id: str) -> dict[str, bool]:
+        if batch_id in app.state.active_jobs:
+            raise HTTPException(status_code=400, detail="不能删除正在运行的批量任务")
+        batch_dir = root / "data/jobs/batches" / batch_id
+        if not batch_dir.exists():
+            raise HTTPException(status_code=404, detail=f"batch 不存在: {batch_id}")
+        try:
+            shutil.rmtree(batch_dir)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"无法删除批量任务目录: {exc}")
+        return {"success": True}
 
     @app.post("/api/stages/{stage_name}", status_code=202)
     async def post_stage_run(stage_name: str, request: StageRunRequest) -> dict[str, str]:
         run_id = uuid.uuid4().hex[:12]
+        app.state.active_jobs.add(run_id)
         state = create_initial_state(run_id, "stage-run")
         state["current_stage"] = normalize_stage_name(stage_name)
         write_json_file(app.state.stage_run_state_path(run_id), state)
@@ -151,11 +205,26 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         state_path = app.state.stage_run_state_path(run_id)
         if not state_path.exists():
             raise HTTPException(status_code=404, detail=f"stage run 不存在: {run_id}")
-        return read_json_file(state_path)
+        state = read_json_file(state_path)
+        return reconcile_state(state)
 
     @app.get("/api/stage-runs")
     async def list_stage_runs() -> dict[str, list[dict]]:
-        return {"items": collect_state_items(root / "data/jobs/stage-runs")}
+        items = collect_state_items(root / "data/jobs/stage-runs")
+        return {"items": [reconcile_state(item) for item in items]}
+
+    @app.delete("/api/stage-runs/{run_id}")
+    async def delete_stage_run(run_id: str) -> dict[str, bool]:
+        if run_id in app.state.active_jobs:
+            raise HTTPException(status_code=400, detail="不能删除正在运行的阶段任务")
+        run_dir = root / "data/jobs/stage-runs" / run_id
+        if not run_dir.exists():
+            raise HTTPException(status_code=404, detail=f"stage run 不存在: {run_id}")
+        try:
+            shutil.rmtree(run_dir)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"无法删除阶段任务目录: {exc}")
+        return {"success": True}
 
     return app
 

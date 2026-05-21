@@ -161,32 +161,37 @@ watch(showHidden, () => {
       :placeholder="`${label} 路径，可直接粘贴`"
       clearable
       @update:value="emit('update:modelValue', $event)"
+      style="border-radius: 10px 0 0 10px;"
     />
-    <n-button tertiary type="primary" @click="open">
+    <n-button type="primary" @click="open" style="border-radius: 0 10px 10px 0;">
       {{ buttonText ?? `选择${label}` }}
     </n-button>
   </div>
 
-  <n-modal v-model:show="visible" preset="card" :style="{ width: 'min(960px, 92vw)' }">
-    <n-card :title="`选择${label}`" closable @close="close">
+  <n-modal v-model:show="visible" preset="card" :style="{ width: 'min(880px, 94vw)', borderRadius: '16px' }">
+    <n-card :title="`选择 ${label}`" closable @close="close" class="modal-card">
       <n-flex vertical :size="16">
-        <n-flex justify="space-between" align="center" wrap>
-          <n-flex align="center" wrap>
-            <n-button quaternary @click="parentPath && loadEntries(parentPath)">上一级</n-button>
-            <n-button
-              v-for="segment in segments"
-              :key="segment.path"
-              text
-              class="file-browser__crumb"
-              @click="loadEntries(segment.path)"
-            >
-              {{ segment.label }}
+        <n-flex justify="space-between" align="center" wrap class="browser-toolbar">
+          <n-flex align="center" wrap class="breadcrumbs-container">
+            <n-button quaternary size="small" :disabled="!parentPath" @click="parentPath && loadEntries(parentPath)" class="up-btn">
+              <template #icon>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M18 15l-6-6-6 6"/></svg>
+              </template>
+              返回上级
             </n-button>
+            <div class="breadcrumb-trail">
+              <template v-for="(segment, idx) in segments" :key="segment.path">
+                <span v-if="idx > 0" class="breadcrumb-separator">/</span>
+                <span class="breadcrumb-item-text" @click="loadEntries(segment.path)">
+                  {{ segment.label }}
+                </span>
+              </template>
+            </div>
           </n-flex>
-          <n-checkbox v-model:checked="showHidden">显示隐藏文件</n-checkbox>
+          <n-checkbox v-model:checked="showHidden" class="hidden-files-check">显示隐藏文件</n-checkbox>
         </n-flex>
 
-        <n-input :value="currentPath" readonly />
+        <n-input :value="currentPath" readonly size="small" class="current-path-display" />
 
         <n-spin :show="loading">
           <div class="file-browser__list">
@@ -200,28 +205,35 @@ watch(showHidden, () => {
               @click="selectItem(item)"
               @dblclick="activateItem(item)"
             >
-              <div>
-                <strong>{{ item.name }}</strong>
-                <div class="file-browser__path">{{ item.path }}</div>
-              </div>
-              <n-tag :type="item.is_dir ? 'info' : 'default'" size="small">
+              <n-flex align="center" :size="12">
+                <!-- Gorgeous Left Icon -->
+                <div class="item-icon-wrapper" :class="item.is_dir ? 'is-dir' : 'is-file'">
+                  <svg v-if="item.is_dir" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="file-svg"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                  <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="file-svg"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                </div>
+                <div>
+                  <strong class="item-name">{{ item.name }}</strong>
+                  <div class="file-browser__path">{{ item.path }}</div>
+                </div>
+              </n-flex>
+              <n-tag :type="item.is_dir ? 'info' : 'default'" size="small" round :bordered="false" class="item-tag">
                 {{ item.is_dir ? "目录" : "文件" }}
               </n-tag>
             </button>
           </div>
         </n-spin>
 
-        <n-flex justify="space-between" align="center">
+        <n-flex justify="space-between" align="center" class="browser-footer">
           <span class="file-browser__hint">
             {{ mode === "dir" ? "可直接选择当前目录，也可单击子目录后确认。" : "双击文件可直接确认。" }}
           </span>
-          <n-flex>
-            <n-button v-if="mode === 'dir'" secondary type="primary" :disabled="!currentPath" @click="confirmCurrentDirectory">
+          <n-flex :size="10">
+            <n-button v-if="mode === 'dir'" secondary type="primary" :disabled="!currentPath" @click="confirmCurrentDirectory" class="footer-btn">
               选择当前目录
             </n-button>
-            <n-button @click="close">取消</n-button>
-            <n-button type="primary" :disabled="confirmDisabled" @click="confirmSelection">
-              {{ mode === "dir" ? "确认目录选择" : "确认选择" }}
+            <n-button @click="close" class="footer-btn">取消</n-button>
+            <n-button type="primary" :disabled="confirmDisabled" @click="confirmSelection" class="footer-btn">
+              {{ mode === "dir" ? "确认目录" : "确认选择" }}
             </n-button>
           </n-flex>
         </n-flex>
@@ -229,3 +241,109 @@ watch(showHidden, () => {
     </n-card>
   </n-modal>
 </template>
+
+<style scoped>
+.modal-card {
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(24px);
+}
+
+.browser-toolbar {
+  background: rgba(248, 250, 252, 0.5);
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(226, 232, 240, 0.6);
+}
+
+.breadcrumbs-container {
+  flex: 1;
+}
+
+.breadcrumb-trail {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.breadcrumb-separator {
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+.breadcrumb-item-text {
+  color: var(--primary);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.breadcrumb-item-text:hover {
+  background: var(--primary-alpha-10);
+  text-decoration: underline;
+}
+
+.current-path-display {
+  font-family: monospace;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.item-icon-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.item-icon-wrapper.is-dir {
+  background: rgba(59, 130, 246, 0.08);
+  color: #3b82f6;
+}
+
+.item-icon-wrapper.is-file {
+  background: rgba(100, 116, 139, 0.08);
+  color: #64748b;
+}
+
+.file-browser__item:hover .item-icon-wrapper.is-dir {
+  background: #3b82f6;
+  color: #ffffff;
+}
+
+.file-browser__item:hover .item-icon-wrapper.is-file {
+  background: #64748b;
+  color: #ffffff;
+}
+
+.file-svg {
+  width: 18px;
+  height: 18px;
+}
+
+.item-name {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.item-tag {
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.browser-footer {
+  margin-top: 6px;
+}
+
+.footer-btn {
+  font-weight: 600;
+  border-radius: 8px;
+}
+</style>

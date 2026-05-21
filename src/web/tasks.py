@@ -57,6 +57,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
     state_path = app.state.job_state_path(job_id)
     root = app.state.project_root
 
+    app.state.active_jobs.add(job_id)
     try:
         request = SingleJobRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
@@ -145,12 +146,15 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             status="failed",
             error_message=str(exc),
         )
+    finally:
+        app.state.active_jobs.discard(job_id)
 
 
 def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
     state_path = app.state.batch_state_path(batch_id)
     root = app.state.project_root
 
+    app.state.active_jobs.add(batch_id)
     try:
         request = BatchJobRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
@@ -241,12 +245,15 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
             status="failed",
             error_message=str(exc),
         )
+    finally:
+        app.state.active_jobs.discard(batch_id)
 
 
 def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: dict) -> None:
     state_path = app.state.stage_run_state_path(run_id)
     root = app.state.project_root
 
+    app.state.active_jobs.add(run_id)
     try:
         request = StageRunRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
@@ -293,3 +300,5 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
             status="failed",
             error_message=str(exc),
         )
+    finally:
+        app.state.active_jobs.discard(run_id)

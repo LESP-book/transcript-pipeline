@@ -227,3 +227,21 @@ export function getStageRun(runId: string): Promise<JobState> {
 export function listStageRuns(): Promise<JobListResponse> {
   return requestJson<JobListResponse>("/api/stage-runs");
 }
+
+export function deleteJob(jobId: string): Promise<{ success: boolean }> {
+  return requestJson<{ success: boolean }>(`/api/jobs/${jobId}`, {
+    method: "DELETE",
+  });
+}
+
+export function deleteBatch(batchId: string): Promise<{ success: boolean }> {
+  return requestJson<{ success: boolean }>(`/api/batches/${batchId}`, {
+    method: "DELETE",
+  });
+}
+
+export function deleteStageRun(runId: string): Promise<{ success: boolean }> {
+  return requestJson<{ success: boolean }>(`/api/stage-runs/${runId}`, {
+    method: "DELETE",
+  });
+}

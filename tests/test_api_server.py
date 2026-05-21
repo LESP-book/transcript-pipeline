@@ -102,7 +102,9 @@ def test_get_job_status_returns_current_state(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    response = request_json(create_app(project_root=tmp_path), "GET", "/api/jobs/job-test-001")
+    app = create_app(project_root=tmp_path)
+    app.state.active_jobs.add("job-test-001")
+    response = request_json(app, "GET", "/api/jobs/job-test-001")
 
     assert response.status_code == 200
     assert response.json()["id"] == "job-test-001"
@@ -151,7 +153,9 @@ def test_get_jobs_lists_persisted_states(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    response = request_json(create_app(project_root=tmp_path), "GET", "/api/jobs")
+    app = create_app(project_root=tmp_path)
+    app.state.active_jobs.add("job-b")
+    response = request_json(app, "GET", "/api/jobs")
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()["items"]] == ["job-b", "job-a"]
@@ -181,7 +185,9 @@ def test_get_batch_status_returns_persisted_state(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    response = request_json(create_app(project_root=tmp_path), "GET", "/api/batches/batch-test-001")
+    app = create_app(project_root=tmp_path)
+    app.state.active_jobs.add("batch-test-001")
+    response = request_json(app, "GET", "/api/batches/batch-test-001")
 
     assert response.status_code == 200
     assert response.json()["id"] == "batch-test-001"
