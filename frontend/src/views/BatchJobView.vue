@@ -9,6 +9,8 @@ import {
   NGrid,
   NGridItem,
   NInput,
+  NInputNumber,
+  NSelect,
   NRadioButton,
   NRadioGroup,
   NSpace,
@@ -18,7 +20,9 @@ import {
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 
 import { getBatch, listFs, submitBatchJob, type FileItem, type JobState } from "../api/client";
+import BackendSelector from "../components/BackendSelector.vue";
 import FileBrowser from "../components/FileBrowser.vue";
+import ProfileSelector from "../components/ProfileSelector.vue";
 import { useConfigOptions } from "../composables/useConfigOptions";
 
 type BatchMode = "manifest" | "paired-dir" | "shared-reference";
@@ -32,7 +36,7 @@ interface SourcePreview {
 }
 
 const message = useMessage();
-const { error, referenceExtensions, videoExtensions } = useConfigOptions();
+const { activeProfile, backends, error, loading, profiles, referenceExtensions, videoExtensions } = useConfigOptions();
 const batchState = ref<JobState | null>(null);
 const submitting = ref(false);
 const previewLoading = ref(false);
@@ -47,6 +51,13 @@ const form = reactive<{
   reference_dir: string;
   shared_reference: string;
   output_dir: string;
+  profile: string;
+  backend: string;
+  ocr_backend: string;
+  remote_concurrency: number | null;
+  book_name: string;
+  chapter: string;
+  glossary_file: string;
 }>({
   mode: "manifest",
   manifest: "",
@@ -54,7 +65,20 @@ const form = reactive<{
   reference_dir: "",
   shared_reference: "",
   output_dir: "",
+  profile: "",
+  backend: "",
+  ocr_backend: "",
+  remote_concurrency: 2,
+  book_name: "",
+  chapter: "",
+  glossary_file: "",
 });
+
+const ocrBackendOptions = [
+  { label: "Codex API", value: "codex_api" },
+  { label: "Codex CLI", value: "codex_cli" },
+  { label: "Gemini CLI", value: "gemini_cli" },
+];
 
 const modeTip = computed(() => {
   if (form.mode === "manifest") {
@@ -79,6 +103,9 @@ const requiredWarning = computed(() => {
   if (form.mode === "shared-reference" && !form.shared_reference.trim()) {
     return "共享参考模式下需要指定共享的参考源或 URL。";
   }
+  if (!form.remote_concurrency || form.remote_concurrency < 1) {
+    return "流水线远程并发度必须是大于等于 1 的整数。";
+  }
   return "";
 });
 
@@ -94,6 +121,12 @@ const previewHasBlockingIssue = computed(() => {
 });
 
 const batchItems = computed(() => batchState.value?.items ?? []);
+
+watch(activeProfile, (value) => {
+  if (!form.profile && value) {
+    form.profile = value;
+  }
+});
 
 watch(
   () => [form.mode, form.videos_dir, form.reference_dir, form.shared_reference, form.output_dir],
@@ -229,6 +262,13 @@ function buildPayload() {
     reference_dir: form.mode === "paired-dir" ? form.reference_dir : null,
     shared_reference: form.mode === "shared-reference" ? form.shared_reference.trim() : null,
     output_dir: form.mode === "manifest" ? null : form.output_dir,
+    profile: form.profile || null,
+    backend: form.backend || null,
+    ocr_backend: form.ocr_backend || null,
+    remote_concurrency: form.remote_concurrency,
+    book_name: form.book_name || null,
+    chapter: form.chapter || null,
+    glossary_file: form.glossary_file || null,
   };
 }
 
@@ -363,6 +403,54 @@ onBeforeUnmount(stopPolling);
                     <FileBrowser v-model="form.output_dir" mode="dir" label="成果输出目录" />
                   </n-form-item>
                 </template>
+              </div>
+            </n-grid-item>
+
+            <n-grid-item span="2 m:1">
+              <div class="form-section">
+                <h4 class="form-section-title">流水线配置</h4>
+                <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
+                  <n-grid-item span="2">
+                    <n-form-item label="术语词表 (Glossary File)">
+                      <FileBrowser v-model="form.glossary_file" mode="file" label="术语词表" button-text="选择术语词表" />
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2 m:1">
+                    <n-form-item label="配置 Profile">
+                      <ProfileSelector v-model="form.profile" :options="profiles" :loading="loading" />
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2 m:1">
+                    <n-form-item label="推理后端 (Backend)">
+                      <BackendSelector v-model="form.backend" :options="backends" :loading="loading" />
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2 m:1">
+                    <n-form-item label="PDF OCR 后端">
+                      <n-select
+                        v-model:value="form.ocr_backend"
+                        :options="ocrBackendOptions"
+                        clearable
+                        placeholder="使用默认 OCR 后端"
+                      />
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2 m:1">
+                    <n-form-item label="批量远程并发度" required>
+                      <n-input-number v-model:value="form.remote_concurrency" :min="1" :precision="0" class="w-full" />
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2 m:1">
+                    <n-form-item label="书籍名称 (Book Name)">
+                      <n-input v-model:value="form.book_name" placeholder="可选，用于最终文件名和 ASR 提示词" />
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2">
+                    <n-form-item label="章节名称 (Chapter)">
+                      <n-input v-model:value="form.chapter" placeholder="可选，用于最终文件名和 ASR 提示词" />
+                    </n-form-item>
+                  </n-grid-item>
+                </n-grid>
               </div>
             </n-grid-item>
           </n-grid>

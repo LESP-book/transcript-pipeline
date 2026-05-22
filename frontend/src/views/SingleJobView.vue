@@ -1,21 +1,29 @@
 <script setup lang="ts">
 import {
+  NAlert,
   NButton,
   NCard,
   NFlex,
   NForm,
   NFormItem,
+  NGrid,
+  NGridItem,
   NInput,
+  NSelect,
   NSpace,
   useMessage,
 } from "naive-ui";
-import { onBeforeUnmount, reactive, ref } from "vue";
+import { onBeforeUnmount, reactive, ref, watch } from "vue";
 
 import { getJob, type JobState, submitJob } from "../api/client";
+import BackendSelector from "../components/BackendSelector.vue";
 import FileBrowser from "../components/FileBrowser.vue";
 import JobStatusCard from "../components/JobStatusCard.vue";
+import ProfileSelector from "../components/ProfileSelector.vue";
+import { useConfigOptions } from "../composables/useConfigOptions";
 
 const message = useMessage();
+const { activeProfile, backends, error, loading, profiles } = useConfigOptions();
 const jobState = ref<JobState | null>(null);
 const submitting = ref(false);
 const pollHandle = ref<number | null>(null);
@@ -24,6 +32,24 @@ const form = reactive({
   video: "",
   reference: "",
   output_dir: "",
+  profile: "",
+  backend: "",
+  ocr_backend: "",
+  book_name: "",
+  chapter: "",
+  glossary_file: "",
+});
+
+const ocrBackendOptions = [
+  { label: "Codex API", value: "codex_api" },
+  { label: "Codex CLI", value: "codex_cli" },
+  { label: "Gemini CLI", value: "gemini_cli" },
+];
+
+watch(activeProfile, (value) => {
+  if (!form.profile && value) {
+    form.profile = value;
+  }
 });
 
 function stopPolling() {
@@ -67,6 +93,12 @@ async function submit() {
       video: form.video,
       reference: form.reference,
       output_dir: form.output_dir,
+      profile: form.profile || null,
+      backend: form.backend || null,
+      ocr_backend: form.ocr_backend || null,
+      book_name: form.book_name || null,
+      chapter: form.chapter || null,
+      glossary_file: form.glossary_file || null,
     });
     await refreshJob(response.job_id);
     startPolling(response.job_id);
@@ -94,6 +126,8 @@ onBeforeUnmount(stopPolling);
       </div>
     </section>
 
+    <n-alert v-if="error" type="error" :title="error" :bordered="false" class="glass-alert" />
+
     <n-card class="view-card form-panel" :bordered="false">
       <template #header>
         <n-flex align="center" :size="10">
@@ -105,21 +139,68 @@ onBeforeUnmount(stopPolling);
       </template>
 
       <n-form label-placement="top">
-        <div class="form-section">
-          <h4 class="form-section-title">核心输入输出参数</h4>
-          <n-form-item label="视频文件 (Video Source)" required>
-            <FileBrowser v-model="form.video" mode="file" label="视频文件" />
-          </n-form-item>
-          <n-form-item label="参考源文件或 URL (Reference)" required>
-            <n-space vertical class="w-full">
-              <n-input v-model:value="form.reference" placeholder="本地文件路径，或输入 https:// 网址" />
-              <FileBrowser v-model="form.reference" mode="file" label="参考源文件" button-text="浏览本地参考源" />
-            </n-space>
-          </n-form-item>
-          <n-form-item label="输出保存目录 (Output Directory)" required>
-            <FileBrowser v-model="form.output_dir" mode="dir" label="输出保存目录" />
-          </n-form-item>
-        </div>
+        <n-grid :cols="2" :x-gap="20" :y-gap="4" responsive="screen" item-responsive>
+          <n-grid-item span="2 m:1">
+            <div class="form-section">
+              <h4 class="form-section-title">核心输入输出参数</h4>
+              <n-form-item label="视频文件 (Video Source)" required>
+                <FileBrowser v-model="form.video" mode="file" label="视频文件" />
+              </n-form-item>
+              <n-form-item label="参考源文件或 URL (Reference)" required>
+                <n-space vertical class="w-full">
+                  <n-input v-model:value="form.reference" placeholder="本地文件路径，或输入 https:// 网址" />
+                  <FileBrowser v-model="form.reference" mode="file" label="参考源文件" button-text="浏览本地参考源" />
+                </n-space>
+              </n-form-item>
+              <n-form-item label="输出保存目录 (Output Directory)" required>
+                <FileBrowser v-model="form.output_dir" mode="dir" label="输出保存目录" />
+              </n-form-item>
+            </div>
+          </n-grid-item>
+
+          <n-grid-item span="2 m:1">
+            <div class="form-section">
+              <h4 class="form-section-title">流水线配置</h4>
+              <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
+                <n-grid-item span="2">
+                  <n-form-item label="术语词表 (Glossary File)">
+                    <FileBrowser v-model="form.glossary_file" mode="file" label="术语词表" button-text="选择术语词表" />
+                  </n-form-item>
+                </n-grid-item>
+                <n-grid-item span="2 m:1">
+                  <n-form-item label="配置 Profile">
+                    <ProfileSelector v-model="form.profile" :options="profiles" :loading="loading" />
+                  </n-form-item>
+                </n-grid-item>
+                <n-grid-item span="2 m:1">
+                  <n-form-item label="推理后端 (Backend)">
+                    <BackendSelector v-model="form.backend" :options="backends" :loading="loading" />
+                  </n-form-item>
+                </n-grid-item>
+                <n-grid-item span="2 m:1">
+                  <n-form-item label="PDF OCR 后端">
+                    <n-select
+                      v-model:value="form.ocr_backend"
+                      :options="ocrBackendOptions"
+                      clearable
+                      placeholder="使用默认 OCR 后端"
+                    />
+                  </n-form-item>
+                </n-grid-item>
+                <n-grid-item span="2 m:1">
+                  <n-form-item label="书籍名称 (Book Name)">
+                    <n-input v-model:value="form.book_name" placeholder="例如：《Lesp 读书会》" />
+                  </n-form-item>
+                </n-grid-item>
+                <n-grid-item span="2">
+                  <n-form-item label="章节名称 (Chapter)">
+                    <n-input v-model:value="form.chapter" placeholder="例如：第 1 章 导言" />
+                  </n-form-item>
+                </n-grid-item>
+              </n-grid>
+            </div>
+          </n-grid-item>
+        </n-grid>
 
         <n-flex justify="end" class="form-action-area">
           <n-button type="primary" size="large" :loading="submitting" @click="submit" class="submit-btn">

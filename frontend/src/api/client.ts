@@ -11,15 +11,8 @@ export interface FrontendSettings {
   codex_lb_base_url: string;
   codex_lb_api_key: string;
   has_codex_lb_api_key: boolean;
-  profile: string;
-  backend: string;
-  remote_concurrency: number;
-  book_name: string;
-  chapter: string;
-  glossary_file: string;
   model: string;
   reasoning_effort: string;
-  ocr_backend: string;
   ocr_model: string;
   ocr_reasoning_effort: string;
   api_key_env: string;
@@ -30,15 +23,8 @@ export interface FrontendSettingsPayload {
   codex_lb_base_url?: string | null;
   codex_lb_api_key?: string | null;
   clear_codex_lb_api_key?: boolean;
-  profile?: string | null;
-  backend?: string | null;
-  remote_concurrency?: number | null;
-  book_name?: string | null;
-  chapter?: string | null;
-  glossary_file?: string | null;
   model?: string | null;
   reasoning_effort?: string | null;
-  ocr_backend?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
 }
