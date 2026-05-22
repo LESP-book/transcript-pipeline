@@ -444,22 +444,41 @@ npm install
 cd ".."
 ```
 
-### 2. 启动后端 API
+### 2. 一键启动 Web UI
 
-在项目根目录执行：
+推荐在项目根目录使用一键启动入口，同时拉起后端和前端：
+
+```bash
+./start_web.sh
+```
+
+如果希望启动后自动打开浏览器：
+
+```bash
+./start_web.sh --open-browser
+```
+
+也可以直接使用 Python 脚本：
+
+```bash
+.venv/bin/python "scripts/start_web.py"
+```
+
+一键启动后可访问：
+
+- `http://127.0.0.1:5173`：Web UI 页面
+- `http://127.0.0.1:8000/docs`：FastAPI Swagger 文档
+- `http://127.0.0.1:8000/api/config`：当前 profile / backend 配置
+
+如需单独调试后端，也可以在项目根目录执行：
 
 ```bash
 .venv/bin/python "api_server.py"
 ```
 
-启动后可直接访问：
-
-- `http://127.0.0.1:8000/docs`：FastAPI Swagger 文档
-- `http://127.0.0.1:8000/api/config`：当前 profile / backend 配置
-
 ### 3. 启动前端开发服务器
 
-另开一个终端，在项目根目录执行：
+如需单独调试前端，另开一个终端，在项目根目录执行：
 
 ```bash
 cd "frontend"
@@ -482,7 +501,8 @@ http://127.0.0.1:5173
 
 ### 5. 使用注意
 
-- Web UI 依赖后端 API，前端启动前最好先启动 `api_server.py`
+- Web UI 依赖后端 API，日常使用优先执行 `./start_web.sh`
+- `./start_web.sh` 会在同一个终端内管理前端和后端，按 `Ctrl+C` 可同时停止两个服务
 - Web UI 设置会保存到 `data/jobs/frontend-settings.json`，该路径默认被 `.gitignore` 忽略
 - 文件浏览器默认只允许浏览“当前用户 HOME 目录”和“项目根目录”
 - 目录选择模式下，不能确认选择文件
