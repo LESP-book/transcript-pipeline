@@ -2,6 +2,7 @@
 import { NAlert, NCard, NDescriptions, NDescriptionsItem, NTag, NFlex, NButton, NSelect, useMessage, useDialog } from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { deleteJob, deleteBatch, deleteStageRun, rerunJob } from "../api/client";
+import JobArtifactsViewer from "./JobArtifactsViewer.vue";
 
 const props = defineProps<{
   title?: string;
@@ -30,6 +31,8 @@ const canRerun = computed(() => {
   const kind = String(props.state.kind ?? "");
   return kind === "job" && status !== "running" && status !== "pending";
 });
+
+const canViewArtifacts = computed(() => String(props.state.kind ?? "") === "job");
 
 function handleDelete() {
   dialog.warning({
@@ -241,6 +244,11 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
           </n-button>
         </n-flex>
       </div>
+
+      <JobArtifactsViewer
+        v-if="canViewArtifacts"
+        :job-id="String(state.id ?? '')"
+      />
 
       <!-- Compact & Elegant Descriptions Grid -->
       <n-descriptions label-placement="left" :column="2" size="medium" bordered class="status-grid">

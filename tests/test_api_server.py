@@ -49,8 +49,15 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
         json_body={
             "codex_lb_base_url": "https://api.example.test",
             "codex_lb_api_key": "sk-test-secret",
+            "profile": "local_cpu",
+            "backend": "gemini_cli",
+            "remote_concurrency": 4,
+            "book_name": "测试书",
+            "chapter": "第一章",
+            "glossary_file": str(tmp_path / "glossary.txt"),
             "model": "gpt-5.5",
             "reasoning_effort": "high",
+            "ocr_backend": "codex_api",
             "ocr_model": "gpt-5.4-mini",
             "ocr_reasoning_effort": "high",
         },
@@ -61,12 +68,21 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
     assert payload["codex_lb_base_url"] == "https://api.example.test"
     assert payload["codex_lb_api_key"] == ""
     assert payload["has_codex_lb_api_key"] is True
+    assert payload["profile"] == "local_cpu"
+    assert payload["backend"] == "gemini_cli"
+    assert payload["remote_concurrency"] == 4
+    assert payload["book_name"] == "测试书"
+    assert payload["chapter"] == "第一章"
+    assert payload["glossary_file"].endswith("glossary.txt")
     assert payload["model"] == "gpt-5.5"
+    assert payload["ocr_backend"] == "codex_api"
     assert payload["ocr_model"] == "gpt-5.4-mini"
 
     settings_path = tmp_path / "data/jobs/frontend-settings.json"
     persisted = json.loads(settings_path.read_text(encoding="utf-8"))
     assert persisted["codex_lb_api_key"] == "sk-test-secret"
+    assert persisted["backend"] == "gemini_cli"
+    assert persisted["remote_concurrency"] == 4
 
     clear_response = request_json(
         app,
@@ -110,6 +126,79 @@ def test_get_job_status_returns_current_state(tmp_path: Path) -> None:
     assert response.json()["id"] == "job-test-001"
     assert response.json()["status"] == "running"
     assert response.json()["current_stage"] == "transcribe"
+
+
+def test_get_job_artifacts_lists_and_reads_text_outputs(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    job_dir = tmp_path / "data/jobs/job-test-001"
+    (job_dir / "intermediate/asr").mkdir(parents=True, exist_ok=True)
+    (job_dir / "intermediate/refined").mkdir(parents=True, exist_ok=True)
+    (job_dir / "output/final").mkdir(parents=True, exist_ok=True)
+    (job_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "job-test-001",
+                "kind": "job",
+                "status": "success",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:31:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": str(job_dir / "output/final/source.md"),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (job_dir / "intermediate/asr/source.txt").write_text("原始转写文本", encoding="utf-8")
+    (job_dir / "intermediate/refined/source.json").write_text(
+        json.dumps({"final_markdown": "# 校对结果\n\n正文", "refined_full_text": "校对结果 正文"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (job_dir / "output/final/source.md").write_text("# 最终稿\n\n正文", encoding="utf-8")
+
+    app = create_app(project_root=tmp_path)
+    list_response = request_json(app, "GET", "/api/jobs/job-test-001/artifacts")
+
+    assert list_response.status_code == 200
+    items = list_response.json()["items"]
+    assert any(item["id"] == "transcribe-text" and item["exists"] for item in items)
+    assert any(item["id"] == "refine-markdown" and item["exists"] for item in items)
+
+    content_response = request_json(app, "GET", "/api/jobs/job-test-001/artifacts/refine-markdown")
+
+    assert content_response.status_code == 200
+    assert content_response.json()["content"] == "# 校对结果\n\n正文"
+
+
+def test_get_job_artifact_rejects_unknown_artifact_id(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    job_dir = tmp_path / "data/jobs/job-test-001"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "job-test-001",
+                "kind": "job",
+                "status": "success",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:31:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": "",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    response = request_json(create_app(project_root=tmp_path), "GET", "/api/jobs/job-test-001/artifacts/unknown-artifact")
+
+    assert response.status_code == 404
 
 
 def test_get_jobs_lists_persisted_states(tmp_path: Path) -> None:
@@ -320,10 +409,12 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
     seen: dict[str, str] = {}
 
     def fake_run_stage(stage_name, job_loaded_settings, logger, backend_override=None) -> int:
-        _ = logger, backend_override
+        _ = logger
         if stage_name == "refine":
+            seen["backend_override"] = backend_override or ""
             seen["model"] = job_loaded_settings.settings.llm.model
             seen["reasoning_effort"] = job_loaded_settings.settings.llm.reasoning_effort
+            seen["ocr_backend"] = job_loaded_settings.settings.reference.ai_ocr_backend
             seen["ocr_model"] = job_loaded_settings.settings.reference.codex_ocr_model
             seen["ocr_reasoning_effort"] = job_loaded_settings.settings.reference.codex_ocr_reasoning_effort
         if stage_name == "export-markdown":
@@ -342,6 +433,8 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
         json_body={
             "model": "gpt-5.5",
             "reasoning_effort": "high",
+            "backend": "gemini_cli",
+            "ocr_backend": "gemini_cli",
             "ocr_model": "gpt-5.4-mini",
             "ocr_reasoning_effort": "high",
         },
@@ -359,8 +452,10 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
 
     assert response.status_code == 202
     assert seen == {
+        "backend_override": "gemini_cli",
         "model": "gpt-5.5",
         "reasoning_effort": "high",
+        "ocr_backend": "gemini_cli",
         "ocr_model": "gpt-5.4-mini",
         "ocr_reasoning_effort": "high",
     }

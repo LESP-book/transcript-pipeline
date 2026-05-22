@@ -3,30 +3,25 @@ import {
   NAlert,
   NButton,
   NCard,
+  NFlex,
   NForm,
   NFormItem,
   NSelect,
   NSpace,
   useMessage,
 } from "naive-ui";
-import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { onBeforeUnmount, reactive, ref } from "vue";
 
 import { getStageRun, submitStageRun, type JobState } from "../api/client";
-import BackendSelector from "../components/BackendSelector.vue";
 import JobStatusCard from "../components/JobStatusCard.vue";
-import ProfileSelector from "../components/ProfileSelector.vue";
-import { useConfigOptions } from "../composables/useConfigOptions";
 
 const message = useMessage();
-const { activeProfile, backends, error, loading, profiles } = useConfigOptions();
 const stageState = ref<JobState | null>(null);
 const submitting = ref(false);
 const pollHandle = ref<number | null>(null);
 
 const form = reactive({
   stage: "extract-audio",
-  profile: "",
-  backend: "",
 });
 
 const stageOptions = [
@@ -38,14 +33,6 @@ const stageOptions = [
   { label: "智能润色 (refine)", value: "refine" },
   { label: "导出文档 (export-markdown)", value: "export-markdown" },
 ];
-
-const refineSelected = computed(() => form.stage === "refine");
-
-watch(activeProfile, (value) => {
-  if (!form.profile && value) {
-    form.profile = value;
-  }
-});
 
 function stopPolling() {
   if (pollHandle.value !== null) {
@@ -75,10 +62,7 @@ function startPolling(runId: string) {
 async function submit() {
   submitting.value = true;
   try {
-    const response = await submitStageRun(form.stage, {
-      profile: form.profile || null,
-      backend: refineSelected.value ? form.backend || null : null,
-    });
+    const response = await submitStageRun(form.stage, {});
     await refreshStage(response.run_id);
     startPolling(response.run_id);
     message.success(`阶段任务已成功提交：${response.run_id}`);
@@ -105,8 +89,6 @@ onBeforeUnmount(stopPolling);
       </div>
     </section>
 
-    <n-alert v-if="error" type="error" :title="error" :bordered="false" class="glass-alert" />
-    
     <n-alert type="warning" title="全局目录运行警告" :bordered="false" class="warn-alert">
       该工具是直接对当前系统配置目录下的数据执行对应处理阶段，并不是针对单个临时上传文件起作用。
     </n-alert>
@@ -126,20 +108,6 @@ onBeforeUnmount(stopPolling);
           <n-form-item label="要运行的指定流水线阶段 (Pipeline Stage)">
             <n-select v-model:value="form.stage" :options="stageOptions" class="w-full select-stage" />
           </n-form-item>
-          
-          <n-grid :cols="2" :x-gap="16" responsive="screen" item-responsive>
-            <n-grid-item span="2 m:1">
-              <n-form-item label="指定 Profile">
-                <ProfileSelector v-model="form.profile" :options="profiles" :loading="loading" />
-              </n-form-item>
-            </n-grid-item>
-            
-            <n-grid-item span="2 m:1">
-              <n-form-item label="智能润色推理后端 (Backend，仅在 refine 阶段生效)">
-                <BackendSelector v-model="form.backend" :options="backends" :loading="loading" :disabled="!refineSelected" />
-              </n-form-item>
-            </n-grid-item>
-          </n-grid>
 
           <n-flex justify="end" class="form-action-area">
             <n-button type="primary" size="large" :loading="submitting" @click="submit" class="submit-btn is-stage-btn">

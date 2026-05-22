@@ -168,6 +168,20 @@
   border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
+.dark-mode .artifacts-panel {
+  background: rgba(30, 41, 59, 0.4) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.dark-mode .artifact-preview {
+  background: rgba(15, 23, 42, 0.5) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.dark-mode .artifact-preview pre {
+  color: #e2e8f0 !important;
+}
+
 .dark-mode .status-grid {
   background: rgba(15, 23, 42, 0.35) !important;
 }

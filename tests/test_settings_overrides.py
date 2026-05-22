@@ -16,6 +16,7 @@ def test_apply_model_overrides_updates_llm_and_ocr_settings(tmp_path) -> None:
         ModelOverrides(
             llm_model="gpt-5.5",
             llm_reasoning_effort="medium",
+            ocr_backend="codex_api",
             ocr_model="gpt-5.4-mini",
             ocr_reasoning_effort="high",
         ),
@@ -23,6 +24,7 @@ def test_apply_model_overrides_updates_llm_and_ocr_settings(tmp_path) -> None:
 
     assert loaded_settings.settings.llm.model == "gpt-5.5"
     assert loaded_settings.settings.llm.reasoning_effort == "medium"
+    assert loaded_settings.settings.reference.ai_ocr_backend == "codex_api"
     assert loaded_settings.settings.reference.codex_ocr_model == "gpt-5.4-mini"
     assert loaded_settings.settings.reference.codex_ocr_reasoning_effort == "high"
 
@@ -33,3 +35,11 @@ def test_apply_model_overrides_rejects_empty_values(tmp_path) -> None:
 
     with pytest.raises(SettingsOverrideError):
         apply_model_overrides(loaded_settings, ModelOverrides(llm_model=" "))
+
+
+def test_apply_model_overrides_rejects_unknown_ocr_backend(tmp_path) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    with pytest.raises(SettingsOverrideError):
+        apply_model_overrides(loaded_settings, ModelOverrides(ocr_backend="unknown"))

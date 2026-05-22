@@ -8,6 +8,7 @@ import {
   NGrid,
   NGridItem,
   NInput,
+  NInputNumber,
   NSelect,
   NSpace,
   NTag,
@@ -16,8 +17,13 @@ import {
 import { computed, onMounted, reactive, ref } from "vue";
 
 import { getFrontendSettings, saveFrontendSettings, type FrontendSettings } from "../api/client";
+import BackendSelector from "../components/BackendSelector.vue";
+import FileBrowser from "../components/FileBrowser.vue";
+import ProfileSelector from "../components/ProfileSelector.vue";
+import { useConfigOptions } from "../composables/useConfigOptions";
 
 const message = useMessage();
+const { backends, loading: configLoading, profiles } = useConfigOptions();
 const loading = ref(false);
 const saving = ref(false);
 const loadedSettings = ref<FrontendSettings | null>(null);
@@ -26,8 +32,15 @@ const form = reactive({
   codex_lb_base_url: "",
   codex_lb_api_key: "",
   clear_codex_lb_api_key: false,
+  profile: "",
+  backend: "",
+  remote_concurrency: 2,
+  book_name: "",
+  chapter: "",
+  glossary_file: "",
   model: "",
   reasoning_effort: "high",
+  ocr_backend: "codex_api",
   ocr_model: "",
   ocr_reasoning_effort: "high",
 });
@@ -36,6 +49,12 @@ const reasoningOptions = ["low", "medium", "high", "xhigh"].map((value) => ({
   label: value,
   value,
 }));
+
+const ocrBackendOptions = [
+  { label: "Codex API", value: "codex_api" },
+  { label: "Codex CLI", value: "codex_cli" },
+  { label: "Gemini CLI", value: "gemini_cli" },
+];
 
 const apiKeyStatus = computed(() => {
   if (form.codex_lb_api_key.trim()) {
@@ -55,8 +74,15 @@ function applySettings(settings: FrontendSettings) {
   form.codex_lb_base_url = settings.codex_lb_base_url;
   form.codex_lb_api_key = "";
   form.clear_codex_lb_api_key = false;
+  form.profile = settings.profile;
+  form.backend = settings.backend;
+  form.remote_concurrency = settings.remote_concurrency || 2;
+  form.book_name = settings.book_name;
+  form.chapter = settings.chapter;
+  form.glossary_file = settings.glossary_file;
   form.model = settings.model;
   form.reasoning_effort = settings.reasoning_effort;
+  form.ocr_backend = settings.ocr_backend || "codex_api";
   form.ocr_model = settings.ocr_model;
   form.ocr_reasoning_effort = settings.ocr_reasoning_effort;
 }
@@ -79,8 +105,15 @@ async function saveSettings() {
       codex_lb_base_url: form.codex_lb_base_url,
       codex_lb_api_key: form.codex_lb_api_key || null,
       clear_codex_lb_api_key: form.clear_codex_lb_api_key,
+      profile: form.profile || null,
+      backend: form.backend || null,
+      remote_concurrency: form.remote_concurrency,
+      book_name: form.book_name || null,
+      chapter: form.chapter || null,
+      glossary_file: form.glossary_file || null,
       model: form.model,
       reasoning_effort: form.reasoning_effort,
+      ocr_backend: form.ocr_backend,
       ocr_model: form.ocr_model,
       ocr_reasoning_effort: form.ocr_reasoning_effort,
     });
@@ -101,8 +134,8 @@ onMounted(loadSettings);
     <section class="view-hero">
       <div>
         <p class="view-hero__eyebrow">运行设置</p>
-        <h2 class="view-hero__title">Codex API 与模型配置</h2>
-        <p class="view-hero__copy">这些设置会作为 Web 任务的默认值，不会写回 config/settings.yaml。</p>
+        <h2 class="view-hero__title">运行默认值</h2>
+        <p class="view-hero__copy">任务页只填写输入输出；Profile、后端、OCR、术语表等默认项在这里统一维护。</p>
       </div>
       <n-button type="primary" ghost :loading="loading" @click="loadSettings">刷新</n-button>
     </section>
@@ -142,6 +175,45 @@ onMounted(loadSettings);
       </n-grid-item>
 
       <n-grid-item span="2 m:1">
+        <n-card title="流水线默认值" class="view-card settings-card">
+          <n-form label-placement="top">
+            <n-grid :cols="2" :x-gap="12" responsive="screen" item-responsive>
+              <n-grid-item span="2 m:1">
+                <n-form-item label="配置 Profile">
+                  <ProfileSelector v-model="form.profile" :options="profiles" :loading="configLoading" />
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item span="2 m:1">
+                <n-form-item label="推理后端">
+                  <BackendSelector v-model="form.backend" :options="backends" :loading="configLoading" />
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item span="2 m:1">
+                <n-form-item label="批量远程并发度">
+                  <n-input-number v-model:value="form.remote_concurrency" :min="1" :precision="0" class="w-full" />
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item span="2">
+                <n-form-item label="术语词表">
+                  <FileBrowser v-model="form.glossary_file" mode="file" label="术语词表" button-text="选择术语词表" />
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item span="2 m:1">
+                <n-form-item label="书籍名称">
+                  <n-input v-model:value="form.book_name" placeholder="可选，用于最终文件名和 ASR 提示词" />
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item span="2 m:1">
+                <n-form-item label="章节名称">
+                  <n-input v-model:value="form.chapter" placeholder="可选，用于最终文件名和 ASR 提示词" />
+                </n-form-item>
+              </n-grid-item>
+            </n-grid>
+          </n-form>
+        </n-card>
+      </n-grid-item>
+
+      <n-grid-item span="2 m:1">
         <n-card title="模型默认值" class="view-card settings-card">
           <n-form label-placement="top">
             <n-form-item label="阶段 6 模型">
@@ -152,6 +224,9 @@ onMounted(loadSettings);
             </n-form-item>
             <n-form-item label="PDF OCR 模型">
               <n-input v-model:value="form.ocr_model" placeholder="gpt-5.4-mini" />
+            </n-form-item>
+            <n-form-item label="PDF OCR 后端">
+              <n-select v-model:value="form.ocr_backend" :options="ocrBackendOptions" />
             </n-form-item>
             <n-form-item label="PDF OCR 推理模式">
               <n-select v-model:value="form.ocr_reasoning_effort" :options="reasoningOptions" />
@@ -166,3 +241,9 @@ onMounted(loadSettings);
     </div>
   </n-space>
 </template>
+
+<style scoped>
+.w-full {
+  width: 100%;
+}
+</style>

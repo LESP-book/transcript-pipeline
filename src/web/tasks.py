@@ -32,6 +32,14 @@ from src.web.frontend_settings import (
 from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageRunRequest
 
 
+def first_text(*values: str | None) -> str | None:
+    for value in values:
+        normalized = (value or "").strip()
+        if normalized:
+            return normalized
+    return None
+
+
 def stage_output_path(loaded_settings, stage_name: str) -> str:
     field_map = {
         "extract-audio": "audio_dir",
@@ -85,18 +93,24 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
     try:
         request = SingleJobRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
+        effective_profile = first_text(request.profile, frontend_settings.profile)
+        effective_backend = first_text(request.backend, frontend_settings.backend)
+        effective_book_name = first_text(request.book_name, frontend_settings.book_name)
+        effective_chapter = first_text(request.chapter, frontend_settings.chapter)
+        effective_glossary_file = first_text(request.glossary_file, frontend_settings.glossary_file)
         model_overrides = ModelOverrides(
             llm_model=request.model or frontend_settings.model or None,
             llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+            ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
             ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
             ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
         )
         base_loaded_settings = load_settings(
             settings_path=request.config,
-            profile_name=request.profile,
+            profile_name=effective_profile,
             project_root=root,
         )
-        profile_name = request.profile or base_loaded_settings.active_profile_name
+        profile_name = effective_profile or base_loaded_settings.active_profile_name
         video_source = Path(request.video).expanduser().resolve()
         output_dir = Path(request.output_dir).expanduser().resolve()
 
@@ -111,9 +125,9 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             loaded_settings=base_loaded_settings,
             job_paths=job_paths,
             profile_name=profile_name,
-            glossary_file=request.glossary_file,
-            book_name=request.book_name,
-            chapter=request.chapter,
+            glossary_file=effective_glossary_file,
+            book_name=effective_book_name,
+            chapter=effective_chapter,
             model_overrides=model_overrides,
         )
         write_job_manifest(
@@ -124,9 +138,9 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             reference_source=request.reference,
             output_dir=output_dir,
             profile_name=profile_name,
-            book_name=request.book_name,
-            chapter=request.chapter,
-            glossary_file=request.glossary_file,
+            book_name=effective_book_name,
+            chapter=effective_chapter,
+            glossary_file=effective_glossary_file,
         )
 
         job_loaded_settings = load_settings(
@@ -144,7 +158,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
                     status="running",
                     current_stage=stage_name,
                 )
-                current_backend = request.backend if stage_name == "refine" else None
+                current_backend = effective_backend if stage_name == "refine" else None
                 exit_code = run_stage(stage_name, job_loaded_settings, logger, backend_override=current_backend)
                 if exit_code != 0:
                     raise JobRunnerError(f"job 主链失败: stage={stage_name} exit_code={exit_code}")
@@ -154,8 +168,8 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             output_dir,
             build_final_output_filename(
                 video_source,
-                book_name=request.book_name,
-                chapter=request.chapter,
+                book_name=effective_book_name,
+                chapter=effective_chapter,
             ),
         )
         app.state.update_state(
@@ -182,6 +196,8 @@ def execute_job_rerun(*, app: FastAPI, job_id: str, payload: dict) -> None:
     try:
         request = JobRerunRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
+        effective_profile = first_text(request.profile, frontend_settings.profile)
+        effective_backend = first_text(request.backend, frontend_settings.backend)
         job_paths = build_job_paths(root, job_id)
         if not job_paths.settings_path.exists():
             raise JobRunnerError(f"job 缺少生成配置，无法重跑: {job_paths.settings_path}")
@@ -191,7 +207,7 @@ def execute_job_rerun(*, app: FastAPI, job_id: str, payload: dict) -> None:
         manifest = read_job_manifest(job_paths.manifest_path)
         loaded_settings = load_settings(
             settings_path=job_paths.settings_path,
-            profile_name=request.profile or str(manifest.get("profile") or ""),
+            profile_name=effective_profile or str(manifest.get("profile") or ""),
             project_root=root,
         )
         apply_model_overrides(
@@ -199,6 +215,7 @@ def execute_job_rerun(*, app: FastAPI, job_id: str, payload: dict) -> None:
             ModelOverrides(
                 llm_model=request.model or frontend_settings.model or None,
                 llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+                ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
                 ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
                 ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
             ),
@@ -221,7 +238,7 @@ def execute_job_rerun(*, app: FastAPI, job_id: str, payload: dict) -> None:
                     status="running",
                     current_stage=stage_name,
                 )
-                current_backend = request.backend if stage_name == "refine" else None
+                current_backend = effective_backend if stage_name == "refine" else None
                 exit_code = run_stage(stage_name, loaded_settings, logger, backend_override=current_backend)
                 if exit_code != 0:
                     raise JobRunnerError(f"job 重跑失败: stage={stage_name} exit_code={exit_code}")
@@ -267,15 +284,22 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
     try:
         request = BatchJobRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
+        effective_profile = first_text(request.profile, frontend_settings.profile)
+        effective_backend = first_text(request.backend, frontend_settings.backend)
+        effective_book_name = first_text(request.book_name, frontend_settings.book_name)
+        effective_chapter = first_text(request.chapter, frontend_settings.chapter)
+        effective_glossary_file = first_text(request.glossary_file, frontend_settings.glossary_file)
+        effective_remote_concurrency = request.remote_concurrency or frontend_settings.remote_concurrency
         model_overrides = ModelOverrides(
             llm_model=request.model or frontend_settings.model or None,
             llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+            ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
             ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
             ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
         )
         base_loaded_settings = load_settings(
             settings_path=request.config,
-            profile_name=request.profile,
+            profile_name=effective_profile,
             project_root=root,
         )
         job_specs, failed_runtimes = load_batch_job_specs(
@@ -285,9 +309,9 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
             reference_dir=request.reference_dir,
             shared_reference=request.shared_reference,
             output_dir=request.output_dir,
-            book_name=request.book_name,
-            chapter=request.chapter,
-            glossary_file=request.glossary_file,
+            book_name=effective_book_name,
+            chapter=effective_chapter,
+            glossary_file=effective_glossary_file,
         )
         runtimes = list(failed_runtimes)
         runtimes.extend(
@@ -323,8 +347,8 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
                     runtimes=runtimes,
                     project_root=root,
                     logger=logger,
-                    remote_concurrency=request.remote_concurrency,
-                    backend_override=request.backend,
+                    remote_concurrency=effective_remote_concurrency,
+                    backend_override=effective_backend,
                 )
 
         success_count = sum(1 for item in runtimes if item.status == "success")
@@ -367,9 +391,11 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
         request = StageRunRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
         normalized_stage_name = normalize_stage_name(stage_name)
+        effective_profile = first_text(request.profile, frontend_settings.profile)
+        effective_backend = first_text(request.backend, frontend_settings.backend)
         loaded_settings = load_settings(
             settings_path=request.config,
-            profile_name=request.profile,
+            profile_name=effective_profile,
             project_root=root,
         )
         apply_model_overrides(
@@ -377,6 +403,7 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
             ModelOverrides(
                 llm_model=request.model or frontend_settings.model or None,
                 llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+                ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
                 ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
                 ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
             ),
@@ -392,7 +419,7 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
                 normalized_stage_name,
                 loaded_settings,
                 logger,
-                backend_override=request.backend,
+                backend_override=effective_backend,
             )
         if exit_code != 0:
             raise JobRunnerError(f"stage 运行失败: stage={normalized_stage_name} exit_code={exit_code}")

@@ -11,8 +11,15 @@ export interface FrontendSettings {
   codex_lb_base_url: string;
   codex_lb_api_key: string;
   has_codex_lb_api_key: boolean;
+  profile: string;
+  backend: string;
+  remote_concurrency: number;
+  book_name: string;
+  chapter: string;
+  glossary_file: string;
   model: string;
   reasoning_effort: string;
+  ocr_backend: string;
   ocr_model: string;
   ocr_reasoning_effort: string;
   api_key_env: string;
@@ -23,8 +30,15 @@ export interface FrontendSettingsPayload {
   codex_lb_base_url?: string | null;
   codex_lb_api_key?: string | null;
   clear_codex_lb_api_key?: boolean;
+  profile?: string | null;
+  backend?: string | null;
+  remote_concurrency?: number | null;
+  book_name?: string | null;
+  chapter?: string | null;
+  glossary_file?: string | null;
   model?: string | null;
   reasoning_effort?: string | null;
+  ocr_backend?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
 }
@@ -61,6 +75,24 @@ export interface JobListResponse {
   items: JobState[];
 }
 
+export interface JobArtifact {
+  id: string;
+  stage: string;
+  label: string;
+  path: string;
+  exists: boolean;
+  size: number;
+  content_type: string;
+}
+
+export interface JobArtifactListResponse {
+  items: JobArtifact[];
+}
+
+export interface JobArtifactContent extends JobArtifact {
+  content: string;
+}
+
 export interface SingleJobPayload {
   video: string;
   reference: string;
@@ -70,6 +102,7 @@ export interface SingleJobPayload {
   config?: string | null;
   model?: string | null;
   reasoning_effort?: string | null;
+  ocr_backend?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
   book_name?: string | null;
@@ -88,9 +121,10 @@ export interface BatchJobPayload {
   config?: string | null;
   model?: string | null;
   reasoning_effort?: string | null;
+  ocr_backend?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
-  remote_concurrency: number;
+  remote_concurrency?: number | null;
   book_name?: string | null;
   chapter?: string | null;
   glossary_file?: string | null;
@@ -102,6 +136,7 @@ export interface StageRunPayload {
   config?: string | null;
   model?: string | null;
   reasoning_effort?: string | null;
+  ocr_backend?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
 }
@@ -112,6 +147,7 @@ export interface JobRerunPayload {
   backend?: string | null;
   model?: string | null;
   reasoning_effort?: string | null;
+  ocr_backend?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
 }
@@ -206,6 +242,14 @@ export function getJob(jobId: string): Promise<JobState> {
 
 export function listJobs(): Promise<JobListResponse> {
   return requestJson<JobListResponse>("/api/jobs");
+}
+
+export function listJobArtifacts(jobId: string): Promise<JobArtifactListResponse> {
+  return requestJson<JobArtifactListResponse>(`/api/jobs/${jobId}/artifacts`);
+}
+
+export function getJobArtifact(jobId: string, artifactId: string): Promise<JobArtifactContent> {
+  return requestJson<JobArtifactContent>(`/api/jobs/${jobId}/artifacts/${artifactId}`);
 }
 
 export function listBatches(): Promise<JobListResponse> {

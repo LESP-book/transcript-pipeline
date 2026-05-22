@@ -177,6 +177,7 @@ def test_write_job_settings_applies_model_overrides(tmp_path: Path) -> None:
         model_overrides=ModelOverrides(
             llm_model="gpt-5.5",
             llm_reasoning_effort="low",
+            ocr_backend="gemini_cli",
             ocr_model="gpt-5.4-mini",
             ocr_reasoning_effort="high",
         ),
@@ -186,6 +187,7 @@ def test_write_job_settings_applies_model_overrides(tmp_path: Path) -> None:
 
     assert payload["llm"]["model"] == "gpt-5.5"
     assert payload["llm"]["reasoning_effort"] == "low"
+    assert payload["reference"]["ai_ocr_backend"] == "gemini_cli"
     assert payload["reference"]["codex_ocr_model"] == "gpt-5.4-mini"
     assert payload["reference"]["codex_ocr_reasoning_effort"] == "high"
 

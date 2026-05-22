@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +15,7 @@ from src.config_loader import ConfigLoadError, load_settings
 from src.job_runner import create_batch_id, create_job_id, supported_reference_extensions, supported_video_extensions
 from src.refine_utils import VALID_REFINEMENT_BACKENDS
 from src.runtime_utils import normalize_stage_name
+from src.web.artifacts import collect_job_artifacts, read_job_artifact
 from src.web.fs_browser import list_fs_items, resolve_allowed_browse_path, resolve_parent_path
 from src.web.frontend_settings import FrontendSettingsUpdate, frontend_settings_response, save_frontend_settings
 from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageRunRequest
@@ -114,6 +116,26 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             raise HTTPException(status_code=404, detail=f"job 不存在: {job_id}")
         state = read_json_file(state_path)
         return reconcile_state(state)
+
+    @app.get("/api/jobs/{job_id}/artifacts")
+    async def get_job_artifacts(job_id: str) -> dict[str, list[dict[str, object]]]:
+        state_path = app.state.job_state_path(job_id)
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail=f"job 不存在: {job_id}")
+        return {"items": collect_job_artifacts(root, job_id)}
+
+    @app.get("/api/jobs/{job_id}/artifacts/{artifact_id}")
+    async def get_job_artifact(job_id: str, artifact_id: str) -> dict[str, object]:
+        state_path = app.state.job_state_path(job_id)
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail=f"job 不存在: {job_id}")
+        try:
+            artifact = read_job_artifact(root, job_id, artifact_id)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=500, detail=f"读取产物失败: {exc}") from exc
+        if artifact is None:
+            raise HTTPException(status_code=404, detail=f"产物不存在: {artifact_id}")
+        return artifact
 
     @app.post("/api/jobs", status_code=202)
     async def post_job(request: SingleJobRequest) -> dict[str, str]:
