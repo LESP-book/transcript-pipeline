@@ -13,7 +13,7 @@ import uvicorn
 
 from src.config_loader import ConfigLoadError, load_settings
 from src.job_runner import create_batch_id, create_job_id, supported_reference_extensions, supported_video_extensions
-from src.refine_utils import VALID_REFINEMENT_BACKENDS
+from src.refine_utils import PromptLoadError, VALID_REFINEMENT_BACKENDS, load_markdown_assemble_prompt
 from src.runtime_utils import normalize_stage_name
 from src.web.artifacts import collect_job_artifacts, read_job_artifact
 from src.web.fs_browser import list_fs_items, resolve_allowed_browse_path, resolve_parent_path
@@ -81,6 +81,15 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             "video_extensions": sorted(supported_video_extensions(loaded_settings)),
             "reference_extensions": list(supported_reference_extensions()),
         }
+
+    @app.get("/api/refine-default-instruction")
+    async def get_refine_default_instruction() -> dict[str, str]:
+        try:
+            loaded_settings = load_settings(project_root=root)
+            prompt_text = load_markdown_assemble_prompt(loaded_settings)
+        except (ConfigLoadError, PromptLoadError) as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"prompt": prompt_text}
 
     @app.get("/api/frontend-settings")
     async def get_frontend_settings() -> dict[str, object]:

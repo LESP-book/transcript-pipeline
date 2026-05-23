@@ -94,6 +94,7 @@ export interface SingleJobPayload {
   book_name?: string | null;
   chapter?: string | null;
   glossary_file?: string | null;
+  refine_prompt?: string | null;
 }
 
 export interface BatchJobPayload {
@@ -114,6 +115,11 @@ export interface BatchJobPayload {
   book_name?: string | null;
   chapter?: string | null;
   glossary_file?: string | null;
+  refine_prompt?: string | null;
+}
+
+export interface RefinePromptResponse {
+  prompt: string;
 }
 
 export interface StageRunPayload {
@@ -202,6 +208,10 @@ export function getConfig(): Promise<ConfigResponse> {
 
 export function getFrontendSettings(): Promise<FrontendSettings> {
   return requestJson<FrontendSettings>("/api/frontend-settings");
+}
+
+export function getRefineDefaultInstruction(): Promise<RefinePromptResponse> {
+  return requestJson<RefinePromptResponse>("/api/refine-default-instruction");
 }
 
 export function saveFrontendSettings(payload: FrontendSettingsPayload): Promise<FrontendSettings> {

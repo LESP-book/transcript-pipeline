@@ -32,7 +32,7 @@ def _artifact_payload(entry: ArtifactEntry) -> dict[str, object]:
     }
 
 
-def _known_artifacts(job_root: Path) -> list[ArtifactEntry]:
+def _main_artifacts(job_root: Path) -> list[ArtifactEntry]:
     return [
         ArtifactEntry(
             id="transcribe-text",
@@ -63,22 +63,6 @@ def _known_artifacts(job_root: Path) -> list[ArtifactEntry]:
             stage="prepare-reference",
             label="参考文本提取 JSON",
             path=job_root / "intermediate/extracted_text/source.json",
-            kind="file",
-            content_type="json",
-        ),
-        ArtifactEntry(
-            id="align-json",
-            stage="align",
-            label="文本对齐 JSON",
-            path=job_root / "intermediate/aligned/source.json",
-            kind="file",
-            content_type="json",
-        ),
-        ArtifactEntry(
-            id="classify-json",
-            stage="classify",
-            label="段落分类 JSON",
-            path=job_root / "intermediate/classified/source.json",
             kind="file",
             content_type="json",
         ),
@@ -119,6 +103,27 @@ def _known_artifacts(job_root: Path) -> list[ArtifactEntry]:
     ]
 
 
+def _debug_artifacts(job_root: Path) -> list[ArtifactEntry]:
+    return [
+        ArtifactEntry(
+            id="align-json",
+            stage="align",
+            label="文本对齐 JSON",
+            path=job_root / "intermediate/aligned/source.json",
+            kind="file",
+            content_type="json",
+        ),
+        ArtifactEntry(
+            id="classify-json",
+            stage="classify",
+            label="段落分类 JSON",
+            path=job_root / "intermediate/classified/source.json",
+            kind="file",
+            content_type="json",
+        ),
+    ]
+
+
 def _ocr_artifacts(job_root: Path) -> list[ArtifactEntry]:
     ocr_dir = job_root / "intermediate/ocr"
     if not ocr_dir.exists():
@@ -140,13 +145,13 @@ def _ocr_artifacts(job_root: Path) -> list[ArtifactEntry]:
 
 def collect_job_artifacts(project_root: Path, job_id: str) -> list[dict[str, object]]:
     job_root = project_root / "data/jobs" / job_id
-    entries = _known_artifacts(job_root) + _ocr_artifacts(job_root)
+    entries = _main_artifacts(job_root) + _ocr_artifacts(job_root)
     return [_artifact_payload(entry) for entry in entries]
 
 
 def _find_artifact(project_root: Path, job_id: str, artifact_id: str) -> ArtifactEntry | None:
     job_root = project_root / "data/jobs" / job_id
-    for entry in _known_artifacts(job_root) + _ocr_artifacts(job_root):
+    for entry in _main_artifacts(job_root) + _debug_artifacts(job_root) + _ocr_artifacts(job_root):
         if entry.id == artifact_id:
             return entry
     return None

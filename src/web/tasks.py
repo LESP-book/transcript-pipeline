@@ -98,6 +98,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
         effective_book_name = first_text(request.book_name, frontend_settings.book_name)
         effective_chapter = first_text(request.chapter, frontend_settings.chapter)
         effective_glossary_file = first_text(request.glossary_file, frontend_settings.glossary_file)
+        effective_refine_prompt = first_text(request.refine_prompt)
         model_overrides = ModelOverrides(
             llm_model=request.model or frontend_settings.model or None,
             llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
@@ -129,6 +130,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             book_name=effective_book_name,
             chapter=effective_chapter,
             model_overrides=model_overrides,
+            refine_prompt=effective_refine_prompt,
         )
         write_job_manifest(
             loaded_settings=base_loaded_settings,
@@ -289,6 +291,7 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
         effective_book_name = first_text(request.book_name, frontend_settings.book_name)
         effective_chapter = first_text(request.chapter, frontend_settings.chapter)
         effective_glossary_file = first_text(request.glossary_file, frontend_settings.glossary_file)
+        effective_refine_prompt = first_text(request.refine_prompt)
         effective_remote_concurrency = request.remote_concurrency or frontend_settings.remote_concurrency
         model_overrides = ModelOverrides(
             llm_model=request.model or frontend_settings.model or None,
@@ -320,6 +323,7 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
                 base_loaded_settings=base_loaded_settings,
                 job_specs=job_specs,
                 model_overrides=model_overrides,
+                refine_prompt=effective_refine_prompt,
             )
         )
 

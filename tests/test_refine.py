@@ -284,6 +284,21 @@ def test_build_pre_replaced_document_does_not_lock_sentence_followed_by_explanat
     ]
 
 
+def test_build_pre_replaced_document_splits_long_unlocked_text_by_existing_units(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path, llm_overrides={"block_batch_size": 1})
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    segments = build_pre_replaced_document(
+        asr_full_text="第一行讲解。\n第二行补充。\n第三行继续说明。",
+        reference_full_text="完全不同的参考原文。",
+        loaded_settings=loaded_settings,
+    )
+
+    assert [segment.segment_type for segment in segments] == ["unlocked_text", "unlocked_text", "unlocked_text"]
+    assert [segment.text for segment in segments] == ["第一行讲解。", "第二行补充。", "第三行继续说明。"]
+    assert [(segment.start_sentence_index, segment.end_sentence_index) for segment in segments] == [(0, 0), (1, 1), (2, 2)]
+
+
 def test_build_single_pass_refine_prompt_includes_reference_and_locking_rules(tmp_path: Path) -> None:
     write_minimal_settings(tmp_path)
     asr_path = write_refine_inputs(tmp_path)
@@ -317,10 +332,13 @@ def test_build_single_pass_refine_prompt_includes_reference_and_locking_rules(tm
 
     assert "预替换全文" in prompt
     assert "整篇参考原文" in prompt
+    assert prompt.index("预替换全文：") < prompt.index("整篇参考原文：")
     assert "[SEGMENT 01][locked_quote]" in prompt
     assert "[SEGMENT 02][unlocked_text]" in prompt
+    assert "预替换全文是主输入" in prompt
+    assert "deletion_candidates" in prompt
     assert "不得改写 locked_quote 的实词内容" in prompt
-    assert "仅允许在 unlocked_text 中结合参考原文继续修正" in prompt
+    assert "unlocked_text 中的讲解、串场、例子、重复强调和讨论内容必须保留" in prompt
 
 
 def test_refine_batch_uses_single_codex_call_with_reference_context(

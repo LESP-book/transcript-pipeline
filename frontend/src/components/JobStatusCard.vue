@@ -81,8 +81,15 @@ const statusType = computed(() => {
 
 const isRunning = computed(() => String(props.state.status ?? "") === "running");
 
-// Pipeline definitions
-const PIPELINE_STAGES = [
+const MAIN_PIPELINE_STAGES = [
+  { key: "extract-audio", label: "音频提取", index: 1 },
+  { key: "transcribe", label: "语音转写", index: 2 },
+  { key: "prepare-reference", label: "准备参考", index: 3 },
+  { key: "refine", label: "校对润色", index: 4 },
+  { key: "export-markdown", label: "导出文档", index: 5 },
+];
+
+const DEBUG_PIPELINE_STAGES = [
   { key: "extract-audio", label: "音频提取", index: 1 },
   { key: "transcribe", label: "语音转写", index: 2 },
   { key: "prepare-reference", label: "准备参考", index: 3 },
@@ -92,16 +99,20 @@ const PIPELINE_STAGES = [
   { key: "export-markdown", label: "导出文档", index: 7 },
 ];
 
-const rerunStageOptions = PIPELINE_STAGES.map((stage) => ({
+const pipelineStages = computed(() => {
+  return String(props.state.kind ?? "") === "stage-run" ? DEBUG_PIPELINE_STAGES : MAIN_PIPELINE_STAGES;
+});
+
+const rerunStageOptions = computed(() => MAIN_PIPELINE_STAGES.map((stage) => ({
   label: `${stage.label} (${stage.key})`,
   value: stage.key,
-}));
-const rerunStageKeys = new Set(PIPELINE_STAGES.map((stage) => stage.key));
+})));
+const rerunStageKeys = computed(() => new Set(MAIN_PIPELINE_STAGES.map((stage) => stage.key)));
 
 watch(
   () => String(props.state.current_stage ?? ""),
   (currentStage) => {
-    if (rerunStageKeys.has(currentStage)) {
+    if (rerunStageKeys.value.has(currentStage)) {
       rerunStage.value = currentStage;
     }
   },
@@ -131,8 +142,8 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
   const status = String(props.state.status ?? "");
   const currentStage = String(props.state.current_stage ?? props.state.failed_stage ?? "");
   
-  const stageIndex = PIPELINE_STAGES.findIndex((s) => s.key === stageKey);
-  const currentStageIndex = PIPELINE_STAGES.findIndex((s) => s.key === currentStage);
+  const stageIndex = pipelineStages.value.findIndex((s) => s.key === stageKey);
+  const currentStageIndex = pipelineStages.value.findIndex((s) => s.key === currentStage);
   
   if (status === "success") {
     return "completed";
@@ -145,7 +156,6 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
     if (currentStageIndex !== -1 && stageIndex < currentStageIndex) {
       return "completed";
     }
-    // If it failed at a stage but we don't have perfect alignment, show failed on the matching stage
     return "pending";
   }
   
@@ -156,7 +166,6 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
     if (currentStageIndex !== -1) {
       return stageIndex < currentStageIndex ? "completed" : "pending";
     }
-    // Default to first stage active if running but no stage specified yet
     return stageIndex === 0 ? "active" : "pending";
   }
   
@@ -203,7 +212,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
         <h4 class="pipeline-title">流水线处理进度 (Pipeline Progress)</h4>
         <div class="pipeline-flow">
           <div
-            v-for="stage in PIPELINE_STAGES"
+            v-for="stage in pipelineStages"
             :key="stage.key"
             class="pipeline-step"
             :class="{

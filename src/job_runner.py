@@ -640,6 +640,7 @@ def write_job_settings(
     book_name: str | None = None,
     chapter: str | None = None,
     model_overrides: ModelOverrides | None = None,
+    refine_prompt: str | None = None,
 ) -> Path:
     payload = load_raw_settings(loaded_settings)
     try:
@@ -676,6 +677,16 @@ def write_job_settings(
     if isinstance(prompts, dict):
         for key, value in list(prompts.items()):
             prompts[key] = str(loaded_settings.resolve_path(str(value)))
+        normalized_refine_prompt = (refine_prompt or "").strip()
+        if normalized_refine_prompt:
+            prompt_dir = job_paths.job_root / "config/prompts"
+            custom_prompt_path = prompt_dir / "final_cleanup.md"
+            try:
+                prompt_dir.mkdir(parents=True, exist_ok=True)
+                custom_prompt_path.write_text(f"{normalized_refine_prompt}\n", encoding="utf-8")
+            except OSError as exc:
+                raise JobRunnerError(f"无法写入阶段 6 自定义指令文件: {custom_prompt_path} | {exc}") from exc
+            prompts["final_cleanup"] = str(custom_prompt_path)
         payload["prompts"] = prompts
 
     try:
@@ -747,6 +758,7 @@ def prepare_batch_jobs(
     base_loaded_settings: LoadedSettings,
     job_specs: list[BatchJobSpec],
     model_overrides: ModelOverrides | None = None,
+    refine_prompt: str | None = None,
 ) -> list[BatchJobRuntime]:
     runtimes: list[BatchJobRuntime] = []
     profile_name = base_loaded_settings.active_profile_name
@@ -769,6 +781,7 @@ def prepare_batch_jobs(
                 book_name=spec.book_name,
                 chapter=spec.chapter,
                 model_overrides=model_overrides,
+                refine_prompt=refine_prompt,
             )
             write_job_manifest(
                 loaded_settings=base_loaded_settings,
@@ -1111,6 +1124,7 @@ def run_single_job(
     book_name: str | None = None,
     chapter: str | None = None,
     glossary_file: str | None = None,
+    refine_prompt: str | None = None,
 ) -> JobResult:
     video_source = Path(video).expanduser().resolve()
     output_path = Path(output_dir).expanduser().resolve()
@@ -1137,6 +1151,7 @@ def run_single_job(
             ocr_model=ocr_model,
             ocr_reasoning_effort=ocr_reasoning_effort,
         ),
+        refine_prompt=refine_prompt,
     )
     write_job_manifest(
         loaded_settings=base_loaded_settings,

@@ -20,6 +20,7 @@ class SingleJobRequest(BaseModel):
     book_name: str | None = None
     chapter: str | None = None
     glossary_file: str | None = None
+    refine_prompt: str | None = None
 
 
 class BatchJobRequest(BaseModel):
@@ -40,6 +41,7 @@ class BatchJobRequest(BaseModel):
     remote_concurrency: int | None = Field(default=None, ge=1)
     book_name: str | None = None
     chapter: str | None = None
+    refine_prompt: str | None = None
 
 
 class StageRunRequest(BaseModel):

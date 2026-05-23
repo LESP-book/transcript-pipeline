@@ -13,9 +13,9 @@ import {
   NSpace,
   useMessage,
 } from "naive-ui";
-import { onBeforeUnmount, reactive, ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
-import { getJob, type JobState, submitJob } from "../api/client";
+import { getJob, getRefineDefaultInstruction, type JobState, submitJob } from "../api/client";
 import BackendSelector from "../components/BackendSelector.vue";
 import FileBrowser from "../components/FileBrowser.vue";
 import JobStatusCard from "../components/JobStatusCard.vue";
@@ -26,6 +26,8 @@ const message = useMessage();
 const { activeProfile, backends, error, loading, profiles } = useConfigOptions();
 const jobState = ref<JobState | null>(null);
 const submitting = ref(false);
+const promptLoading = ref(false);
+const defaultRefinePrompt = ref("");
 const pollHandle = ref<number | null>(null);
 
 const form = reactive({
@@ -38,6 +40,7 @@ const form = reactive({
   book_name: "",
   chapter: "",
   glossary_file: "",
+  refine_prompt: "",
 });
 
 const ocrBackendOptions = [
@@ -77,6 +80,33 @@ function startPolling(jobId: string) {
   }, 2000);
 }
 
+function effectiveRefinePrompt(): string | null {
+  const currentPrompt = form.refine_prompt.trim();
+  if (!currentPrompt || currentPrompt === defaultRefinePrompt.value.trim()) {
+    return null;
+  }
+  return form.refine_prompt;
+}
+
+function resetRefinePrompt() {
+  form.refine_prompt = defaultRefinePrompt.value;
+}
+
+async function loadDefaultRefinePrompt() {
+  promptLoading.value = true;
+  try {
+    const response = await getRefineDefaultInstruction();
+    defaultRefinePrompt.value = response.prompt;
+    if (!form.refine_prompt.trim()) {
+      form.refine_prompt = response.prompt;
+    }
+  } catch (caught) {
+    message.error(caught instanceof Error ? caught.message : "读取阶段六默认指令失败");
+  } finally {
+    promptLoading.value = false;
+  }
+}
+
 async function handleJobRerun(jobId: string) {
   await refreshJob(jobId);
   startPolling(jobId);
@@ -99,6 +129,7 @@ async function submit() {
       book_name: form.book_name || null,
       chapter: form.chapter || null,
       glossary_file: form.glossary_file || null,
+      refine_prompt: effectiveRefinePrompt(),
     });
     await refreshJob(response.job_id);
     startPolling(response.job_id);
@@ -110,6 +141,9 @@ async function submit() {
   }
 }
 
+onMounted(() => {
+  void loadDefaultRefinePrompt();
+});
 onBeforeUnmount(stopPolling);
 </script>
 
@@ -121,7 +155,7 @@ onBeforeUnmount(stopPolling);
         <p class="view-hero__eyebrow">任务控制台</p>
         <h2 class="view-hero__title">单任务整理流水线</h2>
         <p class="view-hero__copy">
-          在这里提交单个读书会录屏视频，系统将按顺序执行提取音频、语音转写、参考文本对齐、智能校对润色及 Markdown 最终稿的导出。
+          在这里提交单个读书会录屏视频，系统将按顺序执行提取音频、语音转写、参考文本提取、智能校对润色及 Markdown 最终稿的导出。
         </p>
       </div>
     </section>
@@ -195,6 +229,25 @@ onBeforeUnmount(stopPolling);
                 <n-grid-item span="2">
                   <n-form-item label="章节名称 (Chapter)">
                     <n-input v-model:value="form.chapter" placeholder="例如：第 1 章 导言" />
+                  </n-form-item>
+                </n-grid-item>
+                <n-grid-item span="2">
+                  <n-form-item label="阶段六指令 (Refine Prompt)">
+                    <n-space vertical class="w-full">
+                      <n-input
+                        v-model:value="form.refine_prompt"
+                        type="textarea"
+                        :autosize="{ minRows: 10, maxRows: 18 }"
+                        :loading="promptLoading"
+                        placeholder="读取默认阶段六指令中..."
+                      />
+                      <n-flex justify="space-between" align="center" :size="12" wrap>
+                        <span class="prompt-hint">文本框内为当前默认指令，可直接在此基础上调整；不修改时提交会使用项目默认指令。</span>
+                        <n-button size="small" secondary :disabled="!defaultRefinePrompt" @click="resetRefinePrompt">
+                          恢复默认指令
+                        </n-button>
+                      </n-flex>
+                    </n-space>
                   </n-form-item>
                 </n-grid-item>
               </n-grid>
@@ -278,5 +331,11 @@ onBeforeUnmount(stopPolling);
 
 .w-full {
   width: 100%;
+}
+
+.prompt-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 </style>

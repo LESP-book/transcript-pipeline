@@ -15,6 +15,8 @@ __pycache__/
 .zcf/
 .DS_Store
 .worktrees/
+.antigravitycli/*
+.playwright-mcp/*
 
 # Input assets
 data/input/videos/*

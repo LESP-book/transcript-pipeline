@@ -192,6 +192,30 @@ def test_write_job_settings_applies_model_overrides(tmp_path: Path) -> None:
     assert payload["reference"]["codex_ocr_reasoning_effort"] == "high"
 
 
+def test_write_job_settings_applies_custom_refine_prompt(tmp_path: Path) -> None:
+    from src.refine_utils import load_markdown_assemble_prompt
+
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    job_paths = build_job_paths(tmp_path, "job-custom-refine-prompt")
+
+    settings_path = write_job_settings(
+        project_root=tmp_path,
+        loaded_settings=loaded_settings,
+        job_paths=job_paths,
+        profile_name="local_cpu",
+        refine_prompt="# 自定义阶段六指令\n\n请保留读书会问答原话。",
+    )
+
+    payload = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+    custom_prompt_path = job_paths.job_root / "config/prompts/final_cleanup.md"
+    job_loaded_settings = load_settings(settings_path=settings_path, project_root=tmp_path)
+
+    assert payload["prompts"]["final_cleanup"] == str(custom_prompt_path)
+    assert custom_prompt_path.read_text(encoding="utf-8") == "# 自定义阶段六指令\n\n请保留读书会问答原话。\n"
+    assert load_markdown_assemble_prompt(job_loaded_settings) == "# 自定义阶段六指令\n\n请保留读书会问答原话。"
+
+
 def test_build_job_initial_prompt_includes_title_and_extra_glossary(tmp_path: Path) -> None:
     glossary_dir = tmp_path / "config/glossaries"
     glossary_dir.mkdir(parents=True, exist_ok=True)

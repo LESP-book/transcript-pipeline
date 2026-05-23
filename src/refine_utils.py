@@ -458,16 +458,35 @@ def build_pre_replaced_document(
         nonlocal current_type, current_source, current_text, current_reference, segment_start
         if current_type is None or not current_text:
             return
-        segments.append(
-            PreReplacementSegment(
-                segment_type=current_type,
-                text="\n\n".join(current_text).strip(),
-                source_text="\n\n".join(current_source).strip(),
-                reference_text="".join(current_reference).strip(),
-                start_sentence_index=segment_start,
-                end_sentence_index=segment_end,
+        if current_type == "unlocked_text":
+            chunk_size = resolve_chunk_paragraphs(
+                len(current_text),
+                loaded_settings.settings.llm.block_batch_size,
             )
-        )
+            for offset in range(0, len(current_text), chunk_size):
+                chunk_text = current_text[offset : offset + chunk_size]
+                chunk_source = current_source[offset : offset + chunk_size]
+                segments.append(
+                    PreReplacementSegment(
+                        segment_type=current_type,
+                        text="\n\n".join(chunk_text).strip(),
+                        source_text="\n\n".join(chunk_source).strip(),
+                        reference_text="",
+                        start_sentence_index=segment_start + offset,
+                        end_sentence_index=min(segment_start + offset + len(chunk_text) - 1, segment_end),
+                    )
+                )
+        else:
+            segments.append(
+                PreReplacementSegment(
+                    segment_type=current_type,
+                    text="\n\n".join(current_text).strip(),
+                    source_text="\n\n".join(current_source).strip(),
+                    reference_text="".join(current_reference).strip(),
+                    start_sentence_index=segment_start,
+                    end_sentence_index=segment_end,
+                )
+            )
         current_type = None
         current_source = []
         current_text = []
@@ -665,21 +684,24 @@ def build_single_pass_refine_prompt(
     sections = [
         prompt_text.strip(),
         "",
-        "你现在负责阶段 6 的整篇单次校对整理。",
+        "你现在负责阶段 6 的整篇单次保真校对整理。",
         backend_review_message,
-        "输入同时包含整篇参考原文和预替换全文。",
+        "输入同时包含预替换全文和整篇参考原文。",
+        "预替换全文是主输入；整篇参考原文只是校正附件。",
         "不得改写 locked_quote 的实词内容，只允许调整标点、断句和引用格式。",
-        "仅允许在 unlocked_text 中结合参考原文继续修正。",
+        "仅允许在 unlocked_text 中结合参考原文修正明确错字、同音误识别和遗漏的原文朗读段。",
+        "unlocked_text 中的讲解、串场、例子、重复强调和讨论内容必须保留。",
         "证据不足时，不得把讲解改写为原文。",
-        "请只返回 JSON，字段必须包含：final_markdown、section_map、refinement_notes、needs_review_sections。",
+        "删除任何超过短语级别的内容，都必须写入 deletion_candidates。",
+        "请只返回 JSON，字段必须包含：final_markdown、section_map、refinement_notes、needs_review_sections、deletion_candidates。",
         "",
         f"当前文件: {input_paths.basename}.txt",
         "",
-        "整篇参考原文：",
-        reference_full_text or "（无）",
-        "",
         "预替换全文：",
         "\n".join(rendered_segments).strip(),
+        "",
+        "整篇参考原文：",
+        reference_full_text or "（无）",
     ]
     return "\n".join(sections).strip()
 

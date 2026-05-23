@@ -17,9 +17,9 @@ import {
   NTag,
   useMessage,
 } from "naive-ui";
-import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
-import { getBatch, listFs, submitBatchJob, type FileItem, type JobState } from "../api/client";
+import { getBatch, getRefineDefaultInstruction, listFs, submitBatchJob, type FileItem, type JobState } from "../api/client";
 import BackendSelector from "../components/BackendSelector.vue";
 import FileBrowser from "../components/FileBrowser.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
@@ -42,6 +42,8 @@ const submitting = ref(false);
 const previewLoading = ref(false);
 const previewError = ref("");
 const sourcePreview = ref<SourcePreview | null>(null);
+const promptLoading = ref(false);
+const defaultRefinePrompt = ref("");
 const pollHandle = ref<number | null>(null);
 
 const form = reactive<{
@@ -58,6 +60,7 @@ const form = reactive<{
   book_name: string;
   chapter: string;
   glossary_file: string;
+  refine_prompt: string;
 }>({
   mode: "manifest",
   manifest: "",
@@ -72,6 +75,7 @@ const form = reactive<{
   book_name: "",
   chapter: "",
   glossary_file: "",
+  refine_prompt: "",
 });
 
 const ocrBackendOptions = [
@@ -159,6 +163,33 @@ function startPolling(batchId: string) {
       stopPolling();
     });
   }, 2000);
+}
+
+function effectiveRefinePrompt(): string | null {
+  const currentPrompt = form.refine_prompt.trim();
+  if (!currentPrompt || currentPrompt === defaultRefinePrompt.value.trim()) {
+    return null;
+  }
+  return form.refine_prompt;
+}
+
+function resetRefinePrompt() {
+  form.refine_prompt = defaultRefinePrompt.value;
+}
+
+async function loadDefaultRefinePrompt() {
+  promptLoading.value = true;
+  try {
+    const response = await getRefineDefaultInstruction();
+    defaultRefinePrompt.value = response.prompt;
+    if (!form.refine_prompt.trim()) {
+      form.refine_prompt = response.prompt;
+    }
+  } catch (caught) {
+    message.error(caught instanceof Error ? caught.message : "读取阶段六默认指令失败");
+  } finally {
+    promptLoading.value = false;
+  }
 }
 
 function fileStem(name: string): string {
@@ -269,6 +300,7 @@ function buildPayload() {
     book_name: form.book_name || null,
     chapter: form.chapter || null,
     glossary_file: form.glossary_file || null,
+    refine_prompt: effectiveRefinePrompt(),
   };
 }
 
@@ -325,6 +357,9 @@ const statusType = computed(() => {
   return "warning";
 });
 
+onMounted(() => {
+  void loadDefaultRefinePrompt();
+});
 onBeforeUnmount(stopPolling);
 </script>
 
@@ -448,6 +483,25 @@ onBeforeUnmount(stopPolling);
                   <n-grid-item span="2">
                     <n-form-item label="章节名称 (Chapter)">
                       <n-input v-model:value="form.chapter" placeholder="可选，用于最终文件名和 ASR 提示词" />
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2">
+                    <n-form-item label="阶段六指令 (Refine Prompt)">
+                      <n-space vertical class="w-full">
+                        <n-input
+                          v-model:value="form.refine_prompt"
+                          type="textarea"
+                          :autosize="{ minRows: 10, maxRows: 18 }"
+                          :loading="promptLoading"
+                          placeholder="读取默认阶段六指令中..."
+                        />
+                        <n-flex justify="space-between" align="center" :size="12" wrap>
+                          <span class="prompt-hint">文本框内为当前默认指令，会应用到本次批量任务的每个子任务；不修改时提交会使用项目默认指令。</span>
+                          <n-button size="small" secondary :disabled="!defaultRefinePrompt" @click="resetRefinePrompt">
+                            恢复默认指令
+                          </n-button>
+                        </n-flex>
+                      </n-space>
                     </n-form-item>
                   </n-grid-item>
                 </n-grid>
@@ -733,6 +787,12 @@ onBeforeUnmount(stopPolling);
   font-size: 13px;
   font-weight: 600;
   color: #b45309;
+}
+
+.prompt-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .submit-btn {
