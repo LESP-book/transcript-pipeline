@@ -470,6 +470,28 @@ cd ".."
 http://192.168.1.20:5173
 ```
 
+如果项目运行在 **Windows 的 WSL2** 中，需要额外注意：WSL2 默认 NAT 网络下，
+`./start_web.sh --lan` 只是让服务在 WSL 内监听 `0.0.0.0`，局域网其他电脑通常不能直接访问
+WSL 内部 IP。脚本检测到 WSL 后会额外打印一组 Windows 管理员 PowerShell 命令，格式类似：
+
+```powershell
+netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=5173 connectaddress=<WSL_IP> connectport=5173
+netsh advfirewall firewall add rule name="Transcript Pipeline Web 5173" dir=in action=allow protocol=TCP localport=5173
+```
+
+执行后，局域网其他电脑应访问 **Windows 主机的局域网 IP**，例如：
+
+```text
+http://192.168.1.20:5173
+```
+
+说明：
+
+- `<WSL_IP>` 可以用 WSL 内的 `hostname -I` 查看，启动脚本也会尽量自动打印。
+- WSL 重启后内部 IP 可能变化；如果访问失效，重新执行启动脚本打印的 `portproxy` 命令。
+- Web UI 只需要暴露前端端口 `5173`，页面里的 `/api`、上传和下载会由前端开发服务器代理到 WSL 内部后端。
+- 如果你已启用 WSL mirrored networking，局域网直连会更接近普通 Linux 主机，但仍需要确认 Windows / Hyper-V 防火墙允许入站端口 `5173`。
+
 其他人在浏览器打开这个地址后，点击“选择并上传本机视频 / 参考源”时，打开的是**使用者自己电脑**的文件选择器；选中文件后会上传到主机的 `data/uploads/`，流水线再从上传后的服务器路径执行处理。
 
 在 Web UI 中，输出目录是主机上的服务器保存位置，普通局域网使用者不需要填写或进入这个目录。任务完成后进入 `任务列表`：
