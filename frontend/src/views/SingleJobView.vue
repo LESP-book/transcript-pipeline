@@ -13,17 +13,17 @@ import {
   NSpace,
   useMessage,
 } from "naive-ui";
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
 import { getJob, getRefineDefaultInstruction, type JobState, submitJob } from "../api/client";
 import BackendSelector from "../components/BackendSelector.vue";
-import FileBrowser from "../components/FileBrowser.vue";
 import JobStatusCard from "../components/JobStatusCard.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
+import RemoteFileUpload from "../components/RemoteFileUpload.vue";
 import { useConfigOptions } from "../composables/useConfigOptions";
 
 const message = useMessage();
-const { activeProfile, backends, error, loading, profiles } = useConfigOptions();
+const { activeProfile, backends, defaultOutputDir, error, loading, profiles, referenceExtensions, videoExtensions } = useConfigOptions();
 const jobState = ref<JobState | null>(null);
 const submitting = ref(false);
 const promptLoading = ref(false);
@@ -48,10 +48,19 @@ const ocrBackendOptions = [
   { label: "Codex CLI", value: "codex_cli" },
   { label: "Gemini CLI", value: "gemini_cli" },
 ];
+const videoAccept = computed(() => videoExtensions.value.join(","));
+const referenceAccept = computed(() => referenceExtensions.value.join(","));
+const glossaryAccept = ".txt,.md";
 
 watch(activeProfile, (value) => {
   if (!form.profile && value) {
     form.profile = value;
+  }
+});
+
+watch(defaultOutputDir, (value) => {
+  if (!form.output_dir && value) {
+    form.output_dir = value;
   }
 });
 
@@ -114,7 +123,7 @@ async function handleJobRerun(jobId: string) {
 
 async function submit() {
   if (!form.video || !form.reference || !form.output_dir) {
-    message.warning("视频、参考源和输出目录是必填项。");
+    message.warning("视频、参考源和服务器默认输出目录是必填项。");
     return;
   }
   submitting.value = true;
@@ -178,16 +187,36 @@ onBeforeUnmount(stopPolling);
             <div class="form-section">
               <h4 class="form-section-title">核心输入输出参数</h4>
               <n-form-item label="视频文件 (Video Source)" required>
-                <FileBrowser v-model="form.video" mode="file" label="视频文件" />
+                <n-space vertical class="w-full">
+                  <RemoteFileUpload
+                    v-model="form.video"
+                    kind="video"
+                    label="视频文件"
+                    :accept="videoAccept"
+                    button-text="选择并上传本机视频"
+                  />
+                  <n-input v-model:value="form.video" readonly placeholder="上传后自动生成服务器路径" />
+                </n-space>
               </n-form-item>
               <n-form-item label="参考源文件或 URL (Reference)" required>
                 <n-space vertical class="w-full">
-                  <n-input v-model:value="form.reference" placeholder="本地文件路径，或输入 https:// 网址" />
-                  <FileBrowser v-model="form.reference" mode="file" label="参考源文件" button-text="浏览本地参考源" />
+                  <n-input v-model:value="form.reference" placeholder="可粘贴 https:// 网址，或上传本机参考文件" />
+                  <RemoteFileUpload
+                    v-model="form.reference"
+                    kind="reference"
+                    label="参考源文件"
+                    :accept="referenceAccept"
+                    button-text="选择并上传本机参考源"
+                  />
                 </n-space>
               </n-form-item>
-              <n-form-item label="输出保存目录 (Output Directory)" required>
-                <FileBrowser v-model="form.output_dir" mode="dir" label="输出保存目录" />
+              <n-form-item label="成果获取方式" required>
+                <n-alert type="info" :bordered="false" class="server-output-note">
+                  <div class="server-output-note__body">
+                    <span>处理完成后，到任务列表点击“下载结果”获取最终 Markdown。</span>
+                    <small>服务器默认保存目录：{{ form.output_dir || "配置加载中..." }}</small>
+                  </div>
+                </n-alert>
               </n-form-item>
             </div>
           </n-grid-item>
@@ -198,7 +227,16 @@ onBeforeUnmount(stopPolling);
               <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
                 <n-grid-item span="2">
                   <n-form-item label="术语词表 (Glossary File)">
-                    <FileBrowser v-model="form.glossary_file" mode="file" label="术语词表" button-text="选择术语词表" />
+                    <n-space vertical class="w-full">
+                      <RemoteFileUpload
+                        v-model="form.glossary_file"
+                        kind="glossary"
+                        label="术语词表"
+                        :accept="glossaryAccept"
+                        button-text="选择并上传本机词表"
+                      />
+                      <n-input v-model:value="form.glossary_file" readonly placeholder="可选，上传后自动生成服务器路径" />
+                    </n-space>
                   </n-form-item>
                 </n-grid-item>
                 <n-grid-item span="2 m:1">
@@ -267,7 +305,7 @@ onBeforeUnmount(stopPolling);
     </n-card>
 
     <!-- Visual status result -->
-    <JobStatusCard v-if="jobState" title="流水线当前实时状态" :state="jobState" @rerun="handleJobRerun" />
+    <JobStatusCard v-if="jobState" title="流水线当前实时状态" :state="jobState" default-expanded @rerun="handleJobRerun" />
   </n-space>
 </template>
 
@@ -302,6 +340,26 @@ onBeforeUnmount(stopPolling);
   color: var(--text-primary);
   border-left: 3px solid var(--primary);
   padding-left: 8px;
+}
+
+.server-output-note {
+  width: 100%;
+  border-radius: 8px;
+}
+
+.server-output-note__body {
+  display: grid;
+  gap: 6px;
+}
+
+.server-output-note__body span {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.server-output-note__body small {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 .form-action-area {

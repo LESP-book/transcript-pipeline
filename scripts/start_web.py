@@ -4,6 +4,7 @@ import argparse
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -25,6 +26,7 @@ class StartWebError(RuntimeError):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="同时启动 transcript-pipeline 后端 API 和前端 Web UI。")
     parser.add_argument("--host", default=DEFAULT_HOST, help="前后端监听地址，默认 127.0.0.1。")
+    parser.add_argument("--lan", action="store_true", help="监听 0.0.0.0，允许同一局域网内其他设备访问。")
     parser.add_argument("--backend-port", type=int, default=DEFAULT_BACKEND_PORT, help="后端 API 端口，默认 8000。")
     parser.add_argument("--frontend-port", type=int, default=DEFAULT_FRONTEND_PORT, help="前端 Web UI 端口，默认 5173。")
     parser.add_argument(
@@ -62,10 +64,62 @@ def build_frontend_command(npm_path: str, host: str, port: int) -> list[str]:
     ]
 
 
+def resolve_bind_host(host: str, lan: bool) -> str:
+    if lan and host == DEFAULT_HOST:
+        return "0.0.0.0"
+    return host
+
+
+def proxy_target_host(bind_host: str) -> str:
+    if bind_host == "0.0.0.0":
+        return "127.0.0.1"
+    if bind_host == "::":
+        return "[::1]"
+    return bind_host
+
+
 def build_frontend_env(base_env: Mapping[str, str], host: str, backend_port: int) -> dict[str, str]:
     env = dict(base_env)
-    env["TRANSCRIPT_API_PROXY_TARGET"] = f"http://{host}:{backend_port}"
+    env["TRANSCRIPT_API_PROXY_TARGET"] = f"http://{proxy_target_host(host)}:{backend_port}"
     return env
+
+
+def local_display_host(bind_host: str) -> str:
+    if bind_host == "0.0.0.0":
+        return "127.0.0.1"
+    if bind_host == "::":
+        return "[::1]"
+    return bind_host
+
+
+def discover_lan_addresses() -> list[str]:
+    addresses: set[str] = set()
+    try:
+        hostname = socket.gethostname()
+        for address in socket.gethostbyname_ex(hostname)[2]:
+            if not address.startswith("127.") and address != "0.0.0.0":
+                addresses.add(address)
+    except OSError:
+        pass
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+            udp_socket.connect(("8.8.8.8", 80))
+            address = udp_socket.getsockname()[0]
+            if not address.startswith("127.") and address != "0.0.0.0":
+                addresses.add(address)
+    except OSError:
+        pass
+
+    return sorted(addresses)
+
+
+def build_share_urls(bind_host: str, port: int) -> list[str]:
+    if bind_host == "0.0.0.0":
+        return [f"http://{address}:{port}" for address in discover_lan_addresses()]
+    if bind_host == "::":
+        return []
+    return [f"http://{bind_host}:{port}"]
 
 
 def check_prerequisites(project_root: Path) -> tuple[Path, str]:
@@ -128,26 +182,36 @@ def wait_for_exit(processes: Mapping[str, subprocess.Popen]) -> tuple[str, int]:
 
 def run(args: argparse.Namespace) -> int:
     venv_python, npm_path = check_prerequisites(PROJECT_ROOT)
-    backend_url = f"http://{args.host}:{args.backend_port}"
-    frontend_url = f"http://{args.host}:{args.frontend_port}"
+    bind_host = resolve_bind_host(args.host, args.lan)
+    display_host = local_display_host(bind_host)
+    backend_url = f"http://{display_host}:{args.backend_port}"
+    frontend_url = f"http://{display_host}:{args.frontend_port}"
     processes: dict[str, subprocess.Popen] = {}
 
     try:
         processes["后端"] = start_process(
             name="后端",
-            command=build_backend_command(venv_python, args.host, args.backend_port),
+            command=build_backend_command(venv_python, bind_host, args.backend_port),
             cwd=PROJECT_ROOT,
         )
         processes["前端"] = start_process(
             name="前端",
-            command=build_frontend_command(npm_path, args.host, args.frontend_port),
+            command=build_frontend_command(npm_path, bind_host, args.frontend_port),
             cwd=PROJECT_ROOT / "frontend",
-            env=build_frontend_env(os.environ, args.host, args.backend_port),
+            env=build_frontend_env(os.environ, bind_host, args.backend_port),
         )
 
         print("")
         print(f"后端 API：{backend_url}")
         print(f"前端页面：{frontend_url}")
+        share_urls = build_share_urls(bind_host, args.frontend_port)
+        if args.lan or bind_host in {"0.0.0.0", "::"}:
+            if share_urls:
+                print("局域网分享地址：")
+                for url in share_urls:
+                    print(f"- {url}")
+            else:
+                print("局域网分享地址：未自动识别到局域网 IP，请使用本机固定 IP 拼接前端端口访问。")
         print("按 Ctrl+C 可同时停止前端和后端。")
         if args.open_browser:
             webbrowser.open(frontend_url)

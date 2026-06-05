@@ -8,7 +8,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, Response
 import uvicorn
 
 from src.config_loader import ConfigLoadError, load_settings
@@ -16,11 +17,20 @@ from src.job_runner import create_batch_id, create_job_id, supported_reference_e
 from src.refine_utils import PromptLoadError, VALID_REFINEMENT_BACKENDS, load_markdown_assemble_prompt
 from src.runtime_utils import normalize_stage_name
 from src.web.artifacts import collect_job_artifacts, read_job_artifact
+from src.web.downloads import build_batch_result_archive, resolve_batch_item_result_path, resolve_job_result_path
 from src.web.fs_browser import list_fs_items, resolve_allowed_browse_path, resolve_parent_path
 from src.web.frontend_settings import FrontendSettingsUpdate, frontend_settings_response, save_frontend_settings
 from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageRunRequest
 from src.web.state_store import collect_state_items, create_initial_state, read_json_file, update_state, write_json_file
 from src.web.tasks import execute_batch_job, execute_job_rerun, execute_single_job, execute_stage_run, submit_task
+from src.web.uploads import (
+    UploadKind,
+    build_upload_destination,
+    save_upload_request,
+    upload_allowed_extensions,
+    upload_group_path,
+    upload_root,
+)
 
 
 def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = False) -> FastAPI:
@@ -80,6 +90,8 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             "active_profile": loaded_settings.active_profile_name,
             "video_extensions": sorted(supported_video_extensions(loaded_settings)),
             "reference_extensions": list(supported_reference_extensions()),
+            "default_output_dir": str(loaded_settings.path_for("final_dir")),
+            "upload_dir": str(upload_root(root)),
         }
 
     @app.get("/api/refine-default-instruction")
@@ -111,6 +123,36 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             "current_path": str(current_path),
             "parent_path": resolve_parent_path(current_path, allow_roots),
             "items": list_fs_items(current_path, item_type=type, show_hidden=show_hidden),
+        }
+
+    @app.post("/api/uploads")
+    async def post_upload(
+        request: Request,
+        kind: UploadKind = Query(...),
+        filename: str = Query(...),
+        group_id: str | None = None,
+        relative_path: str | None = None,
+    ) -> dict[str, object]:
+        try:
+            loaded_settings = load_settings(project_root=root)
+        except ConfigLoadError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        destination = build_upload_destination(
+            project_root=root,
+            kind=kind,
+            filename=filename,
+            allowed_extensions=upload_allowed_extensions(kind, loaded_settings),
+            group_id=group_id,
+            relative_path=relative_path,
+        )
+        size = await save_upload_request(request, destination)
+        return {
+            "kind": kind,
+            "name": destination.name,
+            "path": str(destination),
+            "directory": str(upload_group_path(destination, group_id, relative_path)),
+            "size": size,
         }
 
     @app.get("/api/jobs")
@@ -145,6 +187,22 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         if artifact is None:
             raise HTTPException(status_code=404, detail=f"产物不存在: {artifact_id}")
         return artifact
+
+    @app.get("/api/jobs/{job_id}/result")
+    async def download_job_result(job_id: str) -> FileResponse:
+        state_path = app.state.job_state_path(job_id)
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail=f"job 不存在: {job_id}")
+        state = reconcile_state(read_json_file(state_path))
+        try:
+            result_path = resolve_job_result_path(root, state)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"读取任务结果失败: {exc}") from exc
+        return FileResponse(result_path, filename=result_path.name, media_type="text/markdown; charset=utf-8")
 
     @app.post("/api/jobs", status_code=202)
     async def post_job(request: SingleJobRequest) -> dict[str, str]:
@@ -213,6 +271,40 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             raise HTTPException(status_code=404, detail=f"batch 不存在: {batch_id}")
         state = read_json_file(state_path)
         return reconcile_state(state)
+
+    @app.get("/api/batches/{batch_id}/result")
+    async def download_batch_result(batch_id: str) -> Response:
+        state_path = app.state.batch_state_path(batch_id)
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail=f"batch 不存在: {batch_id}")
+        state = reconcile_state(read_json_file(state_path))
+        try:
+            archive = build_batch_result_archive(root, batch_id, state)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"打包批量结果失败: {exc}") from exc
+        return Response(
+            content=archive,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{batch_id}-results.zip"'},
+        )
+
+    @app.get("/api/batches/{batch_id}/items/{item_job_id}/result")
+    async def download_batch_item_result(batch_id: str, item_job_id: str) -> FileResponse:
+        state_path = app.state.batch_state_path(batch_id)
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail=f"batch 不存在: {batch_id}")
+        state = reconcile_state(read_json_file(state_path))
+        try:
+            result_path = resolve_batch_item_result_path(root, state, item_job_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"读取子任务结果失败: {exc}") from exc
+        return FileResponse(result_path, filename=result_path.name, media_type="text/markdown; charset=utf-8")
 
     @app.get("/api/batches")
     async def list_batches() -> dict[str, list[dict]]:

@@ -21,8 +21,9 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 
 import { getBatch, getRefineDefaultInstruction, listFs, submitBatchJob, type FileItem, type JobState } from "../api/client";
 import BackendSelector from "../components/BackendSelector.vue";
-import FileBrowser from "../components/FileBrowser.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
+import RemoteDirectoryUpload from "../components/RemoteDirectoryUpload.vue";
+import RemoteFileUpload from "../components/RemoteFileUpload.vue";
 import { useConfigOptions } from "../composables/useConfigOptions";
 
 type BatchMode = "manifest" | "paired-dir" | "shared-reference";
@@ -36,7 +37,7 @@ interface SourcePreview {
 }
 
 const message = useMessage();
-const { activeProfile, backends, error, loading, profiles, referenceExtensions, videoExtensions } = useConfigOptions();
+const { activeProfile, backends, defaultOutputDir, error, loading, profiles, referenceExtensions, videoExtensions } = useConfigOptions();
 const batchState = ref<JobState | null>(null);
 const submitting = ref(false);
 const previewLoading = ref(false);
@@ -83,10 +84,13 @@ const ocrBackendOptions = [
   { label: "Codex CLI", value: "codex_cli" },
   { label: "Gemini CLI", value: "gemini_cli" },
 ];
+const manifestAccept = ".json,.yaml,.yml";
+const referenceAccept = computed(() => referenceExtensions.value.join(","));
+const glossaryAccept = ".txt,.md";
 
 const modeTip = computed(() => {
   if (form.mode === "manifest") {
-    return "Manifest 模式将按指定的清单 JSON/YAML 提交，适合每条任务有各自独立参考源或输出目录的个性化任务集合。";
+    return "Manifest 模式将按指定的清单 JSON/YAML 提交，适合每条任务有独立参考源的个性化任务集合；处理结果仍在任务列表下载。";
   }
   if (form.mode === "paired-dir") {
     return "目录配对模式会自动扫描视频目录下所有视频，并在参考目录中匹配同名（basename）的 .txt、.md 或 .pdf 参考文本。";
@@ -99,7 +103,7 @@ const requiredWarning = computed(() => {
     return "请选择 Manifest 清单文件。";
   }
   if (form.mode !== "manifest" && (!form.videos_dir || !form.output_dir)) {
-    return "请选择视频源目录和成果输出目录。";
+    return "请选择视频源目录，并等待服务器默认输出目录加载完成。";
   }
   if (form.mode === "paired-dir" && !form.reference_dir) {
     return "目录配对模式下参考源目录是必填项。";
@@ -129,6 +133,12 @@ const batchItems = computed(() => batchState.value?.items ?? []);
 watch(activeProfile, (value) => {
   if (!form.profile && value) {
     form.profile = value;
+  }
+});
+
+watch(defaultOutputDir, (value) => {
+  if (!form.output_dir && value) {
+    form.output_dir = value;
   }
 });
 
@@ -329,7 +339,7 @@ async function submit() {
   }
 }
 
-function itemStatusType(item: Record<string, unknown>) {
+function itemStatusType(item: { status?: unknown }): "success" | "error" | "info" | "warning" {
   const status = String(item.status ?? "");
   if (status === "success") {
     return "success";
@@ -343,7 +353,7 @@ function itemStatusType(item: Record<string, unknown>) {
   return "warning";
 }
 
-const statusType = computed(() => {
+const statusType = computed<"success" | "error" | "info" | "warning">(() => {
   const status = String(batchState.value?.status ?? "");
   if (status === "success") {
     return "success";
@@ -410,32 +420,65 @@ onBeforeUnmount(stopPolling);
                 <h4 class="form-section-title">批量输入输出参数</h4>
                 
                 <n-form-item v-if="form.mode === 'manifest'" label="Manifest 清单文件" required>
-                  <FileBrowser v-model="form.manifest" mode="file" label="Manifest 清单文件" />
+                  <n-space vertical class="w-full">
+                    <RemoteFileUpload
+                      v-model="form.manifest"
+                      kind="manifest"
+                      label="Manifest 清单"
+                      :accept="manifestAccept"
+                      button-text="选择并上传本机 Manifest"
+                    />
+                    <n-input v-model:value="form.manifest" readonly placeholder="上传后自动生成服务器路径" />
+                  </n-space>
                 </n-form-item>
 
                 <template v-else>
                   <n-form-item label="视频源目录 (Videos Directory)" required>
-                    <FileBrowser v-model="form.videos_dir" mode="dir" label="视频源目录" />
+                    <n-space vertical class="w-full">
+                      <RemoteDirectoryUpload
+                        v-model="form.videos_dir"
+                        kind="video"
+                        label="视频"
+                        :extensions="videoExtensions"
+                        button-text="选择并上传本机视频目录"
+                      />
+                      <n-input v-model:value="form.videos_dir" readonly placeholder="上传后自动生成服务器目录" />
+                    </n-space>
                   </n-form-item>
                   
                   <n-form-item v-if="form.mode === 'paired-dir'" label="参考源目录 (Reference Directory)" required>
-                    <FileBrowser v-model="form.reference_dir" mode="dir" label="参考源目录" />
+                    <n-space vertical class="w-full">
+                      <RemoteDirectoryUpload
+                        v-model="form.reference_dir"
+                        kind="reference"
+                        label="参考源"
+                        :extensions="referenceExtensions"
+                        button-text="选择并上传本机参考源目录"
+                      />
+                      <n-input v-model:value="form.reference_dir" readonly placeholder="上传后自动生成服务器目录" />
+                    </n-space>
                   </n-form-item>
                   
                   <n-form-item v-if="form.mode === 'shared-reference'" label="共享参考源文件或 URL" required>
                     <n-space vertical class="w-full">
-                      <n-input v-model:value="form.shared_reference" placeholder="输入共享的本地路径或 https:// 参考源" />
-                      <FileBrowser
+                      <n-input v-model:value="form.shared_reference" placeholder="可粘贴 https:// 网址，或上传本机共享参考源" />
+                      <RemoteFileUpload
                         v-model="form.shared_reference"
-                        mode="file"
+                        kind="reference"
                         label="共享参考文件"
-                        button-text="浏览本地共享参考"
+                        :accept="referenceAccept"
+                        button-text="选择并上传本机共享参考"
                       />
                     </n-space>
                   </n-form-item>
                   
-                  <n-form-item label="成果输出目录 (Output Directory)" required>
-                    <FileBrowser v-model="form.output_dir" mode="dir" label="成果输出目录" />
+                  <n-form-item label="成果获取方式" required>
+                    <n-alert type="info" :bordered="false" class="server-output-note">
+                      <div class="server-output-note__body">
+                        <span>批量处理完成后，到任务列表下载全部结果，或展开批量任务按子任务分别下载。</span>
+                        <small>服务器默认保存目录：{{ form.output_dir || "配置加载中..." }}</small>
+                      </div>
+                    </n-alert>
                   </n-form-item>
                 </template>
               </div>
@@ -447,7 +490,16 @@ onBeforeUnmount(stopPolling);
                 <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
                   <n-grid-item span="2">
                     <n-form-item label="术语词表 (Glossary File)">
-                      <FileBrowser v-model="form.glossary_file" mode="file" label="术语词表" button-text="选择术语词表" />
+                      <n-space vertical class="w-full">
+                        <RemoteFileUpload
+                          v-model="form.glossary_file"
+                          kind="glossary"
+                          label="术语词表"
+                          :accept="glossaryAccept"
+                          button-text="选择并上传本机词表"
+                        />
+                        <n-input v-model:value="form.glossary_file" readonly placeholder="可选，上传后自动生成服务器路径" />
+                      </n-space>
                     </n-form-item>
                   </n-grid-item>
                   <n-grid-item span="2 m:1">
@@ -709,6 +761,26 @@ onBeforeUnmount(stopPolling);
   color: var(--text-primary);
   border-left: 3px solid var(--primary);
   padding-left: 8px;
+}
+
+.server-output-note {
+  width: 100%;
+  border-radius: 8px;
+}
+
+.server-output-note__body {
+  display: grid;
+  gap: 6px;
+}
+
+.server-output-note__body span {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.server-output-note__body small {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 .form-action-area {

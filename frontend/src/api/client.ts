@@ -5,6 +5,8 @@ export interface ConfigResponse {
   active_profile: string;
   video_extensions: string[];
   reference_extensions: string[];
+  default_output_dir: string;
+  upload_dir: string;
 }
 
 export interface FrontendSettings {
@@ -42,6 +44,31 @@ export interface FileListResponse {
   items: FileItem[];
 }
 
+export type UploadKind = "video" | "reference" | "manifest" | "glossary";
+
+export interface UploadResponse {
+  kind: UploadKind;
+  name: string;
+  path: string;
+  directory: string;
+  size: number;
+}
+
+export interface BatchItemState {
+  job_id: string;
+  mode?: string;
+  video_source?: string;
+  reference_source?: string;
+  output_dir?: string;
+  book_name?: string;
+  chapter?: string;
+  glossary_file?: string;
+  status: string;
+  failed_stage?: string;
+  error_message?: string;
+  copied_output_path?: string;
+}
+
 export interface JobState {
   id: string;
   kind: string;
@@ -54,7 +81,7 @@ export interface JobState {
   total?: number;
   success?: number;
   failed?: number;
-  items?: Array<Record<string, unknown>>;
+  items?: BatchItemState[];
 }
 
 export interface JobListResponse {
@@ -225,6 +252,32 @@ export function listFs(path: string | null, type: "file" | "dir" | "all", showHi
   return requestJson<FileListResponse>(`/api/fs/list${buildQuery({ path, type, show_hidden: showHidden })}`);
 }
 
+export async function uploadFile(
+  file: File,
+  kind: UploadKind,
+  options?: { groupId?: string; relativePath?: string },
+): Promise<UploadResponse> {
+  const response = await fetch(
+    `/api/uploads${buildQuery({
+      kind,
+      filename: file.name,
+      group_id: options?.groupId,
+      relative_path: options?.relativePath,
+    })}`,
+    {
+      method: "POST",
+      body: file,
+    },
+  );
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(formatApiError(response.status, detail));
+  }
+
+  return (await response.json()) as UploadResponse;
+}
+
 export function submitJob(payload: SingleJobPayload): Promise<{ job_id: string }> {
   return requestJson<{ job_id: string }>("/api/jobs", {
     method: "POST",
@@ -248,6 +301,10 @@ export function getJobArtifact(jobId: string, artifactId: string): Promise<JobAr
   return requestJson<JobArtifactContent>(`/api/jobs/${jobId}/artifacts/${artifactId}`);
 }
 
+export function jobResultUrl(jobId: string): string {
+  return `/api/jobs/${encodeURIComponent(jobId)}/result`;
+}
+
 export function listBatches(): Promise<JobListResponse> {
   return requestJson<JobListResponse>("/api/batches");
 }
@@ -261,6 +318,14 @@ export function submitBatchJob(payload: BatchJobPayload): Promise<{ batch_id: st
 
 export function getBatch(batchId: string): Promise<JobState> {
   return requestJson<JobState>(`/api/batches/${batchId}`);
+}
+
+export function batchResultUrl(batchId: string): string {
+  return `/api/batches/${encodeURIComponent(batchId)}/result`;
+}
+
+export function batchItemResultUrl(batchId: string, itemJobId: string): string {
+  return `/api/batches/${encodeURIComponent(batchId)}/items/${encodeURIComponent(itemJobId)}/result`;
 }
 
 export function submitStageRun(stageName: string, payload: StageRunPayload): Promise<{ run_id: string }> {

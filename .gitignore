@@ -25,6 +25,8 @@ data/input/audio/*
 !data/input/audio/.gitkeep
 data/input/reference/*
 !data/input/reference/.gitkeep
+data/uploads/*
+!data/uploads/.gitkeep
 
 # Intermediate and outputs
 data/jobs/*

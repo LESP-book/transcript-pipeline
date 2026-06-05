@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 from pathlib import Path
+import zipfile
 
 import httpx
 
@@ -14,6 +16,22 @@ def request_json(app, method: str, path: str, *, json_body: dict | None = None, 
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             return await client.request(method, path, json=json_body, params=params)
+
+    return asyncio.run(send_request())
+
+
+def request_raw(
+    app,
+    method: str,
+    path: str,
+    *,
+    content: bytes,
+    params: dict | None = None,
+) -> httpx.Response:
+    async def send_request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.request(method, path, content=content, params=params)
 
     return asyncio.run(send_request())
 
@@ -32,6 +50,8 @@ def test_get_config_returns_profiles_and_backends(tmp_path: Path) -> None:
         "active_profile": "local_cpu",
         "video_extensions": [".mkv", ".mov", ".mp4", ".webm"],
         "reference_extensions": [".txt", ".md", ".pdf"],
+        "default_output_dir": str(tmp_path / "data/output/final"),
+        "upload_dir": str(tmp_path / "data/uploads"),
     }
 
 
@@ -218,6 +238,101 @@ def test_get_job_artifact_rejects_unknown_artifact_id(tmp_path: Path) -> None:
     assert response.status_code == 404
 
 
+def test_download_job_result_returns_generated_markdown(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    job_dir = tmp_path / "data/jobs/job-test-001"
+    result_path = tmp_path / "data/output/final/lesson.md"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text("# 最终稿\n\n正文", encoding="utf-8")
+    (job_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "job-test-001",
+                "kind": "job",
+                "status": "success",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:31:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": str(result_path),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    response = request_json(create_app(project_root=tmp_path), "GET", "/api/jobs/job-test-001/result")
+
+    assert response.status_code == 200
+    assert response.content == "# 最终稿\n\n正文".encode("utf-8")
+    assert "attachment" in response.headers["content-disposition"]
+    assert "lesson.md" in response.headers["content-disposition"]
+
+
+def test_download_job_result_rejects_unfinished_job(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    job_dir = tmp_path / "data/jobs/job-test-001"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "job-test-001",
+                "kind": "job",
+                "status": "running",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:31:00+08:00",
+                "current_stage": "refine",
+                "error_message": "",
+                "output_path": "",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(project_root=tmp_path)
+    app.state.active_jobs.add("job-test-001")
+
+    response = request_json(app, "GET", "/api/jobs/job-test-001/result")
+
+    assert response.status_code == 400
+
+
+def test_download_job_result_falls_back_to_job_internal_final_output(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    job_dir = tmp_path / "data/jobs/job-test-001"
+    internal_result_path = job_dir / "output/final/source.md"
+    internal_result_path.parent.mkdir(parents=True, exist_ok=True)
+    internal_result_path.write_text("# 内部保留结果\n", encoding="utf-8")
+    (job_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "job-test-001",
+                "kind": "job",
+                "status": "success",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:31:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": str(tmp_path / "missing/final.md"),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    response = request_json(create_app(project_root=tmp_path), "GET", "/api/jobs/job-test-001/result")
+
+    assert response.status_code == 200
+    assert response.content == "# 内部保留结果\n".encode("utf-8")
+
+
 def test_get_jobs_lists_persisted_states(tmp_path: Path) -> None:
     from api_server import create_app
 
@@ -329,6 +444,98 @@ def test_get_batches_lists_persisted_batch_states(tmp_path: Path) -> None:
     assert response.json()["items"][0]["id"] == "batch-test-001"
 
 
+def test_download_batch_item_result_returns_child_markdown(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    batch_dir = tmp_path / "data/jobs/batches/batch-test-001"
+    result_path = tmp_path / "data/output/final/lesson-a.md"
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text("# 子任务结果\n", encoding="utf-8")
+    (batch_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "batch-test-001",
+                "kind": "batch",
+                "status": "success",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:40:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": str(batch_dir / "summary.json"),
+                "items": [
+                    {
+                        "job_id": "job-a",
+                        "status": "success",
+                        "copied_output_path": str(result_path),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    response = request_json(create_app(project_root=tmp_path), "GET", "/api/batches/batch-test-001/items/job-a/result")
+
+    assert response.status_code == 200
+    assert response.content == "# 子任务结果\n".encode("utf-8")
+    assert "lesson-a.md" in response.headers["content-disposition"]
+
+
+def test_download_batch_result_packs_summary_and_successful_outputs(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    batch_dir = tmp_path / "data/jobs/batches/batch-test-001"
+    result_path = tmp_path / "data/output/final/lesson-a.md"
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text("# 子任务结果\n", encoding="utf-8")
+    (batch_dir / "summary.md").write_text("# Batch Summary\n", encoding="utf-8")
+    (batch_dir / "summary.json").write_text('{"total": 1}', encoding="utf-8")
+    (batch_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "batch-test-001",
+                "kind": "batch",
+                "status": "success",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:40:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": str(batch_dir / "summary.json"),
+                "items": [
+                    {
+                        "job_id": "job-a",
+                        "status": "success",
+                        "copied_output_path": str(result_path),
+                    },
+                    {
+                        "job_id": "job-b",
+                        "status": "failed",
+                        "copied_output_path": "",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    response = request_json(create_app(project_root=tmp_path), "GET", "/api/batches/batch-test-001/result")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = set(archive.namelist())
+        assert "summary.md" in names
+        assert "summary.json" in names
+        assert "results/001-job-a-lesson-a.md" in names
+        assert archive.read("results/001-job-a-lesson-a.md").decode("utf-8") == "# 子任务结果\n"
+
+
 def test_get_stage_runs_lists_persisted_stage_states(tmp_path: Path) -> None:
     from api_server import create_app
 
@@ -376,6 +583,109 @@ def test_get_fs_list_filters_hidden_entries_and_rejects_outside_roots(tmp_path: 
 
     denied = request_json(app, "GET", "/api/fs/list", params={"path": "/tmp", "type": "all"})
     assert denied.status_code == 403
+
+
+def test_post_upload_writes_video_under_project_upload_dir(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    app = create_app(project_root=tmp_path)
+
+    response = request_raw(
+        app,
+        "POST",
+        "/api/uploads",
+        params={"kind": "video", "filename": "../课程:1.MP4"},
+        content=b"video-bytes",
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    uploaded_path = Path(payload["path"])
+    assert payload["kind"] == "video"
+    assert payload["name"] == "课程_1.mp4"
+    assert payload["size"] == len(b"video-bytes")
+    assert payload["directory"] == str(uploaded_path.parent)
+    assert uploaded_path.read_bytes() == b"video-bytes"
+    assert uploaded_path.is_relative_to(tmp_path / "data/uploads/videos")
+
+
+def test_post_upload_groups_directory_files(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    app = create_app(project_root=tmp_path)
+
+    first_response = request_raw(
+        app,
+        "POST",
+        "/api/uploads",
+        params={
+            "kind": "reference",
+            "filename": "chapter-01.txt",
+            "group_id": "group-001",
+            "relative_path": "references/chapter-01.txt",
+        },
+        content=b"chapter 1",
+    )
+    second_response = request_raw(
+        app,
+        "POST",
+        "/api/uploads",
+        params={
+            "kind": "reference",
+            "filename": "chapter-02.md",
+            "group_id": "group-001",
+            "relative_path": "references/chapter-02.md",
+        },
+        content=b"chapter 2",
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    first_payload = first_response.json()
+    second_payload = second_response.json()
+    assert first_payload["directory"] == second_payload["directory"]
+    uploaded_dir = Path(first_payload["directory"])
+    assert uploaded_dir.is_relative_to(tmp_path / "data/uploads/reference")
+    assert (uploaded_dir / "chapter-01.txt").read_bytes() == b"chapter 1"
+    assert (uploaded_dir / "chapter-02.md").read_bytes() == b"chapter 2"
+
+
+def test_post_upload_rejects_unsupported_extension(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    app = create_app(project_root=tmp_path)
+
+    response = request_raw(
+        app,
+        "POST",
+        "/api/uploads",
+        params={"kind": "video", "filename": "lesson.txt"},
+        content=b"not-video",
+    )
+
+    assert response.status_code == 400
+    assert "不支持的上传文件类型" in response.text
+
+
+def test_post_upload_rejects_empty_file(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    app = create_app(project_root=tmp_path)
+
+    response = request_raw(
+        app,
+        "POST",
+        "/api/uploads",
+        params={"kind": "reference", "filename": "chapter.txt"},
+        content=b"",
+    )
+
+    assert response.status_code == 400
+    assert "上传文件为空" in response.text
 
 
 def test_post_job_returns_job_id_and_persists_state(tmp_path: Path) -> None:

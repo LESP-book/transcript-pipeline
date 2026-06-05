@@ -122,7 +122,7 @@ onBeforeUnmount(stopPolling);
     </n-card>
 
     <!-- Visual status card for run progress -->
-    <JobStatusCard v-if="stageState" title="阶段任务执行状态报告" :state="stageState" />
+    <JobStatusCard v-if="stageState" title="阶段任务执行状态报告" :state="stageState" default-expanded />
   </n-space>
 </template>
 

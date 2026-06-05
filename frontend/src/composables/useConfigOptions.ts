@@ -8,6 +8,8 @@ export function useConfigOptions() {
   const videoExtensions = ref<string[]>([]);
   const referenceExtensions = ref<string[]>([]);
   const activeProfile = ref("");
+  const defaultOutputDir = ref("");
+  const uploadDir = ref("");
   const loading = ref(false);
   const error = ref("");
 
@@ -21,6 +23,8 @@ export function useConfigOptions() {
       videoExtensions.value = config.video_extensions;
       referenceExtensions.value = config.reference_extensions;
       activeProfile.value = config.active_profile;
+      defaultOutputDir.value = config.default_output_dir;
+      uploadDir.value = config.upload_dir;
     } catch (caught) {
       error.value = caught instanceof Error ? caught.message : "加载配置失败";
     } finally {
@@ -36,6 +40,8 @@ export function useConfigOptions() {
     videoExtensions,
     referenceExtensions,
     activeProfile,
+    defaultOutputDir,
+    uploadDir,
     loading,
     error,
     reload: load,
