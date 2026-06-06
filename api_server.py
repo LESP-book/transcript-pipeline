@@ -6,7 +6,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
@@ -31,6 +31,72 @@ from src.web.uploads import (
     upload_group_path,
     upload_root,
 )
+
+
+JOB_INPUT_SUMMARY_KEYS = ("video_source", "reference_source", "output_dir", "book_name", "chapter", "glossary_file")
+BATCH_INPUT_SUMMARY_KEYS = (
+    "manifest",
+    "videos_dir",
+    "reference_dir",
+    "shared_reference",
+    "output_dir",
+    "book_name",
+    "chapter",
+    "glossary_file",
+)
+
+
+def compact_input_summary(raw: dict[str, Any], keys: tuple[str, ...]) -> dict[str, str]:
+    summary: dict[str, str] = {}
+    for key in keys:
+        value = raw.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            summary[key] = text
+    return summary
+
+
+def single_job_input_summary(request: SingleJobRequest) -> dict[str, str]:
+    return compact_input_summary(
+        {
+            "video_source": request.video,
+            "reference_source": request.reference,
+            "output_dir": request.output_dir,
+            "book_name": request.book_name,
+            "chapter": request.chapter,
+            "glossary_file": request.glossary_file,
+        },
+        JOB_INPUT_SUMMARY_KEYS,
+    )
+
+
+def batch_job_input_summary(request: BatchJobRequest) -> dict[str, str]:
+    return compact_input_summary(request.model_dump(), BATCH_INPUT_SUMMARY_KEYS)
+
+
+def enrich_state_input_summary(project_root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    if state.get("input_summary"):
+        return state
+
+    kind = str(state.get("kind") or "")
+    identifier = str(state.get("id") or "").strip()
+    if kind != "job" or not identifier:
+        return state
+
+    manifest_path = project_root / "data/jobs" / identifier / "manifest.json"
+    if not manifest_path.exists():
+        return state
+
+    manifest = read_json_file(manifest_path)
+    summary = compact_input_summary(manifest, JOB_INPUT_SUMMARY_KEYS)
+    if not summary:
+        return state
+
+    enriched = dict(state)
+    enriched["input_summary"] = summary
+    return enriched
 
 
 def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = False) -> FastAPI:
@@ -60,7 +126,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     app.state.active_jobs = set()
 
     def reconcile_state(state: dict) -> dict:
-        """Self-heal tasks that are stuck in 'running' or 'pending' state but not active in the executor."""
+        """修正服务重启后仍停留在运行态的任务，并补充列表展示需要的输入摘要。"""
         if state.get("status") in ("running", "pending"):
             job_id = state.get("id")
             kind = state.get("kind", "job")
@@ -74,7 +140,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
                 else:  # stage-run
                     path = app.state.stage_run_state_path(job_id)
                 app.state.update_state(path, status="failed", error_message="任务已意外中断或服务重启")
-        return state
+        return enrich_state_input_summary(root, state)
 
     @app.get("/api/config")
     async def get_config() -> dict[str, object]:
@@ -208,7 +274,9 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     async def post_job(request: SingleJobRequest) -> dict[str, str]:
         job_id = create_job_id()
         app.state.active_jobs.add(job_id)
-        write_json_file(app.state.job_state_path(job_id), create_initial_state(job_id, "job"))
+        state = create_initial_state(job_id, "job")
+        state["input_summary"] = single_job_input_summary(request)
+        write_json_file(app.state.job_state_path(job_id), state)
         submit_task(
             app,
             app.state.execute_single_job,
@@ -253,6 +321,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         batch_id = create_batch_id()
         app.state.active_jobs.add(batch_id)
         state = create_initial_state(batch_id, "batch")
+        state["input_summary"] = batch_job_input_summary(request)
         state["items"] = []
         write_json_file(app.state.batch_state_path(batch_id), state)
         submit_task(

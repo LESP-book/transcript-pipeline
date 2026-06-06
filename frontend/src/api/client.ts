@@ -69,6 +69,19 @@ export interface BatchItemState {
   copied_output_path?: string;
 }
 
+export interface JobInputSummary {
+  video_source?: string;
+  reference_source?: string;
+  output_dir?: string;
+  manifest?: string;
+  videos_dir?: string;
+  reference_dir?: string;
+  shared_reference?: string;
+  book_name?: string;
+  chapter?: string;
+  glossary_file?: string;
+}
+
 export interface JobState {
   id: string;
   kind: string;
@@ -82,6 +95,7 @@ export interface JobState {
   success?: number;
   failed?: number;
   items?: BatchItemState[];
+  input_summary?: JobInputSummary;
 }
 
 export interface JobListResponse {

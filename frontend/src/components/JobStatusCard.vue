@@ -22,8 +22,15 @@ import {
   jobResultUrl,
   rerunJob,
   type BatchItemState,
+  type JobInputSummary,
 } from "../api/client";
 import JobArtifactsViewer from "./JobArtifactsViewer.vue";
+
+interface IdentityEntry {
+  label: string;
+  value: string;
+  fullValue: string;
+}
 
 const props = defineProps<{
   title?: string;
@@ -47,6 +54,13 @@ const expanded = ref(props.defaultExpanded ?? false);
 const kind = computed(() => String(props.state.kind ?? ""));
 const status = computed(() => String(props.state.status ?? ""));
 const stateId = computed(() => String(props.state.id ?? ""));
+const inputSummary = computed<JobInputSummary>(() => {
+  const rawSummary = props.state.input_summary;
+  if (!rawSummary || typeof rawSummary !== "object" || Array.isArray(rawSummary)) {
+    return {};
+  }
+  return rawSummary as JobInputSummary;
+});
 const batchItems = computed<BatchItemState[]>(() => {
   return Array.isArray(props.state.items) ? (props.state.items as BatchItemState[]) : [];
 });
@@ -102,12 +116,66 @@ function handleBatchItemResultDownload(item: BatchItemState) {
   openDownload(batchItemResultUrl(stateId.value, item.job_id));
 }
 
-function displayFileName(path?: string) {
-  const normalized = String(path || "").trim();
+function textValue(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function firstNonEmpty(...values: unknown[]) {
+  for (const value of values) {
+    const text = textValue(value);
+    if (text) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function displayFileName(path?: unknown) {
+  const normalized = textValue(path);
   if (!normalized) {
     return "-";
   }
   return normalized.split(/[\\/]/).pop() || normalized;
+}
+
+function displaySourceName(source?: unknown) {
+  const normalized = textValue(source);
+  if (!normalized) {
+    return "";
+  }
+  if (/^https?:\/\//i.test(normalized)) {
+    try {
+      const url = new URL(normalized);
+      const lastSegment = url.pathname.split("/").filter(Boolean).pop();
+      return lastSegment || url.hostname;
+    } catch {
+      return displayFileName(normalized);
+    }
+  }
+  return displayFileName(normalized);
+}
+
+function displayDateTime(value?: unknown) {
+  const rawValue = textValue(value);
+  if (!rawValue) {
+    return "-";
+  }
+  const parsed = new Date(rawValue);
+  if (Number.isNaN(parsed.getTime())) {
+    return rawValue;
+  }
+  return parsed.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function summaryField(key: keyof JobInputSummary) {
+  return textValue(inputSummary.value[key]);
 }
 
 function itemStatusType(rawStatus?: string): "success" | "error" | "info" | "warning" {
@@ -121,6 +189,114 @@ function itemStatusType(rawStatus?: string): "success" | "error" | "info" | "war
     return "info";
   }
   return "warning";
+}
+
+const videoSource = computed(() => firstNonEmpty(summaryField("video_source")));
+const referenceSource = computed(() => firstNonEmpty(summaryField("reference_source")));
+const outputDir = computed(() => firstNonEmpty(summaryField("output_dir")));
+const manifestSource = computed(() => firstNonEmpty(summaryField("manifest")));
+const videosDir = computed(() => firstNonEmpty(summaryField("videos_dir")));
+const referenceDir = computed(() => firstNonEmpty(summaryField("reference_dir")));
+const sharedReference = computed(() => firstNonEmpty(summaryField("shared_reference")));
+const bookName = computed(() => firstNonEmpty(summaryField("book_name")));
+const chapter = computed(() => firstNonEmpty(summaryField("chapter")));
+const glossaryFile = computed(() => firstNonEmpty(summaryField("glossary_file")));
+const createdAtText = computed(() => displayDateTime(props.state.created_at));
+const updatedAtText = computed(() => displayDateTime(props.state.updated_at));
+
+const kindLabel = computed(() => {
+  if (kind.value === "job") {
+    return "单任务";
+  }
+  if (kind.value === "batch") {
+    return "批量任务";
+  }
+  if (kind.value === "stage-run") {
+    return "单阶段";
+  }
+  return "任务";
+});
+
+const defaultCardTitle = computed(() => {
+  if (kind.value === "job") {
+    const sourceName = displaySourceName(videoSource.value) || displaySourceName(props.state.output_path);
+    return sourceName ? `视频：${sourceName}` : `单任务 ${stateId.value || "未命名"}`;
+  }
+  if (kind.value === "batch") {
+    const directoryName = displaySourceName(videosDir.value);
+    if (directoryName) {
+      return `批量目录：${directoryName}`;
+    }
+    const manifestName = displaySourceName(manifestSource.value);
+    if (manifestName) {
+      return `批量清单：${manifestName}`;
+    }
+    const firstVideoName = displaySourceName(batchItems.value[0]?.video_source);
+    if (firstVideoName) {
+      return `批量任务：${firstVideoName} 等 ${batchItems.value.length} 个视频`;
+    }
+    return `批量任务 ${stateId.value || "未命名"}`;
+  }
+  if (kind.value === "stage-run") {
+    const stageName = textValue(props.state.current_stage);
+    return stageName ? `单阶段：${stageName}` : `单阶段 ${stateId.value || "未命名"}`;
+  }
+  return stateId.value ? `任务 ${stateId.value}` : "任务状态";
+});
+
+const cardTitle = computed(() => textValue(props.title) || defaultCardTitle.value);
+
+const identitySubtitle = computed(() => {
+  const parts = [kindLabel.value];
+  if (stateId.value) {
+    parts.push(`ID ${stateId.value}`);
+  }
+  if (createdAtText.value !== "-") {
+    parts.push(`创建 ${createdAtText.value}`);
+  }
+  return parts.join(" · ");
+});
+
+function makeIdentityEntry(label: string, rawValue: unknown, displayValue?: string): IdentityEntry | null {
+  const fullValue = textValue(rawValue);
+  if (!fullValue) {
+    return null;
+  }
+  return {
+    label,
+    value: displayValue || displaySourceName(fullValue) || fullValue,
+    fullValue,
+  };
+}
+
+const identityEntries = computed<IdentityEntry[]>(() => {
+  const entries: Array<IdentityEntry | null> = [];
+  if (kind.value === "job") {
+    entries.push(makeIdentityEntry("原始视频", videoSource.value));
+    entries.push(makeIdentityEntry("参考源", referenceSource.value));
+    entries.push(makeIdentityEntry("输出目录", outputDir.value, outputDir.value));
+  } else if (kind.value === "batch") {
+    entries.push(makeIdentityEntry("批量目录", videosDir.value));
+    entries.push(makeIdentityEntry("批量清单", manifestSource.value));
+    entries.push(makeIdentityEntry("参考目录", referenceDir.value));
+    entries.push(makeIdentityEntry("共享参考", sharedReference.value));
+    entries.push(makeIdentityEntry("输出目录", outputDir.value, outputDir.value));
+    if (!videosDir.value && batchItems.value[0]?.video_source) {
+      entries.push(makeIdentityEntry("首个视频", batchItems.value[0].video_source));
+    }
+  } else {
+    entries.push(makeIdentityEntry("产物位置", props.state.output_path, textValue(props.state.output_path)));
+  }
+  entries.push(makeIdentityEntry("书名", bookName.value, bookName.value));
+  entries.push(makeIdentityEntry("章节", chapter.value, chapter.value));
+  entries.push(makeIdentityEntry("术语表", glossaryFile.value));
+  return entries.filter((entry): entry is IdentityEntry => Boolean(entry));
+});
+
+const hasInputSummary = computed(() => identityEntries.value.length > 0);
+
+function batchItemTitle(item: BatchItemState, index: number) {
+  return displaySourceName(item.video_source) || item.job_id || `子任务 ${index + 1}`;
 }
 
 function handleDelete() {
@@ -225,7 +401,7 @@ async function handleRerun() {
   }
 }
 
-// Intelligently calculate state of each step
+// 根据整体状态推导每个阶段的展示状态，避免展开详情时只看到原始状态码。
 function getStepState(stageKey: string): "completed" | "active" | "failed" | "pending" {
   const currentStage = String(props.state.current_stage ?? props.state.failed_stage ?? "");
   
@@ -261,7 +437,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
 </script>
 
 <template>
-  <n-card :title="title ?? String(state.id ?? '任务状态')" class="status-card" size="medium">
+  <n-card :title="cardTitle" class="status-card" size="medium">
     <template #header-extra>
       <n-flex align="center" :size="10" wrap>
         <span
@@ -311,6 +487,21 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
     </template>
 
     <n-flex vertical :size="16">
+      <div class="identity-panel">
+        <div class="identity-subtitle">{{ identitySubtitle }}</div>
+        <div v-if="identityEntries.length" class="identity-list">
+          <div
+            v-for="entry in identityEntries"
+            :key="`${entry.label}-${entry.fullValue}`"
+            class="identity-item"
+            :title="entry.fullValue"
+          >
+            <span>{{ entry.label }}</span>
+            <strong>{{ entry.value }}</strong>
+          </div>
+        </div>
+      </div>
+
       <div class="status-summary">
         <div class="summary-cell">
           <span class="summary-label">当前阶段</span>
@@ -322,7 +513,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
         </div>
         <div class="summary-cell">
           <span class="summary-label">更新时间</span>
-          <strong>{{ String(state.updated_at ?? "-") || "-" }}</strong>
+          <strong>{{ updatedAtText }}</strong>
         </div>
         <div v-if="state.total !== undefined" class="summary-cell is-wide">
           <span class="summary-label">批量进度</span>
@@ -415,8 +606,10 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
                 class="batch-item-row"
               >
                 <div class="batch-item-main">
-                  <strong>{{ item.job_id || `子任务 ${index + 1}` }}</strong>
-                  <span>{{ displayFileName(item.video_source) }}</span>
+                  <strong>{{ batchItemTitle(item, index) }}</strong>
+                  <span v-if="item.job_id" class="batch-item-id">任务 ID：{{ item.job_id }}</span>
+                  <span v-if="item.reference_source">参考源：{{ displaySourceName(item.reference_source) }}</span>
+                  <span v-if="item.output_dir">输出目录：{{ item.output_dir }}</span>
                   <span v-if="item.failed_stage" class="batch-item-muted">失败阶段：{{ item.failed_stage }}</span>
                   <p v-if="item.error_message" class="batch-item-error">{{ item.error_message }}</p>
                 </div>
@@ -448,11 +641,34 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
             <n-descriptions-item label="服务器保存路径" :span="2">
               <span class="status-card__path">{{ String(state.output_path ?? "-") || "-" }}</span>
             </n-descriptions-item>
+            <template v-if="hasInputSummary">
+              <n-descriptions-item v-if="videoSource" label="原始视频" :span="2">
+                <span class="status-card__path">{{ videoSource }}</span>
+              </n-descriptions-item>
+              <n-descriptions-item v-if="referenceSource" label="参考源" :span="2">
+                <span class="status-card__path">{{ referenceSource }}</span>
+              </n-descriptions-item>
+              <n-descriptions-item v-if="videosDir" label="批量目录" :span="2">
+                <span class="status-card__path">{{ videosDir }}</span>
+              </n-descriptions-item>
+              <n-descriptions-item v-if="manifestSource" label="批量清单" :span="2">
+                <span class="status-card__path">{{ manifestSource }}</span>
+              </n-descriptions-item>
+              <n-descriptions-item v-if="referenceDir" label="参考目录" :span="2">
+                <span class="status-card__path">{{ referenceDir }}</span>
+              </n-descriptions-item>
+              <n-descriptions-item v-if="sharedReference" label="共享参考" :span="2">
+                <span class="status-card__path">{{ sharedReference }}</span>
+              </n-descriptions-item>
+              <n-descriptions-item v-if="outputDir" label="任务输出目录" :span="2">
+                <span class="status-card__path">{{ outputDir }}</span>
+              </n-descriptions-item>
+            </template>
             <n-descriptions-item label="创建时间">
-              <span class="text-muted">{{ String(state.created_at ?? "-") || "-" }}</span>
+              <span class="text-muted">{{ createdAtText }}</span>
             </n-descriptions-item>
             <n-descriptions-item label="更新时间">
-              <span class="text-muted">{{ String(state.updated_at ?? "-") || "-" }}</span>
+              <span class="text-muted">{{ updatedAtText }}</span>
             </n-descriptions-item>
 
             <template v-if="state.total !== undefined">
@@ -489,11 +705,61 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
   overflow: visible;
 }
 
+.status-card :deep(.n-card-header) {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.status-card :deep(.n-card-header__main) {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
 .status-badge {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   padding: 4px 12px;
+}
+
+.identity-panel {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 4px;
+}
+
+.identity-subtitle {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.identity-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+}
+
+.identity-item {
+  min-width: min(220px, 100%);
+  max-width: 100%;
+  display: grid;
+  gap: 2px;
+}
+
+.identity-item span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.identity-item strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .status-summary {
@@ -640,6 +906,10 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
   overflow-wrap: anywhere;
 }
 
+.batch-item-id {
+  color: var(--text-muted) !important;
+}
+
 .batch-item-muted {
   color: #b45309 !important;
 }
@@ -708,6 +978,16 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
 }
 
 @media (max-width: 760px) {
+  .status-card :deep(.n-card-header) {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .status-card :deep(.n-card-header__main),
+  .status-card :deep(.n-card-header__extra) {
+    width: 100%;
+  }
+
   .status-summary {
     grid-template-columns: 1fr;
   }

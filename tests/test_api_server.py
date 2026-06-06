@@ -357,6 +357,17 @@ def test_get_jobs_lists_persisted_states(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    (job_a / "manifest.json").write_text(
+        json.dumps(
+            {
+                "video_source": str(tmp_path / "videos/lesson-a.mp4"),
+                "reference_source": str(tmp_path / "references/chapter-a.pdf"),
+                "output_dir": str(tmp_path / "deliverables"),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     (job_b / "state.json").write_text(
         json.dumps(
             {
@@ -379,7 +390,13 @@ def test_get_jobs_lists_persisted_states(tmp_path: Path) -> None:
     response = request_json(app, "GET", "/api/jobs")
 
     assert response.status_code == 200
-    assert [item["id"] for item in response.json()["items"]] == ["job-b", "job-a"]
+    payload = response.json()["items"]
+    assert [item["id"] for item in payload] == ["job-b", "job-a"]
+    assert payload[1]["input_summary"] == {
+        "video_source": str(tmp_path / "videos/lesson-a.mp4"),
+        "reference_source": str(tmp_path / "references/chapter-a.pdf"),
+        "output_dir": str(tmp_path / "deliverables"),
+    }
 
 
 def test_get_batch_status_returns_persisted_state(tmp_path: Path) -> None:
@@ -721,6 +738,11 @@ def test_post_job_returns_job_id_and_persists_state(tmp_path: Path) -> None:
     state = json.loads((tmp_path / "data/jobs" / job_id / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "success"
     assert state["output_path"].endswith("final.md")
+    assert state["input_summary"] == {
+        "video_source": str(tmp_path / "lesson.mp4"),
+        "reference_source": str(tmp_path / "chapter.txt"),
+        "output_dir": str(tmp_path / "deliverables"),
+    }
 
 
 def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypatch) -> None:
@@ -998,6 +1020,7 @@ def test_post_batch_jobs_returns_batch_id_and_persists_state(tmp_path: Path) -> 
     state = json.loads((tmp_path / "data/jobs/batches" / batch_id / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "success"
     assert state["items"][0]["job_id"] == "job-a"
+    assert state["input_summary"] == {"manifest": str(tmp_path / "jobs.yaml")}
 
 
 def test_execute_batch_job_passes_custom_refine_prompt_to_prepared_jobs(tmp_path: Path, monkeypatch) -> None:

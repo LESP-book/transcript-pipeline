@@ -50,7 +50,6 @@ onMounted(load);
           <JobStatusCard
             v-for="item in jobs"
             :key="item.id"
-            :title="`单任务 ${item.id}`"
             :state="item"
             @deleted="load"
             @rerun="load"
@@ -60,13 +59,13 @@ onMounted(load);
       <n-tab-pane :name="'batches'" :tab="`批量任务 ${batches.length}`">
         <n-space vertical :size="16">
           <n-empty v-if="batches.length === 0" description="暂无批量任务记录。" />
-          <JobStatusCard v-for="item in batches" :key="item.id" :title="`批量任务 ${item.id}`" :state="item" @deleted="load" />
+          <JobStatusCard v-for="item in batches" :key="item.id" :state="item" @deleted="load" />
         </n-space>
       </n-tab-pane>
       <n-tab-pane :name="'stage-runs'" :tab="`单阶段 ${stageRuns.length}`">
         <n-space vertical :size="16">
           <n-empty v-if="stageRuns.length === 0" description="暂无单阶段记录。" />
-          <JobStatusCard v-for="item in stageRuns" :key="item.id" :title="`单阶段 ${item.id}`" :state="item" @deleted="load" />
+          <JobStatusCard v-for="item in stageRuns" :key="item.id" :state="item" @deleted="load" />
         </n-space>
       </n-tab-pane>
     </n-tabs>
