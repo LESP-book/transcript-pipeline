@@ -20,6 +20,7 @@ import {
   deleteJob,
   deleteStageRun,
   jobResultUrl,
+  rerunBatchItem,
   rerunJob,
   type BatchItemState,
   type JobInputSummary,
@@ -49,6 +50,8 @@ const dialog = useDialog();
 const isDeleting = ref(false);
 const isRerunning = ref(false);
 const rerunStage = ref("refine");
+const batchItemRerunStages = ref<Record<string, string>>({});
+const rerunningBatchItemIds = ref<string[]>([]);
 const expanded = ref(props.defaultExpanded ?? false);
 
 const kind = computed(() => String(props.state.kind ?? ""));
@@ -373,6 +376,50 @@ const rerunStageOptions = computed(() => MAIN_PIPELINE_STAGES.map((stage) => ({
 })));
 const rerunStageKeys = computed(() => new Set(MAIN_PIPELINE_STAGES.map((stage) => stage.key)));
 
+function batchItemKey(item: BatchItemState) {
+  return textValue(item.job_id);
+}
+
+function defaultBatchItemRerunStage(item: BatchItemState) {
+  const failedStage = textValue(item.failed_stage);
+  if (rerunStageKeys.value.has(failedStage)) {
+    return failedStage;
+  }
+  return "refine";
+}
+
+function batchItemRerunStageValue(item: BatchItemState) {
+  const key = batchItemKey(item);
+  return batchItemRerunStages.value[key] || defaultBatchItemRerunStage(item);
+}
+
+function setBatchItemRerunStage(item: BatchItemState, stage: string) {
+  const key = batchItemKey(item);
+  if (!key) {
+    return;
+  }
+  batchItemRerunStages.value = {
+    ...batchItemRerunStages.value,
+    [key]: stage,
+  };
+}
+
+function canRerunBatchItem(item: BatchItemState) {
+  const itemStatus = textValue(item.status);
+  return (
+    kind.value === "batch" &&
+    status.value !== "running" &&
+    status.value !== "pending" &&
+    Boolean(batchItemKey(item)) &&
+    (itemStatus === "success" || itemStatus === "failed")
+  );
+}
+
+function isBatchItemRerunning(item: BatchItemState) {
+  const key = batchItemKey(item);
+  return Boolean(key) && rerunningBatchItemIds.value.includes(key);
+}
+
 watch(
   () => String(props.state.current_stage ?? ""),
   (currentStage) => {
@@ -398,6 +445,27 @@ async function handleRerun() {
     message.error(caught instanceof Error ? caught.message : "重跑任务失败");
   } finally {
     isRerunning.value = false;
+  }
+}
+
+async function handleBatchItemRerun(item: BatchItemState) {
+  const batchId = stateId.value;
+  const itemJobId = batchItemKey(item);
+  if (!batchId || !itemJobId) {
+    message.error("缺少批量任务或子任务 ID，无法重跑。");
+    return;
+  }
+
+  const startStage = batchItemRerunStageValue(item);
+  rerunningBatchItemIds.value = [...rerunningBatchItemIds.value, itemJobId];
+  try {
+    await rerunBatchItem(batchId, itemJobId, { start_stage: startStage });
+    message.success(`已从 ${startStage} 重跑子任务`);
+    emit("rerun", batchId);
+  } catch (caught) {
+    message.error(caught instanceof Error ? caught.message : "重跑子任务失败");
+  } finally {
+    rerunningBatchItemIds.value = rerunningBatchItemIds.value.filter((id) => id !== itemJobId);
   }
 }
 
@@ -613,7 +681,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
                   <span v-if="item.failed_stage" class="batch-item-muted">失败阶段：{{ item.failed_stage }}</span>
                   <p v-if="item.error_message" class="batch-item-error">{{ item.error_message }}</p>
                 </div>
-                <n-flex align="center" :size="8" wrap>
+                <n-flex align="center" :size="8" wrap class="batch-item-actions">
                   <n-tag size="small" :type="itemStatusType(item.status)" :bordered="false">
                     {{ item.status || "-" }}
                   </n-tag>
@@ -625,6 +693,24 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
                     @click="handleBatchItemResultDownload(item)"
                   >
                     下载结果
+                  </n-button>
+                  <n-select
+                    size="small"
+                    :value="batchItemRerunStageValue(item)"
+                    :options="rerunStageOptions"
+                    :disabled="!canRerunBatchItem(item) || isBatchItemRerunning(item)"
+                    class="batch-item-rerun-select"
+                    @update:value="(value) => setBatchItemRerunStage(item, value)"
+                  />
+                  <n-button
+                    size="small"
+                    type="warning"
+                    secondary
+                    :disabled="!canRerunBatchItem(item)"
+                    :loading="isBatchItemRerunning(item)"
+                    @click="handleBatchItemRerun(item)"
+                  >
+                    重跑
                   </n-button>
                 </n-flex>
               </div>
@@ -922,6 +1008,14 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
   overflow-wrap: anywhere;
 }
 
+.batch-item-actions {
+  flex: 0 0 auto;
+}
+
+.batch-item-rerun-select {
+  width: 170px;
+}
+
 .status-grid {
   background: #ffffff;
   border-radius: 12px;
@@ -1005,6 +1099,11 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
   .batch-item-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .batch-item-actions,
+  .batch-item-rerun-select {
+    width: 100%;
   }
 }
 </style>

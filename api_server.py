@@ -22,7 +22,14 @@ from src.web.fs_browser import list_fs_items, resolve_allowed_browse_path, resol
 from src.web.frontend_settings import FrontendSettingsUpdate, frontend_settings_response, save_frontend_settings
 from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageRunRequest
 from src.web.state_store import collect_state_items, create_initial_state, read_json_file, update_state, write_json_file
-from src.web.tasks import execute_batch_job, execute_job_rerun, execute_single_job, execute_stage_run, submit_task
+from src.web.tasks import (
+    execute_batch_item_rerun,
+    execute_batch_job,
+    execute_job_rerun,
+    execute_single_job,
+    execute_stage_run,
+    submit_task,
+)
 from src.web.uploads import (
     UploadKind,
     build_upload_destination,
@@ -99,6 +106,15 @@ def enrich_state_input_summary(project_root: Path, state: dict[str, Any]) -> dic
     return enriched
 
 
+def find_batch_state_item(state: dict[str, Any], item_job_id: str) -> dict[str, Any] | None:
+    for raw_item in state.get("items") or []:
+        if not isinstance(raw_item, dict):
+            continue
+        if str(raw_item.get("job_id") or "") == item_job_id:
+            return raw_item
+    return None
+
+
 def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = False) -> FastAPI:
     root = Path(project_root).resolve() if project_root else Path(__file__).resolve().parent
 
@@ -120,6 +136,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     app.state.execute_single_job = execute_single_job
     app.state.execute_job_rerun = execute_job_rerun
     app.state.execute_batch_job = execute_batch_job
+    app.state.execute_batch_item_rerun = execute_batch_item_rerun
     app.state.execute_stage_run = execute_stage_run
     
     # Active jobs in-memory tracker
@@ -374,6 +391,41 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"读取子任务结果失败: {exc}") from exc
         return FileResponse(result_path, filename=result_path.name, media_type="text/markdown; charset=utf-8")
+
+    @app.post("/api/batches/{batch_id}/items/{item_job_id}/rerun", status_code=202)
+    async def post_batch_item_rerun(batch_id: str, item_job_id: str, request: JobRerunRequest) -> dict[str, str]:
+        state_path = app.state.batch_state_path(batch_id)
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail=f"batch 不存在: {batch_id}")
+
+        # 批量任务和子任务重跑都会写同一个 batch state 文件，必须串行化避免状态互相覆盖。
+        if batch_id in app.state.active_jobs:
+            raise HTTPException(status_code=400, detail="不能在批量任务运行中重跑子任务")
+        if item_job_id in app.state.active_jobs:
+            raise HTTPException(status_code=400, detail="不能重跑正在运行的子任务")
+
+        state = reconcile_state(read_json_file(state_path))
+        item = find_batch_state_item(state, item_job_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail=f"批量子任务不存在: {item_job_id}")
+        if not str(item.get("job_id") or "").strip():
+            raise HTTPException(status_code=400, detail="该批量子任务缺少 job_id，无法重跑")
+
+        item_status = str(item.get("status") or "")
+        if item_status not in {"success", "failed"}:
+            raise HTTPException(status_code=400, detail="只能重跑已成功或已失败的批量子任务")
+
+        app.state.active_jobs.add(batch_id)
+        app.state.active_jobs.add(item_job_id)
+        submit_task(
+            app,
+            app.state.execute_batch_item_rerun,
+            app=app,
+            batch_id=batch_id,
+            item_job_id=item_job_id,
+            payload=request.model_dump(),
+        )
+        return {"batch_id": batch_id, "job_id": item_job_id}
 
     @app.get("/api/batches")
     async def list_batches() -> dict[str, list[dict]]:

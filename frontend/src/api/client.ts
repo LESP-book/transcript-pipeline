@@ -370,6 +370,20 @@ export function rerunJob(jobId: string, payload: JobRerunPayload): Promise<{ job
   });
 }
 
+export function rerunBatchItem(
+  batchId: string,
+  itemJobId: string,
+  payload: JobRerunPayload,
+): Promise<{ batch_id: string; job_id: string }> {
+  return requestJson<{ batch_id: string; job_id: string }>(
+    `/api/batches/${encodeURIComponent(batchId)}/items/${encodeURIComponent(itemJobId)}/rerun`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
 export function deleteBatch(batchId: string): Promise<{ success: boolean }> {
   return requestJson<{ success: boolean }>(`/api/batches/${batchId}`, {
     method: "DELETE",

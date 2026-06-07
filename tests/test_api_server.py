@@ -988,6 +988,162 @@ def test_post_job_rerun_executes_selected_stage_suffix(tmp_path: Path, monkeypat
     assert Path(state["output_path"]).exists()
 
 
+def test_post_batch_item_rerun_executes_suffix_and_updates_batch_state(tmp_path: Path, monkeypatch) -> None:
+    from api_server import create_app
+    from src.config_loader import load_settings
+    from src.job_runner import build_batch_root, build_job_paths, write_job_settings
+
+    write_minimal_settings(tmp_path)
+    base_loaded_settings = load_settings(project_root=tmp_path)
+    batch_id = "batch-test-001"
+    job_id = "job-test-001"
+    job_paths = build_job_paths(tmp_path, job_id)
+    write_job_settings(
+        project_root=tmp_path,
+        loaded_settings=base_loaded_settings,
+        job_paths=job_paths,
+        profile_name="local_cpu",
+    )
+    (job_paths.manifest_path).write_text(
+        json.dumps(
+            {
+                "job_id": job_id,
+                "profile": "local_cpu",
+                "video_source": str(tmp_path / "lesson.mp4"),
+                "reference_source": str(tmp_path / "reference.txt"),
+                "output_dir": str(tmp_path / "deliverables"),
+                "book_name": "",
+                "chapter": "",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    batch_root = build_batch_root(tmp_path, batch_id)
+    batch_root.mkdir(parents=True, exist_ok=True)
+    (batch_root / "state.json").write_text(
+        json.dumps(
+            {
+                "id": batch_id,
+                "kind": "batch",
+                "status": "failed",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:40:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": str(batch_root / "summary.json"),
+                "total": 1,
+                "success": 0,
+                "failed": 1,
+                "items": [
+                    {
+                        "job_id": job_id,
+                        "mode": "paired-dir",
+                        "video_source": str(tmp_path / "lesson.mp4"),
+                        "reference_source": str(tmp_path / "reference.txt"),
+                        "output_dir": str(tmp_path / "deliverables"),
+                        "book_name": "",
+                        "chapter": "",
+                        "glossary_file": "",
+                        "status": "failed",
+                        "failed_stage": "refine",
+                        "error_message": "旧错误",
+                        "copied_output_path": "",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    called_stages: list[str] = []
+
+    def fake_run_stage(stage_name, job_loaded_settings, logger, backend_override=None) -> int:
+        _ = logger, backend_override
+        called_stages.append(stage_name)
+        if stage_name == "export-markdown":
+            final_dir = job_loaded_settings.path_for("final_dir")
+            final_dir.mkdir(parents=True, exist_ok=True)
+            (final_dir / "source.md").write_text("# 批量子任务重跑结果\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("src.web.tasks.run_stage", fake_run_stage)
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+
+    response = request_json(
+        app,
+        "POST",
+        f"/api/batches/{batch_id}/items/{job_id}/rerun",
+        json_body={"start_stage": "refine"},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"batch_id": batch_id, "job_id": job_id}
+    assert called_stages == ["refine", "export-markdown"]
+    state = json.loads((batch_root / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "success"
+    assert state["success"] == 1
+    assert state["failed"] == 0
+    assert state["items"][0]["status"] == "success"
+    assert state["items"][0]["failed_stage"] == ""
+    assert state["items"][0]["copied_output_path"].endswith("lesson.md")
+    assert Path(state["items"][0]["copied_output_path"]).exists()
+    summary = json.loads((batch_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["success"] == 1
+    assert summary["items"][0]["status"] == "success"
+    assert (batch_root / "item-reruns" / job_id / "state.json").exists()
+    assert not (job_paths.job_root / "state.json").exists()
+
+
+def test_post_batch_item_rerun_rejects_active_or_non_terminal_item(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    batch_id = "batch-test-001"
+    batch_dir = tmp_path / "data/jobs/batches" / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    (batch_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": batch_id,
+                "kind": "batch",
+                "status": "failed",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:40:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": "",
+                "items": [{"job_id": "job-a", "status": "pending"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+
+    response = request_json(
+        app,
+        "POST",
+        f"/api/batches/{batch_id}/items/job-a/rerun",
+        json_body={"start_stage": "refine"},
+    )
+
+    assert response.status_code == 400
+    assert "只能重跑已成功或已失败的批量子任务" in response.text
+
+    app.state.active_jobs.add(batch_id)
+    response = request_json(
+        app,
+        "POST",
+        f"/api/batches/{batch_id}/items/job-a/rerun",
+        json_body={"start_stage": "refine"},
+    )
+
+    assert response.status_code == 400
+    assert "不能在批量任务运行中重跑子任务" in response.text
+
+
 def test_post_batch_jobs_returns_batch_id_and_persists_state(tmp_path: Path) -> None:
     from api_server import create_app
 

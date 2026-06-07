@@ -9,6 +9,8 @@ from fastapi import FastAPI
 from scripts.run_pipeline import run_stage
 from src.config_loader import ConfigLoadError, load_settings
 from src.job_runner import (
+    BatchJobRuntime,
+    BatchJobSpec,
     BatchRunSummary,
     JobRunnerError,
     build_batch_root,
@@ -30,6 +32,7 @@ from src.web.frontend_settings import (
     load_frontend_settings,
 )
 from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageRunRequest
+from src.web.state_store import create_initial_state, read_json_file, write_json_file
 
 
 def first_text(*values: str | None) -> str | None:
@@ -83,6 +86,188 @@ def resolve_rerun_stages(raw_stages: list[str], start_stage: str) -> list[str]:
             f"无法从指定阶段重跑: {normalized_start_stage} 不在当前 job 流水线中，当前阶段为: {', '.join(stages)}"
         )
     return stages[stages.index(normalized_start_stage) :]
+
+
+def ensure_job_state_file(state_path: Path, job_id: str) -> None:
+    if state_path.exists():
+        return
+    write_json_file(state_path, create_initial_state(job_id, "job"))
+
+
+def batch_runtime_from_state_item(project_root: Path, item: dict[str, Any]) -> BatchJobRuntime:
+    job_id = str(item.get("job_id") or "")
+    spec = BatchJobSpec(
+        video=str(item.get("video_source") or ""),
+        reference=str(item.get("reference_source") or ""),
+        output_dir=str(item.get("output_dir") or ""),
+        mode=str(item.get("mode") or ""),
+        book_name=str(item.get("book_name") or "") or None,
+        chapter=str(item.get("chapter") or "") or None,
+        glossary_file=str(item.get("glossary_file") or "") or None,
+    )
+    copied_output_path = str(item.get("copied_output_path") or "").strip()
+    return BatchJobRuntime(
+        job_id=job_id,
+        job_root=build_job_paths(project_root, job_id).job_root,
+        spec=spec,
+        status=str(item.get("status") or "pending"),
+        failed_stage=str(item.get("failed_stage") or "") or None,
+        error_message=str(item.get("error_message") or "") or None,
+        copied_output_path=Path(copied_output_path) if copied_output_path else None,
+    )
+
+
+def rewrite_batch_summary_from_state(*, project_root: Path, batch_id: str, state: dict[str, Any]) -> None:
+    raw_items = state.get("items") or []
+    items = [
+        batch_runtime_from_state_item(project_root, item)
+        for item in raw_items
+        if isinstance(item, dict)
+    ]
+    write_batch_summary(
+        project_root=project_root,
+        summary=BatchRunSummary(
+            batch_id=batch_id,
+            total=len(items),
+            success=sum(1 for item in items if item.status == "success"),
+            failed=sum(1 for item in items if item.status == "failed"),
+            items=items,
+        ),
+    )
+
+
+def update_batch_item_state(
+    *,
+    app: FastAPI,
+    batch_id: str,
+    item_job_id: str,
+    item_changes: dict[str, Any],
+    batch_changes: dict[str, Any],
+) -> dict[str, Any]:
+    state_path = app.state.batch_state_path(batch_id)
+    state = read_json_file(state_path)
+    raw_items = state.get("items") or []
+    if not isinstance(raw_items, list):
+        raise JobRunnerError(f"batch 状态结构无效，items 不是列表: {batch_id}")
+
+    updated_items: list[Any] = []
+    found = False
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            updated_items.append(raw_item)
+            continue
+        if str(raw_item.get("job_id") or "") != item_job_id:
+            updated_items.append(raw_item)
+            continue
+        found = True
+        updated = dict(raw_item)
+        updated.update(item_changes)
+        updated_items.append(updated)
+
+    if not found:
+        raise JobRunnerError(f"批量子任务不存在: {item_job_id}")
+
+    success_count = sum(1 for item in updated_items if isinstance(item, dict) and item.get("status") == "success")
+    failed_count = sum(1 for item in updated_items if isinstance(item, dict) and item.get("status") == "failed")
+    requested_status = str(batch_changes.pop("status", "") or "")
+    next_status = "running" if requested_status == "running" else "success" if failed_count == 0 else "failed"
+    updated_state = app.state.update_state(
+        state_path,
+        status=next_status,
+        total=len(updated_items),
+        success=success_count,
+        failed=failed_count,
+        items=updated_items,
+        **batch_changes,
+    )
+    rewrite_batch_summary_from_state(project_root=app.state.project_root, batch_id=batch_id, state=updated_state)
+    return updated_state
+
+
+def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path) -> dict[str, Any]:
+    root = app.state.project_root
+    ensure_job_state_file(state_path, job_id)
+
+    try:
+        request = JobRerunRequest.model_validate(payload)
+        frontend_settings = load_frontend_settings(root)
+        effective_profile = first_text(request.profile, frontend_settings.profile)
+        effective_backend = first_text(request.backend, frontend_settings.backend)
+        job_paths = build_job_paths(root, job_id)
+        if not job_paths.settings_path.exists():
+            raise JobRunnerError(f"job 缺少生成配置，无法重跑: {job_paths.settings_path}")
+        if not job_paths.manifest_path.exists():
+            raise JobRunnerError(f"job 缺少 manifest，无法重跑: {job_paths.manifest_path}")
+
+        manifest = read_job_manifest(job_paths.manifest_path)
+        loaded_settings = load_settings(
+            settings_path=job_paths.settings_path,
+            profile_name=effective_profile or str(manifest.get("profile") or ""),
+            project_root=root,
+        )
+        apply_model_overrides(
+            loaded_settings,
+            ModelOverrides(
+                llm_model=request.model or frontend_settings.model or None,
+                llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+                ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
+                ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
+                ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
+            ),
+        )
+        raw_stages = loaded_settings.settings.pipeline.stages if loaded_settings.settings.pipeline else []
+        stages = resolve_rerun_stages(raw_stages, request.start_stage)
+        logger = setup_logging(loaded_settings.settings.runtime.log_level)
+
+        app.state.update_state(
+            state_path,
+            status="running",
+            current_stage=stages[0],
+            error_message="",
+            output_path="",
+        )
+        with codex_lb_environment(frontend_settings):
+            for stage_name in stages:
+                app.state.update_state(
+                    state_path,
+                    status="running",
+                    current_stage=stage_name,
+                )
+                current_backend = effective_backend if stage_name == "refine" else None
+                exit_code = run_stage(stage_name, loaded_settings, logger, backend_override=current_backend)
+                if exit_code != 0:
+                    raise JobRunnerError(f"job 重跑失败: stage={stage_name} exit_code={exit_code}")
+
+        output_path = stage_output_path(loaded_settings, stages[-1])
+        if "export-markdown" in stages:
+            output_dir = str(manifest.get("output_dir") or "").strip()
+            video_source = str(manifest.get("video_source") or "").strip()
+            if not output_dir or not video_source:
+                raise JobRunnerError("job manifest 缺少 output_dir 或 video_source，无法复制最终输出。")
+            _, copied_output_path = copy_final_output(
+                job_paths,
+                Path(output_dir).expanduser().resolve(),
+                build_final_output_filename(
+                    Path(video_source),
+                    book_name=str(manifest.get("book_name") or "") or None,
+                    chapter=str(manifest.get("chapter") or "") or None,
+                ),
+            )
+            output_path = str(copied_output_path)
+
+        app.state.update_state(
+            state_path,
+            status="success",
+            current_stage="done",
+            output_path=output_path,
+        )
+    except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
+        app.state.update_state(
+            state_path,
+            status="failed",
+            error_message=str(exc),
+        )
+    return read_json_file(state_path)
 
 
 def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
@@ -192,90 +377,99 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
 
 def execute_job_rerun(*, app: FastAPI, job_id: str, payload: dict) -> None:
     state_path = app.state.job_state_path(job_id)
-    root = app.state.project_root
 
     app.state.active_jobs.add(job_id)
     try:
-        request = JobRerunRequest.model_validate(payload)
-        frontend_settings = load_frontend_settings(root)
-        effective_profile = first_text(request.profile, frontend_settings.profile)
-        effective_backend = first_text(request.backend, frontend_settings.backend)
-        job_paths = build_job_paths(root, job_id)
-        if not job_paths.settings_path.exists():
-            raise JobRunnerError(f"job 缺少生成配置，无法重跑: {job_paths.settings_path}")
-        if not job_paths.manifest_path.exists():
-            raise JobRunnerError(f"job 缺少 manifest，无法重跑: {job_paths.manifest_path}")
-
-        manifest = read_job_manifest(job_paths.manifest_path)
-        loaded_settings = load_settings(
-            settings_path=job_paths.settings_path,
-            profile_name=effective_profile or str(manifest.get("profile") or ""),
-            project_root=root,
-        )
-        apply_model_overrides(
-            loaded_settings,
-            ModelOverrides(
-                llm_model=request.model or frontend_settings.model or None,
-                llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
-                ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
-                ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
-                ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
-            ),
-        )
-        raw_stages = loaded_settings.settings.pipeline.stages if loaded_settings.settings.pipeline else []
-        stages = resolve_rerun_stages(raw_stages, request.start_stage)
-        logger = setup_logging(loaded_settings.settings.runtime.log_level)
-
-        app.state.update_state(
-            state_path,
-            status="running",
-            current_stage=stages[0],
-            error_message="",
-            output_path="",
-        )
-        with codex_lb_environment(frontend_settings):
-            for stage_name in stages:
-                app.state.update_state(
-                    state_path,
-                    status="running",
-                    current_stage=stage_name,
-                )
-                current_backend = effective_backend if stage_name == "refine" else None
-                exit_code = run_stage(stage_name, loaded_settings, logger, backend_override=current_backend)
-                if exit_code != 0:
-                    raise JobRunnerError(f"job 重跑失败: stage={stage_name} exit_code={exit_code}")
-
-        output_path = stage_output_path(loaded_settings, stages[-1])
-        if "export-markdown" in stages:
-            output_dir = str(manifest.get("output_dir") or "").strip()
-            video_source = str(manifest.get("video_source") or "").strip()
-            if not output_dir or not video_source:
-                raise JobRunnerError("job manifest 缺少 output_dir 或 video_source，无法复制最终输出。")
-            _, copied_output_path = copy_final_output(
-                job_paths,
-                Path(output_dir).expanduser().resolve(),
-                build_final_output_filename(
-                    Path(video_source),
-                    book_name=str(manifest.get("book_name") or "") or None,
-                    chapter=str(manifest.get("chapter") or "") or None,
-                ),
-            )
-            output_path = str(copied_output_path)
-
-        app.state.update_state(
-            state_path,
-            status="success",
-            current_stage="done",
-            output_path=output_path,
-        )
-    except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
-        app.state.update_state(
-            state_path,
-            status="failed",
-            error_message=str(exc),
-        )
+        run_job_rerun(app=app, job_id=job_id, payload=payload, state_path=state_path)
     finally:
         app.state.active_jobs.discard(job_id)
+
+
+def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, payload: dict) -> None:
+    root = app.state.project_root
+    request = JobRerunRequest.model_validate(payload)
+    batch_root = build_batch_root(root, batch_id)
+    item_rerun_state_path = batch_root / "item-reruns" / item_job_id / "state.json"
+
+    app.state.active_jobs.add(batch_id)
+    app.state.active_jobs.add(item_job_id)
+    try:
+        update_batch_item_state(
+            app=app,
+            batch_id=batch_id,
+            item_job_id=item_job_id,
+            item_changes={
+                "status": "running",
+                "failed_stage": "",
+                "error_message": "",
+                "copied_output_path": "",
+            },
+            batch_changes={
+                "status": "running",
+                "current_stage": request.start_stage,
+                "error_message": "",
+            },
+        )
+        final_state = run_job_rerun(
+            app=app,
+            job_id=item_job_id,
+            payload=payload,
+            state_path=item_rerun_state_path,
+        )
+        final_status = str(final_state.get("status") or "")
+        if final_status == "success":
+            update_batch_item_state(
+                app=app,
+                batch_id=batch_id,
+                item_job_id=item_job_id,
+                item_changes={
+                    "status": "success",
+                    "failed_stage": "",
+                    "error_message": "",
+                    "copied_output_path": str(final_state.get("output_path") or ""),
+                },
+                batch_changes={
+                    "status": "success",
+                    "current_stage": "done",
+                    "error_message": "",
+                },
+            )
+            return
+
+        update_batch_item_state(
+            app=app,
+            batch_id=batch_id,
+            item_job_id=item_job_id,
+            item_changes={
+                "status": "failed",
+                "failed_stage": str(final_state.get("current_stage") or request.start_stage),
+                "error_message": str(final_state.get("error_message") or "子任务重跑失败"),
+                "copied_output_path": "",
+            },
+            batch_changes={
+                "status": "failed",
+                "current_stage": "done",
+            },
+        )
+    except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
+        update_batch_item_state(
+            app=app,
+            batch_id=batch_id,
+            item_job_id=item_job_id,
+            item_changes={
+                "status": "failed",
+                "failed_stage": request.start_stage,
+                "error_message": str(exc),
+                "copied_output_path": "",
+            },
+            batch_changes={
+                "status": "failed",
+                "current_stage": "done",
+            },
+        )
+    finally:
+        app.state.active_jobs.discard(item_job_id)
+        app.state.active_jobs.discard(batch_id)
 
 
 def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
