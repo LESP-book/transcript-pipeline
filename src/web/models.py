@@ -7,8 +7,9 @@ from pydantic import BaseModel, Field
 
 class SingleJobRequest(BaseModel):
     video: str
-    reference: str
+    reference: str | None = None
     output_dir: str
+    content_type: Literal["book_club", "conversation"] = "book_club"
     config: str | None = None
     profile: str | None = None
     backend: Literal["codex_api", "codex_cli", "gemini_cli", "both"] | None = None
@@ -29,6 +30,7 @@ class BatchJobRequest(BaseModel):
     reference_dir: str | None = None
     shared_reference: str | None = None
     output_dir: str | None = None
+    content_type: Literal["book_club", "conversation"] = "book_club"
     config: str | None = None
     profile: str | None = None
     backend: Literal["codex_api", "codex_cli", "gemini_cli", "both"] | None = None

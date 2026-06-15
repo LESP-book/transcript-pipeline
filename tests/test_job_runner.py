@@ -25,6 +25,7 @@ from src.job_runner import (
     run_batch_stage,
     run_single_job,
     write_job_settings,
+    prepare_batch_jobs,
 )
 from src.settings_overrides import ModelOverrides
 from tests.helpers import write_minimal_settings
@@ -70,6 +71,25 @@ def test_prepare_job_inputs_copies_local_pdf_with_canonical_basename(tmp_path: P
     assert prepared.video_path == job_paths.input_videos_dir / f"{CANONICAL_INPUT_BASENAME}.mp4"
     assert prepared.reference_path == job_paths.input_reference_dir / f"{CANONICAL_INPUT_BASENAME}.pdf"
     assert prepared.reference_path.exists()
+
+
+def test_prepare_job_inputs_conversation_copies_only_video(tmp_path: Path) -> None:
+    video_path = tmp_path / "conversation.mp4"
+    video_path.write_bytes(b"video")
+
+    job_paths = build_job_paths(tmp_path, "job-conversation-input")
+    prepared = prepare_job_inputs(
+        video_source=video_path,
+        reference_source=None,
+        job_paths=job_paths,
+        content_type="conversation",
+    )
+
+    assert prepared.reference_type == "none"
+    assert prepared.video_path == job_paths.input_videos_dir / f"{CANONICAL_INPUT_BASENAME}.mp4"
+    assert prepared.reference_path is None
+    assert prepared.video_path.exists()
+    assert list(job_paths.input_reference_dir.iterdir()) == []
 
 
 def test_fetch_reference_from_url_extracts_html_to_txt(
@@ -214,6 +234,30 @@ def test_write_job_settings_applies_custom_refine_prompt(tmp_path: Path) -> None
     assert payload["prompts"]["final_cleanup"] == str(custom_prompt_path)
     assert custom_prompt_path.read_text(encoding="utf-8") == "# 自定义阶段六指令\n\n请保留读书会问答原话。\n"
     assert load_markdown_assemble_prompt(job_loaded_settings) == "# 自定义阶段六指令\n\n请保留读书会问答原话。"
+
+
+def test_write_job_settings_conversation_disables_reference_and_skips_prepare_reference(tmp_path: Path) -> None:
+    from src.refine_utils import load_markdown_assemble_prompt
+
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    job_paths = build_job_paths(tmp_path, "job-conversation-settings")
+
+    settings_path = write_job_settings(
+        project_root=tmp_path,
+        loaded_settings=loaded_settings,
+        job_paths=job_paths,
+        profile_name="local_cpu",
+        content_type="conversation",
+    )
+
+    payload = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+    job_loaded_settings = load_settings(settings_path=settings_path, project_root=tmp_path)
+
+    assert payload["reference"]["enabled"] is False
+    assert payload["pipeline"]["stages"] == ["extract_audio", "transcribe", "refine", "export_markdown"]
+    assert "prepare_reference" not in payload["pipeline"]["stages"]
+    assert load_markdown_assemble_prompt(job_loaded_settings) == "# test conversation cleanup"
 
 
 def test_build_job_initial_prompt_includes_title_and_extra_glossary(tmp_path: Path) -> None:
@@ -466,10 +510,49 @@ def test_load_batch_job_specs_supports_shared_reference_mode(tmp_path: Path) -> 
     assert all(Path(spec.reference) == shared_reference.resolve() for spec in specs)
 
 
+def test_load_batch_job_specs_supports_conversation_directory_mode(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    videos_dir = tmp_path / "videos"
+    reference_dir = tmp_path / "reference"
+    output_dir = tmp_path / "deliverables"
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    (videos_dir / "talk-a.mp4").write_bytes(b"video-a")
+    (videos_dir / "talk-b.webm").write_bytes(b"video-b")
+    (reference_dir / "talk-a.txt").write_text("不应被读取的参考", encoding="utf-8")
+
+    specs, failed_items = load_batch_job_specs(
+        base_loaded_settings=loaded_settings,
+        videos_dir=str(videos_dir),
+        output_dir=str(output_dir),
+        content_type="conversation",
+    )
+
+    assert len(specs) == 2
+    assert failed_items == []
+    assert all(spec.mode == "conversation-dir" for spec in specs)
+    assert all(spec.content_type == "conversation" for spec in specs)
+    assert all(spec.reference in (None, "") for spec in specs)
+    assert {Path(spec.video).name for spec in specs} == {"talk-a.mp4", "talk-b.webm"}
+
+
 def test_run_batch_stage_uses_limited_concurrency_for_remote_stages(tmp_path: Path, monkeypatch) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    job_paths = build_job_paths(tmp_path, "job-a")
+    write_job_settings(
+        project_root=tmp_path,
+        loaded_settings=loaded_settings,
+        job_paths=job_paths,
+        profile_name="local_cpu",
+    )
     runtime = BatchJobRuntime(
         job_id="job-a",
-        job_root=tmp_path / "data/jobs/job-a",
+        job_root=job_paths.job_root,
         spec=BatchJobSpec(
             video=str((tmp_path / "lesson-a.mp4").resolve()),
             reference=str((tmp_path / "lesson-a.txt").resolve()),
@@ -494,6 +577,54 @@ def test_run_batch_stage_uses_limited_concurrency_for_remote_stages(tmp_path: Pa
     )
 
     assert calls == [("prepare-reference", 3, ["job-a"])]
+
+
+def test_run_batch_stage_skips_prepare_reference_for_conversation_runtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    video_path = tmp_path / "talk.mp4"
+    output_dir = tmp_path / "deliverables"
+    video_path.write_bytes(b"video")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    runtimes = prepare_batch_jobs(
+        project_root=tmp_path,
+        base_loaded_settings=loaded_settings,
+        job_specs=[
+            BatchJobSpec(
+                video=str(video_path),
+                reference=None,
+                output_dir=str(output_dir),
+                mode="conversation-dir",
+                content_type="conversation",
+            )
+        ],
+    )
+    calls: list[str] = []
+
+    def fake_run_jobs_with_limited_concurrency(*, stage_name, **_kwargs) -> None:
+        calls.append(stage_name)
+
+    monkeypatch.setattr("src.job_runner.run_jobs_with_limited_concurrency", fake_run_jobs_with_limited_concurrency)
+
+    run_batch_stage(
+        stage_name="prepare-reference",
+        runtimes=runtimes,
+        project_root=tmp_path,
+        logger=logging.getLogger("test-batch"),
+        remote_concurrency=3,
+    )
+    run_batch_stage(
+        stage_name="refine",
+        runtimes=runtimes,
+        project_root=tmp_path,
+        logger=logging.getLogger("test-batch"),
+        remote_concurrency=3,
+    )
+
+    assert calls == ["refine"]
 
 
 def test_run_batch_jobs_marks_failed_stage_skips_later_stages_and_records_output(

@@ -26,6 +26,10 @@ from src.settings_overrides import ModelOverrides, SettingsOverrideError, apply_
 
 CANONICAL_INPUT_BASENAME = "source"
 WEB_REQUEST_TIMEOUT_SECONDS = 60
+CONTENT_TYPE_BOOK_CLUB = "book_club"
+CONTENT_TYPE_CONVERSATION = "conversation"
+SUPPORTED_CONTENT_TYPES = {CONTENT_TYPE_BOOK_CLUB, CONTENT_TYPE_CONVERSATION}
+CONVERSATION_PIPELINE_STAGES = ["extract_audio", "transcribe", "refine", "export_markdown"]
 
 
 class JobRunnerError(RuntimeError):
@@ -51,7 +55,7 @@ class JobPaths:
 @dataclass(frozen=True)
 class JobPreparedInputs:
     video_path: Path
-    reference_path: Path
+    reference_path: Path | None
     reference_type: str
 
 
@@ -67,9 +71,10 @@ class JobResult:
 @dataclass(frozen=True)
 class BatchJobSpec:
     video: str
-    reference: str
+    reference: str | None
     output_dir: str
     mode: str
+    content_type: str = CONTENT_TYPE_BOOK_CLUB
     book_name: str | None = None
     chapter: str | None = None
     glossary_file: str | None = None
@@ -184,6 +189,22 @@ def supported_reference_extensions() -> tuple[str, ...]:
     return (".txt", ".md", ".pdf")
 
 
+def normalize_content_type(content_type: str | None) -> str:
+    normalized = (content_type or CONTENT_TYPE_BOOK_CLUB).strip().lower().replace("-", "_")
+    if normalized not in SUPPORTED_CONTENT_TYPES:
+        supported = ", ".join(sorted(SUPPORTED_CONTENT_TYPES))
+        raise JobRunnerError(f"不支持的 content_type: {content_type}。当前支持: {supported}")
+    return normalized
+
+
+def validate_reference_contract(*, content_type: str, reference: str | None, field_name: str = "reference") -> None:
+    normalized_reference = (reference or "").strip()
+    if content_type == CONTENT_TYPE_BOOK_CLUB and not normalized_reference:
+        raise JobRunnerError(f"读书会模式缺少必填字段: {field_name}")
+    if content_type == CONTENT_TYPE_CONVERSATION and normalized_reference:
+        raise JobRunnerError(f"对谈模式不使用 {field_name}，请移除参考源或切换 content_type。")
+
+
 def build_failed_batch_runtime(
     *,
     spec: BatchJobSpec,
@@ -202,6 +223,37 @@ def build_failed_batch_runtime(
     )
 
 
+def runtime_stage_names(runtime: BatchJobRuntime, project_root: Path) -> tuple[str, ...]:
+    loaded_settings = load_settings(
+        settings_path=runtime.job_root / "settings.generated.yaml",
+        project_root=project_root,
+    )
+    raw_stages = loaded_settings.settings.pipeline.stages if loaded_settings.settings.pipeline else []
+    return tuple(normalize_stage_name(stage_name) for stage_name in raw_stages)
+
+
+def batch_stage_sequence_for_runtimes(runtimes: list[BatchJobRuntime], project_root: Path) -> list[str]:
+    stages: list[str] = []
+    for runtime in runtimes:
+        if runtime.status == "failed" or not runtime.job_root:
+            continue
+        settings_path = runtime.job_root / "settings.generated.yaml"
+        if not settings_path.exists():
+            continue
+        for stage_name in runtime_stage_names(runtime, project_root):
+            if stage_name not in stages:
+                stages.append(stage_name)
+    return stages
+
+
+def remote_pipeline_stages_for_runtime(runtime: BatchJobRuntime, project_root: Path) -> tuple[str, ...]:
+    return tuple(
+        stage_name
+        for stage_name in runtime_stage_names(runtime, project_root)
+        if stage_name not in {"extract-audio", "transcribe"}
+    )
+
+
 def resolve_local_path_string(raw_path: str) -> str:
     if not raw_path.strip():
         return ""
@@ -212,17 +264,25 @@ def resolve_batch_job_spec(
     *,
     mode: str,
     video: str,
-    reference: str,
+    reference: str | None,
     output_dir: str,
     book_name: str | None,
     chapter: str | None,
     glossary_file: str | None,
+    content_type: str | None = None,
 ) -> BatchJobSpec:
+    normalized_content_type = normalize_content_type(content_type)
+    normalized_reference = (reference or "").strip()
     return BatchJobSpec(
         video=resolve_local_path_string(video),
-        reference=reference if not reference or is_url_reference(reference) else resolve_local_path_string(reference),
+        reference=(
+            normalized_reference
+            if not normalized_reference or is_url_reference(normalized_reference)
+            else resolve_local_path_string(normalized_reference)
+        ),
         output_dir=resolve_local_path_string(output_dir),
         mode=mode,
+        content_type=normalized_content_type,
         book_name=book_name,
         chapter=chapter,
         glossary_file=resolve_local_path_string(glossary_file or "") or None,
@@ -255,24 +315,35 @@ def parse_manifest_jobs(manifest_path: Path) -> list[dict[str, Any]]:
 def validate_manifest_job_entry(
     *,
     item: dict[str, Any],
+    default_content_type: str | None,
     default_book_name: str | None,
     default_chapter: str | None,
     default_glossary_file: str | None,
 ) -> BatchJobSpec:
-    allowed_fields = {"video", "reference", "output_dir", "book_name", "chapter", "glossary_file"}
+    allowed_fields = {"video", "reference", "output_dir", "content_type", "book_name", "chapter", "glossary_file"}
     unknown_fields = sorted(set(item) - allowed_fields)
     if unknown_fields:
         raise JobRunnerError(f"包含非法字段: {', '.join(unknown_fields)}")
 
-    missing_fields = [field_name for field_name in ("video", "reference", "output_dir") if not str(item.get(field_name, "")).strip()]
+    content_type = normalize_content_type(str(item.get("content_type") or default_content_type or CONTENT_TYPE_BOOK_CLUB))
+    required_fields = ["video", "output_dir"]
+    if content_type == CONTENT_TYPE_BOOK_CLUB:
+        required_fields.append("reference")
+    missing_fields = [field_name for field_name in required_fields if not str(item.get(field_name, "")).strip()]
     if missing_fields:
         raise JobRunnerError(f"缺少必填字段: {', '.join(missing_fields)}")
+    validate_reference_contract(
+        content_type=content_type,
+        reference=str(item.get("reference") or ""),
+        field_name="reference",
+    )
 
     return resolve_batch_job_spec(
         mode="manifest",
         video=str(item["video"]),
-        reference=str(item["reference"]),
+        reference=str(item.get("reference") or ""),
         output_dir=str(item["output_dir"]),
+        content_type=content_type,
         book_name=str(item["book_name"]).strip() if item.get("book_name") else default_book_name,
         chapter=str(item["chapter"]).strip() if item.get("chapter") else default_chapter,
         glossary_file=str(item["glossary_file"]).strip() if item.get("glossary_file") else default_glossary_file,
@@ -327,19 +398,29 @@ def load_batch_job_specs(
     reference_dir: str | None = None,
     shared_reference: str | None = None,
     output_dir: str | None = None,
+    content_type: str | None = None,
     book_name: str | None = None,
     chapter: str | None = None,
     glossary_file: str | None = None,
 ) -> tuple[list[BatchJobSpec], list[BatchJobRuntime]]:
+    normalized_content_type = normalize_content_type(content_type)
+    if normalized_content_type == CONTENT_TYPE_CONVERSATION and (reference_dir or shared_reference):
+        raise JobRunnerError("对谈模式不使用 reference_dir 或 shared_reference，请只提供 videos_dir 与 output_dir。")
+
     input_mode_count = sum(
         [
             1 if manifest else 0,
-            1 if videos_dir and reference_dir and output_dir else 0,
-            1 if videos_dir and shared_reference and output_dir else 0,
+            1
+            if normalized_content_type == CONTENT_TYPE_BOOK_CLUB and videos_dir and reference_dir and output_dir
+            else 0,
+            1
+            if normalized_content_type == CONTENT_TYPE_BOOK_CLUB and videos_dir and shared_reference and output_dir
+            else 0,
+            1 if normalized_content_type == CONTENT_TYPE_CONVERSATION and videos_dir and output_dir else 0,
         ]
     )
     if input_mode_count != 1:
-        raise JobRunnerError("批量入口参数无效：必须且只能选择 manifest、目录配对、共享参考 三种输入模式之一。")
+        raise JobRunnerError("批量入口参数无效：必须且只能选择 manifest、目录配对、共享参考、对谈目录 四种输入模式之一。")
 
     specs: list[BatchJobSpec] = []
     failed_items: list[BatchJobRuntime] = []
@@ -350,6 +431,7 @@ def load_batch_job_specs(
             try:
                 spec = validate_manifest_job_entry(
                     item=item,
+                    default_content_type=normalized_content_type,
                     default_book_name=book_name,
                     default_chapter=chapter,
                     default_glossary_file=glossary_file,
@@ -360,8 +442,9 @@ def load_batch_job_specs(
                         spec=resolve_batch_job_spec(
                             mode="manifest",
                             video=str(item.get("video", "")),
-                            reference=str(item.get("reference", "")),
+                            reference=str(item.get("reference") or ""),
                             output_dir=str(item.get("output_dir", "")),
+                            content_type=normalized_content_type,
                             book_name=str(item.get("book_name", "")).strip() or book_name,
                             chapter=str(item.get("chapter", "")).strip() or chapter,
                             glossary_file=str(item.get("glossary_file", "")).strip() or glossary_file,
@@ -401,6 +484,7 @@ def load_batch_job_specs(
                                 video=str(video_path),
                                 reference="",
                                 output_dir=str(output_path),
+                                content_type=CONTENT_TYPE_BOOK_CLUB,
                                 book_name=book_name,
                                 chapter=chapter,
                                 glossary_file=glossary_file,
@@ -418,6 +502,7 @@ def load_batch_job_specs(
                                 video=str(video_path),
                                 reference="",
                                 output_dir=str(output_path),
+                                content_type=CONTENT_TYPE_BOOK_CLUB,
                                 book_name=book_name,
                                 chapter=chapter,
                                 glossary_file=glossary_file,
@@ -434,6 +519,22 @@ def load_batch_job_specs(
                         video=str(video_path),
                         reference=str(matched_reference),
                         output_dir=str(output_path),
+                        content_type=CONTENT_TYPE_BOOK_CLUB,
+                        book_name=book_name,
+                        chapter=chapter,
+                        glossary_file=glossary_file,
+                    )
+                )
+                continue
+
+            if normalized_content_type == CONTENT_TYPE_CONVERSATION:
+                specs.append(
+                    resolve_batch_job_spec(
+                        mode="conversation-dir",
+                        video=str(video_path),
+                        reference=None,
+                        output_dir=str(output_path),
+                        content_type=CONTENT_TYPE_CONVERSATION,
                         book_name=book_name,
                         chapter=chapter,
                         glossary_file=glossary_file,
@@ -449,6 +550,7 @@ def load_batch_job_specs(
                     video=str(video_path),
                     reference=shared_reference,
                     output_dir=str(output_path),
+                    content_type=CONTENT_TYPE_BOOK_CLUB,
                     book_name=book_name,
                     chapter=chapter,
                     glossary_file=glossary_file,
@@ -570,19 +672,31 @@ def fetch_reference_from_url(reference_url: str, destination_dir: Path, basename
 def prepare_job_inputs(
     *,
     video_source: Path,
-    reference_source: str,
+    reference_source: str | None,
     job_paths: JobPaths,
+    content_type: str | None = None,
 ) -> JobPreparedInputs:
+    normalized_content_type = normalize_content_type(content_type)
     if not video_source.exists():
         raise JobRunnerError(f"视频源不存在: {video_source}")
 
     video_destination = job_paths.input_videos_dir / f"{CANONICAL_INPUT_BASENAME}{video_source.suffix.lower()}"
     shutil.copy2(video_source, video_destination)
 
-    reference_type = detect_reference_source_type(reference_source)
+    if normalized_content_type == CONTENT_TYPE_CONVERSATION:
+        validate_reference_contract(content_type=normalized_content_type, reference=reference_source)
+        return JobPreparedInputs(
+            video_path=video_destination,
+            reference_path=None,
+            reference_type="none",
+        )
+
+    validate_reference_contract(content_type=normalized_content_type, reference=reference_source)
+    normalized_reference_source = str(reference_source or "").strip()
+    reference_type = detect_reference_source_type(normalized_reference_source)
     if reference_type == "url":
         reference_destination, resolved_reference_type = fetch_reference_from_url(
-            reference_source,
+            normalized_reference_source,
             job_paths.input_reference_dir,
             CANONICAL_INPUT_BASENAME,
         )
@@ -592,7 +706,7 @@ def prepare_job_inputs(
             reference_type=resolved_reference_type,
         )
 
-    local_reference_path = Path(reference_source)
+    local_reference_path = Path(normalized_reference_source)
     reference_destination = job_paths.input_reference_dir / f"{CANONICAL_INPUT_BASENAME}{local_reference_path.suffix.lower()}"
     return JobPreparedInputs(
         video_path=video_destination,
@@ -636,12 +750,14 @@ def write_job_settings(
     loaded_settings: LoadedSettings,
     job_paths: JobPaths,
     profile_name: str,
+    content_type: str | None = None,
     glossary_file: str | None = None,
     book_name: str | None = None,
     chapter: str | None = None,
     model_overrides: ModelOverrides | None = None,
     refine_prompt: str | None = None,
 ) -> Path:
+    normalized_content_type = normalize_content_type(content_type)
     payload = load_raw_settings(loaded_settings)
     try:
         apply_model_overrides_to_raw_settings(payload, model_overrides or ModelOverrides())
@@ -656,6 +772,15 @@ def write_job_settings(
         book_name=book_name,
         chapter=chapter,
     )
+    if normalized_content_type == CONTENT_TYPE_CONVERSATION:
+        reference_payload = payload.setdefault("reference", {})
+        if not isinstance(reference_payload, dict):
+            raise JobRunnerError("配置字段 reference 必须是对象，无法写入对谈模式。")
+        reference_payload["enabled"] = False
+        pipeline_payload = payload.setdefault("pipeline", {})
+        if not isinstance(pipeline_payload, dict):
+            raise JobRunnerError("配置字段 pipeline 必须是对象，无法写入对谈模式。")
+        pipeline_payload["stages"] = list(CONVERSATION_PIPELINE_STAGES)
 
     payload["paths"] = {
         "videos_dir": str(job_paths.input_videos_dir),
@@ -678,6 +803,11 @@ def write_job_settings(
         for key, value in list(prompts.items()):
             prompts[key] = str(loaded_settings.resolve_path(str(value)))
         normalized_refine_prompt = (refine_prompt or "").strip()
+        if normalized_content_type == CONTENT_TYPE_CONVERSATION and not normalized_refine_prompt:
+            conversation_prompt = str(prompts.get("conversation_cleanup") or "").strip()
+            if not conversation_prompt:
+                raise JobRunnerError("对谈模式缺少阶段 6 提示词配置: prompts.conversation_cleanup")
+            prompts["final_cleanup"] = conversation_prompt
         if normalized_refine_prompt:
             prompt_dir = job_paths.job_root / "config/prompts"
             custom_prompt_path = prompt_dir / "final_cleanup.md"
@@ -688,6 +818,8 @@ def write_job_settings(
                 raise JobRunnerError(f"无法写入阶段 6 自定义指令文件: {custom_prompt_path} | {exc}") from exc
             prompts["final_cleanup"] = str(custom_prompt_path)
         payload["prompts"] = prompts
+    elif normalized_content_type == CONTENT_TYPE_CONVERSATION and not (refine_prompt or "").strip():
+        raise JobRunnerError("对谈模式缺少阶段 6 提示词配置: prompts.conversation_cleanup")
 
     try:
         job_paths.settings_path.write_text(
@@ -706,21 +838,28 @@ def write_job_manifest(
     job_paths: JobPaths,
     prepared_inputs: JobPreparedInputs,
     video_source: Path,
-    reference_source: str,
+    reference_source: str | None,
     output_dir: Path,
     profile_name: str,
+    content_type: str | None,
     book_name: str | None,
     chapter: str | None,
     glossary_file: str | None,
 ) -> None:
+    normalized_content_type = normalize_content_type(content_type)
     payload = {
         "job_id": job_paths.job_id,
         "profile": profile_name,
+        "content_type": normalized_content_type,
         "video_source": str(video_source.resolve()),
-        "reference_source": reference_source,
+        "reference_source": reference_source or "",
         "reference_type": prepared_inputs.reference_type,
         "prepared_video": relativize_path(prepared_inputs.video_path, loaded_settings.project_root),
-        "prepared_reference": relativize_path(prepared_inputs.reference_path, loaded_settings.project_root),
+        "prepared_reference": (
+            relativize_path(prepared_inputs.reference_path, loaded_settings.project_root)
+            if prepared_inputs.reference_path is not None
+            else None
+        ),
         "output_dir": str(output_dir.resolve()),
         "book_name": book_name or "",
         "chapter": chapter or "",
@@ -771,12 +910,14 @@ def prepare_batch_jobs(
                 video_source=Path(spec.video),
                 reference_source=spec.reference,
                 job_paths=job_paths,
+                content_type=spec.content_type,
             )
             write_job_settings(
                 project_root=project_root,
                 loaded_settings=base_loaded_settings,
                 job_paths=job_paths,
                 profile_name=profile_name,
+                content_type=spec.content_type,
                 glossary_file=spec.glossary_file,
                 book_name=spec.book_name,
                 chapter=spec.chapter,
@@ -791,6 +932,7 @@ def prepare_batch_jobs(
                 reference_source=spec.reference,
                 output_dir=Path(spec.output_dir),
                 profile_name=profile_name,
+                content_type=spec.content_type,
                 book_name=spec.book_name,
                 chapter=spec.chapter,
                 glossary_file=spec.glossary_file,
@@ -895,7 +1037,7 @@ def execute_remote_pipeline_for_runtime(
     logger: logging.Logger,
     backend_override: str | None = None,
 ) -> None:
-    for stage_name in ("prepare-reference", "refine", "export-markdown"):
+    for stage_name in remote_pipeline_stages_for_runtime(runtime, project_root):
         execute_batch_stage_for_runtime(
             stage_name=stage_name,
             runtime=runtime,
@@ -916,7 +1058,11 @@ def run_batch_stage(
     remote_concurrency: int,
     backend_override: str | None = None,
 ) -> None:
-    active_runtimes = [runtime for runtime in runtimes if runtime.status != "failed"]
+    active_runtimes = [
+        runtime
+        for runtime in runtimes
+        if runtime.status != "failed" and stage_name in runtime_stage_names(runtime, project_root)
+    ]
     if not active_runtimes:
         return
 
@@ -945,8 +1091,9 @@ def serialize_batch_runtime(runtime: BatchJobRuntime) -> dict[str, Any]:
     return {
         "job_id": runtime.job_id,
         "mode": runtime.spec.mode,
+        "content_type": runtime.spec.content_type,
         "video_source": runtime.spec.video,
-        "reference_source": runtime.spec.reference,
+        "reference_source": runtime.spec.reference or "",
         "output_dir": runtime.spec.output_dir,
         "book_name": runtime.spec.book_name or "",
         "chapter": runtime.spec.chapter or "",
@@ -971,8 +1118,9 @@ def write_batch_summary(
             {
                 "job_id": item.job_id,
                 "mode": item.spec.mode,
+                "content_type": item.spec.content_type,
                 "video_source": item.spec.video,
-                "reference_source": item.spec.reference,
+                "reference_source": item.spec.reference or "",
                 "output_dir": item.spec.output_dir,
                 "book_name": item.spec.book_name or "",
                 "chapter": item.spec.chapter or "",
@@ -1004,8 +1152,9 @@ def write_batch_summary(
         lines.append(f"## {item.job_id or 'invalid'}")
         lines.append(f"- status: {item.status}")
         lines.append(f"- mode: {item.spec.mode}")
+        lines.append(f"- content_type: {item.spec.content_type}")
         lines.append(f"- video: {item.spec.video}")
-        lines.append(f"- reference: {item.spec.reference}")
+        lines.append(f"- reference: {item.spec.reference or '无'}")
         lines.append(f"- failed_stage: {item.failed_stage or ''}")
         lines.append(f"- copied_output_path: {item.copied_output_path or ''}")
         lines.append(f"- error_message: {item.error_message or ''}")
@@ -1113,8 +1262,9 @@ def run_single_job(
     project_root: Path,
     base_loaded_settings: LoadedSettings,
     video: str,
-    reference: str,
+    reference: str | None,
     output_dir: str,
+    content_type: str | None = None,
     profile: str | None = None,
     backend: str | None = None,
     model: str | None = None,
@@ -1126,6 +1276,7 @@ def run_single_job(
     glossary_file: str | None = None,
     refine_prompt: str | None = None,
 ) -> JobResult:
+    normalized_content_type = normalize_content_type(content_type)
     video_source = Path(video).expanduser().resolve()
     output_path = Path(output_dir).expanduser().resolve()
     profile_name = profile or base_loaded_settings.active_profile_name
@@ -1135,6 +1286,7 @@ def run_single_job(
         video_source=video_source,
         reference_source=reference,
         job_paths=job_paths,
+        content_type=normalized_content_type,
     )
 
     generated_settings_path = write_job_settings(
@@ -1142,6 +1294,7 @@ def run_single_job(
         loaded_settings=base_loaded_settings,
         job_paths=job_paths,
         profile_name=profile_name,
+        content_type=normalized_content_type,
         glossary_file=glossary_file,
         book_name=book_name,
         chapter=chapter,
@@ -1161,6 +1314,7 @@ def run_single_job(
         reference_source=reference,
         output_dir=output_path,
         profile_name=profile_name,
+        content_type=normalized_content_type,
         book_name=book_name,
         chapter=chapter,
         glossary_file=glossary_file,
@@ -1176,7 +1330,12 @@ def run_single_job(
         raise JobRunnerError(f"job 配置加载失败: {generated_settings_path} | {exc}") from exc
 
     logger = setup_logging(job_loaded_settings.settings.runtime.log_level)
-    logger.info("job 启动 | job_id=%s | reference_type=%s", job_id, prepared_inputs.reference_type)
+    logger.info(
+        "job 启动 | job_id=%s | content_type=%s | reference_type=%s",
+        job_id,
+        normalized_content_type,
+        prepared_inputs.reference_type,
+    )
     run_job_pipeline(job_loaded_settings, logger, backend_override=backend)
 
     final_source_path, copied_output_path = copy_final_output(

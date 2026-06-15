@@ -52,6 +52,7 @@ def test_get_config_returns_profiles_and_backends(tmp_path: Path) -> None:
         "reference_extensions": [".txt", ".md", ".pdf"],
         "default_output_dir": str(tmp_path / "data/output/final"),
         "upload_dir": str(tmp_path / "data/uploads"),
+        "content_types": ["book_club", "conversation"],
     }
 
 
@@ -63,6 +64,21 @@ def test_get_refine_default_instruction_returns_configured_prompt(tmp_path: Path
 
     assert response.status_code == 200
     assert response.json()["prompt"] == "# test final cleanup"
+
+
+def test_get_refine_default_instruction_returns_conversation_prompt(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    response = request_json(
+        create_app(project_root=tmp_path),
+        "GET",
+        "/api/refine-default-instruction",
+        params={"content_type": "conversation"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["prompt"] == "# test conversation cleanup"
 
 
 def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkeypatch) -> None:
@@ -739,8 +755,48 @@ def test_post_job_returns_job_id_and_persists_state(tmp_path: Path) -> None:
     assert state["status"] == "success"
     assert state["output_path"].endswith("final.md")
     assert state["input_summary"] == {
+        "content_type": "book_club",
         "video_source": str(tmp_path / "lesson.mp4"),
         "reference_source": str(tmp_path / "chapter.txt"),
+        "output_dir": str(tmp_path / "deliverables"),
+    }
+
+
+def test_post_conversation_job_allows_missing_reference(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+
+    def fake_execute_single_job(*, app, job_id: str, payload: dict) -> None:
+        assert payload["content_type"] == "conversation"
+        assert payload.get("reference") is None
+        app.state.update_state(
+            app.state.job_state_path(job_id),
+            status="success",
+            current_stage="done",
+            output_path=str(tmp_path / "deliverables/final.md"),
+        )
+
+    app.state.execute_single_job = fake_execute_single_job
+
+    response = request_json(
+        app,
+        "POST",
+        "/api/jobs",
+        json_body={
+            "video": str(tmp_path / "conversation.mp4"),
+            "output_dir": str(tmp_path / "deliverables"),
+            "content_type": "conversation",
+        },
+    )
+
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    state = json.loads((tmp_path / "data/jobs" / job_id / "state.json").read_text(encoding="utf-8"))
+    assert state["input_summary"] == {
+        "content_type": "conversation",
+        "video_source": str(tmp_path / "conversation.mp4"),
         "output_dir": str(tmp_path / "deliverables"),
     }
 
@@ -1176,7 +1232,7 @@ def test_post_batch_jobs_returns_batch_id_and_persists_state(tmp_path: Path) -> 
     state = json.loads((tmp_path / "data/jobs/batches" / batch_id / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "success"
     assert state["items"][0]["job_id"] == "job-a"
-    assert state["input_summary"] == {"manifest": str(tmp_path / "jobs.yaml")}
+    assert state["input_summary"] == {"content_type": "book_club", "manifest": str(tmp_path / "jobs.yaml")}
 
 
 def test_execute_batch_job_passes_custom_refine_prompt_to_prepared_jobs(tmp_path: Path, monkeypatch) -> None:

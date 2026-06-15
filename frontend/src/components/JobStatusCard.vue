@@ -196,6 +196,7 @@ function itemStatusType(rawStatus?: string): "success" | "error" | "info" | "war
 
 const videoSource = computed(() => firstNonEmpty(summaryField("video_source")));
 const referenceSource = computed(() => firstNonEmpty(summaryField("reference_source")));
+const contentType = computed(() => firstNonEmpty(summaryField("content_type")));
 const outputDir = computed(() => firstNonEmpty(summaryField("output_dir")));
 const manifestSource = computed(() => firstNonEmpty(summaryField("manifest")));
 const videosDir = computed(() => firstNonEmpty(summaryField("videos_dir")));
@@ -275,10 +276,16 @@ function makeIdentityEntry(label: string, rawValue: unknown, displayValue?: stri
 const identityEntries = computed<IdentityEntry[]>(() => {
   const entries: Array<IdentityEntry | null> = [];
   if (kind.value === "job") {
+    entries.push(makeIdentityEntry("内容类型", contentType.value, contentType.value));
     entries.push(makeIdentityEntry("原始视频", videoSource.value));
-    entries.push(makeIdentityEntry("参考源", referenceSource.value));
+    entries.push(
+      contentType.value === "conversation" && !referenceSource.value
+        ? { label: "参考源", value: "无", fullValue: "无" }
+        : makeIdentityEntry("参考源", referenceSource.value)
+    );
     entries.push(makeIdentityEntry("输出目录", outputDir.value, outputDir.value));
   } else if (kind.value === "batch") {
+    entries.push(makeIdentityEntry("内容类型", contentType.value, contentType.value));
     entries.push(makeIdentityEntry("批量目录", videosDir.value));
     entries.push(makeIdentityEntry("批量清单", manifestSource.value));
     entries.push(makeIdentityEntry("参考目录", referenceDir.value));
@@ -676,7 +683,8 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
                 <div class="batch-item-main">
                   <strong>{{ batchItemTitle(item, index) }}</strong>
                   <span v-if="item.job_id" class="batch-item-id">任务 ID：{{ item.job_id }}</span>
-                  <span v-if="item.reference_source">参考源：{{ displaySourceName(item.reference_source) }}</span>
+                  <span v-if="item.content_type === 'conversation' && !item.reference_source">参考源：无</span>
+                  <span v-else-if="item.reference_source">参考源：{{ displaySourceName(item.reference_source) }}</span>
                   <span v-if="item.output_dir">输出目录：{{ item.output_dir }}</span>
                   <span v-if="item.failed_stage" class="batch-item-muted">失败阶段：{{ item.failed_stage }}</span>
                   <p v-if="item.error_message" class="batch-item-error">{{ item.error_message }}</p>
@@ -731,8 +739,8 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
               <n-descriptions-item v-if="videoSource" label="原始视频" :span="2">
                 <span class="status-card__path">{{ videoSource }}</span>
               </n-descriptions-item>
-              <n-descriptions-item v-if="referenceSource" label="参考源" :span="2">
-                <span class="status-card__path">{{ referenceSource }}</span>
+              <n-descriptions-item v-if="referenceSource || contentType === 'conversation'" label="参考源" :span="2">
+                <span class="status-card__path">{{ referenceSource || "无" }}</span>
               </n-descriptions-item>
               <n-descriptions-item v-if="videosDir" label="批量目录" :span="2">
                 <span class="status-card__path">{{ videosDir }}</span>

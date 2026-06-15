@@ -26,7 +26,7 @@ import RemoteDirectoryUpload from "../components/RemoteDirectoryUpload.vue";
 import RemoteFileUpload from "../components/RemoteFileUpload.vue";
 import { useConfigOptions } from "../composables/useConfigOptions";
 
-type BatchMode = "manifest" | "paired-dir" | "shared-reference";
+type BatchMode = "manifest" | "paired-dir" | "shared-reference" | "conversation-dir";
 
 interface SourcePreview {
   videoCount: number;
@@ -49,6 +49,7 @@ const pollHandle = ref<number | null>(null);
 
 const form = reactive<{
   mode: BatchMode;
+  content_type: string;
   manifest: string;
   videos_dir: string;
   reference_dir: string;
@@ -64,6 +65,7 @@ const form = reactive<{
   refine_prompt: string;
 }>({
   mode: "manifest",
+  content_type: "book_club",
   manifest: "",
   videos_dir: "",
   reference_dir: "",
@@ -84,16 +86,23 @@ const ocrBackendOptions = [
   { label: "Codex CLI", value: "codex_cli" },
   { label: "Gemini CLI", value: "gemini_cli" },
 ];
+const contentTypeOptions = [
+  { label: "读书会整理", value: "book_club" },
+  { label: "对谈转录", value: "conversation" },
+];
 const manifestAccept = ".json,.yaml,.yml";
 const referenceAccept = computed(() => referenceExtensions.value.join(","));
 const glossaryAccept = ".txt,.md";
 
 const modeTip = computed(() => {
   if (form.mode === "manifest") {
-    return "Manifest 模式将按指定的清单 JSON/YAML 提交，适合每条任务有独立参考源的个性化任务集合；处理结果仍在任务列表下载。";
+    return "Manifest 模式将按指定的清单 JSON/YAML 提交；未声明 content_type 的条目会继承当前选择的默认任务类型。";
   }
   if (form.mode === "paired-dir") {
     return "目录配对模式会自动扫描视频目录下所有视频，并在参考目录中匹配同名（basename）的 .txt、.md 或 .pdf 参考文本。";
+  }
+  if (form.mode === "conversation-dir") {
+    return "对谈录屏目录模式只扫描视频目录，不需要参考源，适合访谈、讨论和自由对话录屏。";
   }
   return "共享参考模式会自动扫描视频目录下所有视频，并为它们全部配置同一个共享的参考文本文件或 URL 地址。";
 });
@@ -130,6 +139,16 @@ const previewHasBlockingIssue = computed(() => {
 
 const batchItems = computed(() => batchState.value?.items ?? []);
 
+const effectiveContentType = computed(() => {
+  if (form.mode === "conversation-dir") {
+    return "conversation";
+  }
+  if (form.mode === "paired-dir" || form.mode === "shared-reference") {
+    return "book_club";
+  }
+  return form.content_type;
+});
+
 watch(activeProfile, (value) => {
   if (!form.profile && value) {
     form.profile = value;
@@ -149,6 +168,24 @@ watch(
     previewError.value = "";
   }
 );
+
+watch(
+  () => form.mode,
+  (mode) => {
+    if (mode === "conversation-dir") {
+      form.content_type = "conversation";
+      form.reference_dir = "";
+      form.shared_reference = "";
+    }
+    if (mode === "paired-dir" || mode === "shared-reference") {
+      form.content_type = "book_club";
+    }
+  }
+);
+
+watch(effectiveContentType, () => {
+  void loadDefaultRefinePrompt();
+});
 
 function stopPolling() {
   if (pollHandle.value !== null) {
@@ -188,11 +225,14 @@ function resetRefinePrompt() {
 }
 
 async function loadDefaultRefinePrompt() {
+  const currentPrompt = form.refine_prompt.trim();
+  const previousDefaultPrompt = defaultRefinePrompt.value.trim();
+  const shouldReplacePrompt = !currentPrompt || currentPrompt === previousDefaultPrompt;
   promptLoading.value = true;
   try {
-    const response = await getRefineDefaultInstruction();
+    const response = await getRefineDefaultInstruction(effectiveContentType.value);
     defaultRefinePrompt.value = response.prompt;
-    if (!form.refine_prompt.trim()) {
+    if (shouldReplacePrompt) {
       form.refine_prompt = response.prompt;
     }
   } catch (caught) {
@@ -303,6 +343,7 @@ function buildPayload() {
     reference_dir: form.mode === "paired-dir" ? form.reference_dir : null,
     shared_reference: form.mode === "shared-reference" ? form.shared_reference.trim() : null,
     output_dir: form.mode === "manifest" ? null : form.output_dir,
+    content_type: effectiveContentType.value,
     profile: form.profile || null,
     backend: form.backend || null,
     ocr_backend: form.ocr_backend || null,
@@ -407,6 +448,7 @@ onBeforeUnmount(stopPolling);
               <n-radio-button value="manifest" class="mode-radio-btn">Manifest 配置清单</n-radio-button>
               <n-radio-button value="paired-dir" class="mode-radio-btn">目录自动配对</n-radio-button>
               <n-radio-button value="shared-reference" class="mode-radio-btn">目录共享参考</n-radio-button>
+              <n-radio-button value="conversation-dir" class="mode-radio-btn">对谈录屏目录</n-radio-button>
             </n-radio-group>
           </div>
 
@@ -430,6 +472,17 @@ onBeforeUnmount(stopPolling);
                     />
                     <n-input v-model:value="form.manifest" readonly placeholder="上传后自动生成服务器路径" />
                   </n-space>
+                </n-form-item>
+                <n-form-item v-if="form.mode === 'manifest'" label="Manifest 默认任务类型" required>
+                  <n-radio-group v-model:value="form.content_type" size="medium">
+                    <n-radio-button
+                      v-for="item in contentTypeOptions"
+                      :key="item.value"
+                      :value="item.value"
+                    >
+                      {{ item.label }}
+                    </n-radio-button>
+                  </n-radio-group>
                 </n-form-item>
 
                 <template v-else>
@@ -571,8 +624,10 @@ onBeforeUnmount(stopPolling);
                 智能扫描并预检输入目录
               </n-button>
               <span class="batch-preview__hint">
-                允许视频：<span class="ext-tag">{{ videoExtensions.join("、") || "-" }}</span> ；
-                参考文本：<span class="ext-tag">{{ referenceExtensions.join("、") || "-" }}</span>
+                允许视频：<span class="ext-tag">{{ videoExtensions.join("、") || "-" }}</span>
+                <template v-if="form.mode !== 'conversation-dir'">
+                  ；参考文本：<span class="ext-tag">{{ referenceExtensions.join("、") || "-" }}</span>
+                </template>
               </span>
             </n-space>
 
@@ -682,9 +737,10 @@ onBeforeUnmount(stopPolling);
               
               <div class="batch-item-grid-modern">
                 <div class="grid-cell"><span class="cell-label">配置模式:</span> {{ String(item.mode ?? "-") }}</div>
+                <div class="grid-cell"><span class="cell-label">任务类型:</span> {{ String(item.content_type ?? "-") }}</div>
                 <div class="grid-cell"><span class="cell-label">失败阶段:</span> <span :class="{'text-error font-semibold': item.failed_stage}">{{ String(item.failed_stage || "-") }}</span></div>
                 <div class="grid-cell span-all"><span class="cell-label">视频路径:</span> <span class="mono-path">{{ String(item.video_source ?? "-") || "-" }}</span></div>
-                <div class="grid-cell span-all"><span class="cell-label">参考源:</span> <span class="mono-path">{{ String(item.reference_source ?? "-") || "-" }}</span></div>
+                <div class="grid-cell span-all"><span class="cell-label">参考源:</span> <span class="mono-path">{{ String(item.reference_source ?? "") || "无" }}</span></div>
                 <div class="grid-cell span-all"><span class="cell-label">输出路径:</span> <span class="mono-path is-out">{{ String(item.copied_output_path ?? "-") || "-" }}</span></div>
                 <div v-if="String(item.error_message ?? '')" class="grid-cell span-all err-cell">
                   <span class="cell-label">错误详情:</span> {{ String(item.error_message) }}

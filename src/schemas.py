@@ -71,6 +71,7 @@ class AudioSettings(AppBaseModel):
 class PromptSettings(AppBaseModel):
     classify_and_correct: str
     final_cleanup: str
+    conversation_cleanup: str | None = None
 
 
 class ReferenceSettings(AppBaseModel):

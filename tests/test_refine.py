@@ -341,6 +341,42 @@ def test_build_single_pass_refine_prompt_includes_reference_and_locking_rules(tm
     assert "unlocked_text 中的讲解、串场、例子、重复强调和讨论内容必须保留" in prompt
 
 
+def test_build_single_pass_refine_prompt_without_reference_uses_conversation_rules(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path, reference_overrides={"enabled": False})
+    asr_dir = tmp_path / "data/intermediate/asr"
+    asr_dir.mkdir(parents=True, exist_ok=True)
+    asr_path = asr_dir / "conversation-demo.txt"
+    asr_path.write_text("今天我们先聊这个问题。对，我补充一点。", encoding="utf-8")
+    loaded_settings = load_settings(project_root=tmp_path)
+    input_paths = resolve_refinement_input_paths(loaded_settings, asr_path)
+
+    prompt = build_single_pass_refine_prompt(
+        "# test conversation cleanup",
+        input_paths,
+        backend=BACKEND_CODEX,
+        pre_replaced_segments=[
+            PreReplacementSegment(
+                segment_type="unlocked_text",
+                text="今天我们先聊这个问题。对，我补充一点。",
+                source_text="今天我们先聊这个问题。对，我补充一点。",
+                reference_text="",
+                start_sentence_index=0,
+                end_sentence_index=1,
+            )
+        ],
+        reference_full_text="",
+    )
+
+    assert input_paths.reference_text_path is None
+    assert "对谈录屏保真转录整理" in prompt
+    assert "录音转写全文是唯一主输入" in prompt
+    assert "整篇参考原文" not in prompt
+    assert "locked_quote" not in prompt
+    assert "引用原文" not in prompt
+    assert "[SEGMENT 01][unlocked_text]" not in prompt
+    assert "[SEGMENT 01]" in prompt
+
+
 def test_refine_batch_uses_single_codex_call_with_reference_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -402,6 +438,49 @@ def test_refine_batch_uses_single_codex_call_with_reference_context(
     assert "整篇参考原文" in prompts[0]
     assert "[SEGMENT 01][locked_quote]" in prompts[0]
     assert "[SEGMENT 02][unlocked_text]" in prompts[0]
+
+
+def test_refine_batch_without_reference_writes_null_source_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path, reference_overrides={"enabled": False})
+    asr_dir = tmp_path / "data/intermediate/asr"
+    asr_dir.mkdir(parents=True, exist_ok=True)
+    (asr_dir / "conversation-demo.txt").write_text(
+        "今天我们先聊这个问题。\n\n对，我补充一点。",
+        encoding="utf-8",
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    prompts: list[str] = []
+
+    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+        prompts.append(prompt)
+        return {
+            "final_markdown": "# conversation-demo\n\n今天我们先聊这个问题。\n\n对，我补充一点。",
+            "section_map": [],
+            "refinement_notes": [],
+            "needs_review_sections": [],
+            "deletion_candidates": [],
+            "refinement_strategy": "single_pass_conversation_cleanup",
+            "refinement_reason": "test",
+            "model_name": "gpt-test",
+        }
+
+    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
+
+    summary = refine_batch(loaded_settings)
+
+    assert summary.success == 1
+    assert len(prompts) == 1
+    assert "整篇参考原文" not in prompts[0]
+    assert "locked_quote" not in prompts[0]
+    output_payload = json.loads(
+        (tmp_path / "data/intermediate/refined/conversation-demo.json").read_text(encoding="utf-8")
+    )
+    assert output_payload["source_reference_file"] is None
+    assert output_payload["final_markdown"].startswith("# conversation-demo")
 
 
 def test_parse_backend_document_result_requires_fulltext() -> None:

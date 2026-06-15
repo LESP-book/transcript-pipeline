@@ -15,8 +15,14 @@ from src.job_runner import JobRunnerError, run_single_job
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="按单任务输入绑定方式运行完整主链。")
     parser.add_argument("--video", required=True, help="输入视频文件路径")
-    parser.add_argument("--reference", required=True, help="参考源：本地 txt/md/pdf 或网页链接")
+    parser.add_argument("--reference", help="参考源：本地 txt/md/pdf 或网页链接；对谈模式不需要")
     parser.add_argument("--output-dir", required=True, help="最终 Markdown 输出目录")
+    parser.add_argument(
+        "--content-type",
+        choices=["book_club", "conversation"],
+        default="book_club",
+        help="内容类型：book_club 为读书会，conversation 为无参考对谈录屏",
+    )
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
     parser.add_argument("--backend", choices=["codex_api", "codex_cli", "gemini_cli", "both"], help="覆盖阶段 6 使用的后端")
@@ -32,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.content_type == "book_club" and not (args.reference or "").strip():
+        print("[ERROR] 读书会模式必须提供 --reference", file=sys.stderr)
+        return 1
+    if args.content_type == "conversation" and (args.reference or "").strip():
+        print("[ERROR] 对谈模式不使用 --reference", file=sys.stderr)
+        return 1
 
     try:
         loaded_settings = load_settings(
@@ -50,6 +62,7 @@ def main() -> int:
             video=args.video,
             reference=args.reference,
             output_dir=args.output_dir,
+            content_type=args.content_type,
             profile=args.profile,
             backend=args.backend,
             model=args.model,

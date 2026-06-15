@@ -7,6 +7,7 @@ export interface ConfigResponse {
   reference_extensions: string[];
   default_output_dir: string;
   upload_dir: string;
+  content_types: string[];
 }
 
 export interface FrontendSettings {
@@ -59,6 +60,7 @@ export interface BatchItemState {
   mode?: string;
   video_source?: string;
   reference_source?: string;
+  content_type?: string;
   output_dir?: string;
   book_name?: string;
   chapter?: string;
@@ -77,6 +79,7 @@ export interface JobInputSummary {
   videos_dir?: string;
   reference_dir?: string;
   shared_reference?: string;
+  content_type?: string;
   book_name?: string;
   chapter?: string;
   glossary_file?: string;
@@ -122,8 +125,9 @@ export interface JobArtifactContent extends JobArtifact {
 
 export interface SingleJobPayload {
   video: string;
-  reference: string;
+  reference?: string | null;
   output_dir: string;
+  content_type?: string | null;
   profile?: string | null;
   backend?: string | null;
   config?: string | null;
@@ -144,6 +148,7 @@ export interface BatchJobPayload {
   reference_dir?: string | null;
   shared_reference?: string | null;
   output_dir?: string | null;
+  content_type?: string | null;
   profile?: string | null;
   backend?: string | null;
   config?: string | null;
@@ -251,8 +256,9 @@ export function getFrontendSettings(): Promise<FrontendSettings> {
   return requestJson<FrontendSettings>("/api/frontend-settings");
 }
 
-export function getRefineDefaultInstruction(): Promise<RefinePromptResponse> {
-  return requestJson<RefinePromptResponse>("/api/refine-default-instruction");
+export function getRefineDefaultInstruction(contentType = "book_club"): Promise<RefinePromptResponse> {
+  const searchParams = new URLSearchParams({ content_type: contentType });
+  return requestJson<RefinePromptResponse>(`/api/refine-default-instruction?${searchParams.toString()}`);
 }
 
 export function saveFrontendSettings(payload: FrontendSettingsPayload): Promise<FrontendSettings> {

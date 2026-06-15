@@ -13,6 +13,7 @@ from src.job_runner import (
     BatchJobSpec,
     BatchRunSummary,
     JobRunnerError,
+    batch_stage_sequence_for_runtimes,
     build_batch_root,
     build_final_output_filename,
     build_job_paths,
@@ -305,12 +306,14 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             video_source=video_source,
             reference_source=request.reference,
             job_paths=job_paths,
+            content_type=request.content_type,
         )
         generated_settings_path = write_job_settings(
             project_root=root,
             loaded_settings=base_loaded_settings,
             job_paths=job_paths,
             profile_name=profile_name,
+            content_type=request.content_type,
             glossary_file=effective_glossary_file,
             book_name=effective_book_name,
             chapter=effective_chapter,
@@ -325,6 +328,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             reference_source=request.reference,
             output_dir=output_dir,
             profile_name=profile_name,
+            content_type=request.content_type,
             book_name=effective_book_name,
             chapter=effective_chapter,
             glossary_file=effective_glossary_file,
@@ -506,6 +510,7 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
             reference_dir=request.reference_dir,
             shared_reference=request.shared_reference,
             output_dir=request.output_dir,
+            content_type=request.content_type,
             book_name=effective_book_name,
             chapter=effective_chapter,
             glossary_file=effective_glossary_file,
@@ -530,8 +535,9 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
         )
 
         logger = setup_logging(base_loaded_settings.settings.runtime.log_level)
+        stage_sequence = batch_stage_sequence_for_runtimes(runtimes, root)
         with codex_lb_environment(frontend_settings):
-            for stage_name in ("extract-audio", "transcribe", "prepare-reference", "refine", "export-markdown"):
+            for stage_name in stage_sequence:
                 app.state.update_state(
                     state_path,
                     status="running",

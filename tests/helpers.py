@@ -159,6 +159,7 @@ def write_minimal_settings(
         "prompts": {
             "classify_and_correct": "config/prompts/classify_and_correct.md",
             "final_cleanup": "config/prompts/final_cleanup.md",
+            "conversation_cleanup": "config/prompts/conversation_cleanup.md",
         },
         "output": {
             "write_review_json": True,
@@ -191,4 +192,5 @@ def write_minimal_settings(
         yaml.safe_dump(payload, file, allow_unicode=True, sort_keys=False)
     (prompts_dir / "classify_and_correct.md").write_text("# test prompt\n", encoding="utf-8")
     (prompts_dir / "final_cleanup.md").write_text("# test final cleanup\n", encoding="utf-8")
+    (prompts_dir / "conversation_cleanup.md").write_text("# test conversation cleanup\n", encoding="utf-8")
     return settings_path

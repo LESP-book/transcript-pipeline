@@ -20,6 +20,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reference-dir", help="参考原文目录，按 basename 配对")
     parser.add_argument("--shared-reference", help="共享参考源，本地 txt/md/pdf 或网页链接")
     parser.add_argument("--output-dir", help="最终 Markdown 输出目录")
+    parser.add_argument(
+        "--content-type",
+        choices=["book_club", "conversation"],
+        default="book_club",
+        help="内容类型：book_club 为读书会，conversation 为无参考对谈录屏",
+    )
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
     parser.add_argument("--backend", choices=["codex_api", "codex_cli", "gemini_cli", "both"], help="覆盖阶段 6 使用的后端")
@@ -58,6 +64,7 @@ def main() -> int:
             reference_dir=args.reference_dir,
             shared_reference=args.shared_reference,
             output_dir=args.output_dir,
+            content_type=args.content_type,
             book_name=args.book_name,
             chapter=args.chapter,
             glossary_file=args.glossary_file,

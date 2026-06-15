@@ -51,7 +51,7 @@ class CLIBackendRetryableError(CLIBackendError):
 class RefinementInputPaths:
     basename: str
     asr_text_path: Path
-    reference_text_path: Path
+    reference_text_path: Path | None
 
 
 @dataclass(frozen=True)
@@ -258,16 +258,17 @@ def resolve_refinement_input_paths(loaded_settings: LoadedSettings, asr_text_pat
     basename = asr_text_path.stem
     asr_text_path = loaded_settings.path_for("asr_dir") / f"{basename}.txt"
     reference_text_path = loaded_settings.path_for("extracted_text_dir") / f"{basename}.txt"
+    reference_required = loaded_settings.settings.reference.enabled
 
     if not asr_text_path.exists():
         raise RefinementError(f"阶段 6 缺少对应 ASR 文本文件: {asr_text_path}")
-    if not reference_text_path.exists():
+    if reference_required and not reference_text_path.exists():
         raise RefinementError(f"阶段 6 缺少对应参考原文文件: {reference_text_path}")
 
     return RefinementInputPaths(
         basename=basename,
         asr_text_path=asr_text_path,
-        reference_text_path=reference_text_path,
+        reference_text_path=reference_text_path if reference_required else None,
     )
 
 
@@ -569,12 +570,14 @@ def build_fulltext_refine_prompt(
     return "\n".join(sections).strip()
 
 
-def load_markdown_assemble_prompt(loaded_settings: LoadedSettings) -> str:
+def load_markdown_assemble_prompt(loaded_settings: LoadedSettings, *, content_type: str | None = None) -> str:
     prompts = loaded_settings.settings.prompts
-    if prompts is None or not prompts.final_cleanup:
-        raise PromptLoadError("缺少阶段 6 Markdown 组装提示词配置，请检查 prompts.final_cleanup")
+    prompt_field = "conversation_cleanup" if (content_type or "").strip() == "conversation" else "final_cleanup"
+    prompt_value = getattr(prompts, prompt_field, None) if prompts is not None else None
+    if prompts is None or not prompt_value:
+        raise PromptLoadError(f"缺少阶段 6 Markdown 组装提示词配置，请检查 prompts.{prompt_field}")
 
-    prompt_path = loaded_settings.resolve_path(prompts.final_cleanup)
+    prompt_path = loaded_settings.resolve_path(prompt_value)
     if not prompt_path.exists():
         raise PromptLoadError(f"阶段 6 Markdown 组装提示词文件不存在: {prompt_path}")
 
@@ -671,15 +674,42 @@ def build_single_pass_refine_prompt(
     if backend == BACKEND_GEMINI:
         backend_review_message = "你的结果会交给 Codex 和 Claude 审核，请认真校对，不要敷衍。"
 
+    has_reference = input_paths.reference_text_path is not None
     rendered_segments: list[str] = []
     for index, segment in enumerate(pre_replaced_segments, start=1):
+        segment_label = (
+            f"[SEGMENT {index:02d}][{segment.segment_type}]"
+            if has_reference
+            else f"[SEGMENT {index:02d}]"
+        )
         rendered_segments.extend(
             [
-                f"[SEGMENT {index:02d}][{segment.segment_type}]",
+                segment_label,
                 segment.text,
                 "",
             ]
         )
+
+    if not has_reference:
+        sections = [
+            prompt_text.strip(),
+            "",
+            "你现在负责阶段 6 的对谈录屏保真转录整理。",
+            backend_review_message,
+            "输入只有录音转写全文，没有参考原文或参考书目。",
+            "录音转写全文是唯一主输入；你不得补充录音中没有的信息。",
+            "所有有效讲话、追问、回答、停顿后的补充、重复强调和口语化表达都应保留。",
+            "只允许添加标点、合理断句、分段，并修正明确错字、别字、同音误识别。",
+            "如果 ASR 没有明确说话人线索，不得硬造主持人、嘉宾或其他身份标签。",
+            "删除任何超过短语级别的内容，都必须写入 deletion_candidates。",
+            "请只返回 JSON，字段必须包含：final_markdown、section_map、refinement_notes、needs_review_sections、deletion_candidates。",
+            "",
+            f"当前文件: {input_paths.basename}.txt",
+            "",
+            "录音转写全文：",
+            "\n".join(rendered_segments).strip(),
+        ]
+        return "\n".join(sections).strip()
 
     sections = [
         prompt_text.strip(),
@@ -1469,6 +1499,12 @@ def serialize_backend_result(result: BackendDocumentRefinementResult) -> dict[st
     }
 
 
+def relativize_optional_reference(input_paths: RefinementInputPaths, loaded_settings: LoadedSettings) -> str | None:
+    if input_paths.reference_text_path is None:
+        return None
+    return relativize_path(input_paths.reference_text_path, loaded_settings.project_root)
+
+
 def write_backend_result_file(
     *,
     input_paths: RefinementInputPaths,
@@ -1479,7 +1515,7 @@ def write_backend_result_file(
 ) -> None:
     payload = {
         "source_asr_file": relativize_path(input_paths.asr_text_path, loaded_settings.project_root),
-        "source_reference_file": relativize_path(input_paths.reference_text_path, loaded_settings.project_root),
+        "source_reference_file": relativize_optional_reference(input_paths, loaded_settings),
         "refinement_backends": [result.backend],
         "backend_status": {result.backend: backend_status},
         "prompt_mode": result.refinement_strategy,
@@ -1508,7 +1544,7 @@ def write_refinement_result(
     final_markdown = selected_result.final_markdown if selected_result else ""
     payload = {
         "source_asr_file": relativize_path(input_paths.asr_text_path, loaded_settings.project_root),
-        "source_reference_file": relativize_path(input_paths.reference_text_path, loaded_settings.project_root),
+        "source_reference_file": relativize_optional_reference(input_paths, loaded_settings),
         "refinement_backends": list(active_backends),
         "backend_status": backend_status,
         "prompt_mode": selected_result.refinement_strategy if selected_result else "manual_selection_required",
@@ -1562,7 +1598,11 @@ def refine_batch(
     for asr_text_path in asr_files:
         input_paths = resolve_refinement_input_paths(loaded_settings, asr_text_path)
         asr_full_text = load_text_file(input_paths.asr_text_path, "ASR")
-        reference_full_text = load_text_file(input_paths.reference_text_path, "参考原文")
+        reference_full_text = (
+            load_text_file(input_paths.reference_text_path, "参考原文")
+            if input_paths.reference_text_path is not None
+            else ""
+        )
         backend_results: list[BackendDocumentRefinementResult] = []
         backend_status: dict[str, str] = {}
         document_title = input_paths.basename

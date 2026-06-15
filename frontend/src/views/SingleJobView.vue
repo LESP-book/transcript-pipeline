@@ -9,6 +9,8 @@ import {
   NGrid,
   NGridItem,
   NInput,
+  NRadioButton,
+  NRadioGroup,
   NSelect,
   NSpace,
   useMessage,
@@ -31,6 +33,7 @@ const defaultRefinePrompt = ref("");
 const pollHandle = ref<number | null>(null);
 
 const form = reactive({
+  content_type: "book_club",
   video: "",
   reference: "",
   output_dir: "",
@@ -48,9 +51,14 @@ const ocrBackendOptions = [
   { label: "Codex CLI", value: "codex_cli" },
   { label: "Gemini CLI", value: "gemini_cli" },
 ];
+const contentTypeOptions = [
+  { label: "读书会整理", value: "book_club" },
+  { label: "对谈转录", value: "conversation" },
+];
 const videoAccept = computed(() => videoExtensions.value.join(","));
 const referenceAccept = computed(() => referenceExtensions.value.join(","));
 const glossaryAccept = ".txt,.md";
+const isConversation = computed(() => form.content_type === "conversation");
 
 watch(activeProfile, (value) => {
   if (!form.profile && value) {
@@ -102,11 +110,14 @@ function resetRefinePrompt() {
 }
 
 async function loadDefaultRefinePrompt() {
+  const currentPrompt = form.refine_prompt.trim();
+  const previousDefaultPrompt = defaultRefinePrompt.value.trim();
+  const shouldReplacePrompt = !currentPrompt || currentPrompt === previousDefaultPrompt;
   promptLoading.value = true;
   try {
-    const response = await getRefineDefaultInstruction();
+    const response = await getRefineDefaultInstruction(form.content_type);
     defaultRefinePrompt.value = response.prompt;
-    if (!form.refine_prompt.trim()) {
+    if (shouldReplacePrompt) {
       form.refine_prompt = response.prompt;
     }
   } catch (caught) {
@@ -122,16 +133,21 @@ async function handleJobRerun(jobId: string) {
 }
 
 async function submit() {
-  if (!form.video || !form.reference || !form.output_dir) {
-    message.warning("视频、参考源和服务器默认输出目录是必填项。");
+  if (!form.video || !form.output_dir) {
+    message.warning("视频和服务器默认输出目录是必填项。");
+    return;
+  }
+  if (!isConversation.value && !form.reference) {
+    message.warning("读书会整理模式下参考源是必填项。");
     return;
   }
   submitting.value = true;
   try {
     const response = await submitJob({
       video: form.video,
-      reference: form.reference,
+      reference: isConversation.value ? null : form.reference,
       output_dir: form.output_dir,
+      content_type: form.content_type,
       profile: form.profile || null,
       backend: form.backend || null,
       ocr_backend: form.ocr_backend || null,
@@ -153,6 +169,15 @@ async function submit() {
 onMounted(() => {
   void loadDefaultRefinePrompt();
 });
+watch(
+  () => form.content_type,
+  () => {
+    if (isConversation.value) {
+      form.reference = "";
+    }
+    void loadDefaultRefinePrompt();
+  }
+);
 onBeforeUnmount(stopPolling);
 </script>
 
@@ -164,7 +189,7 @@ onBeforeUnmount(stopPolling);
         <p class="view-hero__eyebrow">任务控制台</p>
         <h2 class="view-hero__title">单任务整理流水线</h2>
         <p class="view-hero__copy">
-          在这里提交单个读书会录屏视频，系统将按顺序执行提取音频、语音转写、参考文本提取、智能校对润色及 Markdown 最终稿的导出。
+          在这里提交单个录屏视频，可选择读书会整理或无参考对谈转录，系统将生成适合人工校对的 Markdown 草稿。
         </p>
       </div>
     </section>
@@ -186,6 +211,17 @@ onBeforeUnmount(stopPolling);
           <n-grid-item span="2 m:1">
             <div class="form-section">
               <h4 class="form-section-title">核心输入输出参数</h4>
+              <n-form-item label="任务类型" required>
+                <n-radio-group v-model:value="form.content_type" size="medium">
+                  <n-radio-button
+                    v-for="item in contentTypeOptions"
+                    :key="item.value"
+                    :value="item.value"
+                  >
+                    {{ item.label }}
+                  </n-radio-button>
+                </n-radio-group>
+              </n-form-item>
               <n-form-item label="视频文件 (Video Source)" required>
                 <n-space vertical class="w-full">
                   <RemoteFileUpload
@@ -198,7 +234,7 @@ onBeforeUnmount(stopPolling);
                   <n-input v-model:value="form.video" readonly placeholder="上传后自动生成服务器路径" />
                 </n-space>
               </n-form-item>
-              <n-form-item label="参考源文件或 URL (Reference)" required>
+              <n-form-item v-if="!isConversation" label="参考源文件或 URL (Reference)" required>
                 <n-space vertical class="w-full">
                   <n-input v-model:value="form.reference" placeholder="可粘贴 https:// 网址，或上传本机参考文件" />
                   <RemoteFileUpload

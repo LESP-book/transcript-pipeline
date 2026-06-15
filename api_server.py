@@ -40,8 +40,17 @@ from src.web.uploads import (
 )
 
 
-JOB_INPUT_SUMMARY_KEYS = ("video_source", "reference_source", "output_dir", "book_name", "chapter", "glossary_file")
+JOB_INPUT_SUMMARY_KEYS = (
+    "content_type",
+    "video_source",
+    "reference_source",
+    "output_dir",
+    "book_name",
+    "chapter",
+    "glossary_file",
+)
 BATCH_INPUT_SUMMARY_KEYS = (
+    "content_type",
     "manifest",
     "videos_dir",
     "reference_dir",
@@ -71,6 +80,7 @@ def single_job_input_summary(request: SingleJobRequest) -> dict[str, str]:
             "video_source": request.video,
             "reference_source": request.reference,
             "output_dir": request.output_dir,
+            "content_type": request.content_type,
             "book_name": request.book_name,
             "chapter": request.chapter,
             "glossary_file": request.glossary_file,
@@ -175,13 +185,19 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             "reference_extensions": list(supported_reference_extensions()),
             "default_output_dir": str(loaded_settings.path_for("final_dir")),
             "upload_dir": str(upload_root(root)),
+            "content_types": ["book_club", "conversation"],
         }
 
     @app.get("/api/refine-default-instruction")
-    async def get_refine_default_instruction() -> dict[str, str]:
+    async def get_refine_default_instruction(
+        content_type: Literal["book_club", "conversation"] = Query(default="book_club"),
+    ) -> dict[str, str]:
         try:
             loaded_settings = load_settings(project_root=root)
-            prompt_text = load_markdown_assemble_prompt(loaded_settings)
+            prompt_text = load_markdown_assemble_prompt(
+                loaded_settings,
+                content_type=content_type if content_type == "conversation" else None,
+            )
         except (ConfigLoadError, PromptLoadError) as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         return {"prompt": prompt_text}
