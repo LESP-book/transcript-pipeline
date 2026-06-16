@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from src.markdown_utils import markdown_document_to_plain_text
 from src.runtime_utils import ensure_directory
 from src.schemas import LoadedSettings
 
@@ -28,6 +29,7 @@ class ExportInputPaths:
 @dataclass(frozen=True)
 class ExportOutputPath:
     markdown_path: Path
+    text_path: Path
 
 
 @dataclass(frozen=True)
@@ -61,7 +63,10 @@ def iter_refined_json_files(refined_dir: Path) -> list[Path]:
 
 
 def build_markdown_output_path(refined_json_path: Path, output_dir: Path) -> ExportOutputPath:
-    return ExportOutputPath(markdown_path=output_dir / f"{refined_json_path.stem}.md")
+    return ExportOutputPath(
+        markdown_path=output_dir / f"{refined_json_path.stem}.md",
+        text_path=output_dir / f"{refined_json_path.stem}.txt",
+    )
 
 
 def load_json_payload(path: Path, label: str) -> dict[str, Any]:
@@ -112,8 +117,9 @@ def write_markdown_result(output_path: ExportOutputPath, markdown_text: str) -> 
     ensure_directory(output_path.markdown_path.parent)
     try:
         output_path.markdown_path.write_text(markdown_text, encoding="utf-8")
+        output_path.text_path.write_text(markdown_document_to_plain_text(markdown_text), encoding="utf-8")
     except OSError as exc:
-        raise ExportError(f"无法写入 Markdown 输出: {output_path.markdown_path} | {exc}") from exc
+        raise ExportError(f"无法写入最终稿输出: {output_path.markdown_path} / {output_path.text_path} | {exc}") from exc
 
 
 def export_markdown_batch(
@@ -150,7 +156,7 @@ def export_markdown_batch(
         if logger:
             paragraph_count = len([item for item in str(refined_payload.get("final_markdown", "")).split("\n\n") if item.strip()])
             logger.info(
-                "Markdown 导出完成 | %s | paragraphs=%s",
+                "最终稿导出完成 | %s | formats=markdown,txt | paragraphs=%s",
                 refined_json_path.stem,
                 paragraph_count,
             )

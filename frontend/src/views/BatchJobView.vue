@@ -528,7 +528,7 @@ onBeforeUnmount(stopPolling);
                   <n-form-item label="成果获取方式" required>
                     <n-alert type="info" :bordered="false" class="server-output-note">
                       <div class="server-output-note__body">
-                        <span>批量处理完成后，到任务列表下载全部结果，或展开批量任务按子任务分别下载。</span>
+                        <span>批量处理完成后，到任务列表选择 Markdown 或 TXT 下载全部结果，也可展开后按子任务分别下载。</span>
                         <small>服务器默认保存目录：{{ form.output_dir || "配置加载中..." }}</small>
                       </div>
                     </n-alert>

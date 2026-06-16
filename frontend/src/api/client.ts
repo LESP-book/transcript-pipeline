@@ -123,6 +123,8 @@ export interface JobArtifactContent extends JobArtifact {
   content: string;
 }
 
+export type ResultDownloadFormat = "markdown" | "txt";
+
 export interface SingleJobPayload {
   video: string;
   reference?: string | null;
@@ -321,8 +323,15 @@ export function getJobArtifact(jobId: string, artifactId: string): Promise<JobAr
   return requestJson<JobArtifactContent>(`/api/jobs/${jobId}/artifacts/${artifactId}`);
 }
 
-export function jobResultUrl(jobId: string): string {
-  return `/api/jobs/${encodeURIComponent(jobId)}/result`;
+function appendResultFormat(url: string, format?: ResultDownloadFormat): string {
+  if (!format || format === "markdown") {
+    return url;
+  }
+  return `${url}?format=${encodeURIComponent(format)}`;
+}
+
+export function jobResultUrl(jobId: string, format?: ResultDownloadFormat): string {
+  return appendResultFormat(`/api/jobs/${encodeURIComponent(jobId)}/result`, format);
 }
 
 export function listBatches(): Promise<JobListResponse> {
@@ -340,12 +349,15 @@ export function getBatch(batchId: string): Promise<JobState> {
   return requestJson<JobState>(`/api/batches/${batchId}`);
 }
 
-export function batchResultUrl(batchId: string): string {
-  return `/api/batches/${encodeURIComponent(batchId)}/result`;
+export function batchResultUrl(batchId: string, format?: ResultDownloadFormat): string {
+  return appendResultFormat(`/api/batches/${encodeURIComponent(batchId)}/result`, format);
 }
 
-export function batchItemResultUrl(batchId: string, itemJobId: string): string {
-  return `/api/batches/${encodeURIComponent(batchId)}/items/${encodeURIComponent(itemJobId)}/result`;
+export function batchItemResultUrl(batchId: string, itemJobId: string, format?: ResultDownloadFormat): string {
+  return appendResultFormat(
+    `/api/batches/${encodeURIComponent(batchId)}/items/${encodeURIComponent(itemJobId)}/result`,
+    format,
+  );
 }
 
 export function submitStageRun(stageName: string, payload: StageRunPayload): Promise<{ run_id: string }> {

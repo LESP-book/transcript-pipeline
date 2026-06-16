@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
@@ -17,7 +18,13 @@ from src.job_runner import create_batch_id, create_job_id, supported_reference_e
 from src.refine_utils import PromptLoadError, VALID_REFINEMENT_BACKENDS, load_markdown_assemble_prompt
 from src.runtime_utils import normalize_stage_name
 from src.web.artifacts import collect_job_artifacts, read_job_artifact
-from src.web.downloads import build_batch_result_archive, resolve_batch_item_result_path, resolve_job_result_path
+from src.web.downloads import (
+    build_batch_result_archive,
+    build_result_download,
+    normalize_result_format,
+    resolve_batch_item_result_path,
+    resolve_job_result_path,
+)
 from src.web.fs_browser import list_fs_items, resolve_allowed_browse_path, resolve_parent_path
 from src.web.frontend_settings import FrontendSettingsUpdate, frontend_settings_response, save_frontend_settings
 from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageRunRequest
@@ -123,6 +130,11 @@ def find_batch_state_item(state: dict[str, Any], item_job_id: str) -> dict[str, 
         if str(raw_item.get("job_id") or "") == item_job_id:
             return raw_item
     return None
+
+
+def attachment_headers(filename: str) -> dict[str, str]:
+    quoted = quote(filename)
+    return {"Content-Disposition": f'attachment; filename="{filename}"; filename*=UTF-8\'\'{quoted}'}
 
 
 def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = False) -> FastAPI:
@@ -288,20 +300,28 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         return artifact
 
     @app.get("/api/jobs/{job_id}/result")
-    async def download_job_result(job_id: str) -> FileResponse:
+    async def download_job_result(job_id: str, result_format: str = Query("markdown", alias="format")) -> Response:
         state_path = app.state.job_state_path(job_id)
         if not state_path.exists():
             raise HTTPException(status_code=404, detail=f"job 不存在: {job_id}")
         state = reconcile_state(read_json_file(state_path))
         try:
+            normalized_format = normalize_result_format(result_format)
             result_path = resolve_job_result_path(root, state)
+            download = build_result_download(result_path, normalized_format)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"读取任务结果失败: {exc}") from exc
-        return FileResponse(result_path, filename=result_path.name, media_type="text/markdown; charset=utf-8")
+        if download.path is not None:
+            return FileResponse(download.path, filename=download.filename, media_type=download.media_type)
+        return Response(
+            content=download.content or b"",
+            media_type=download.media_type,
+            headers=attachment_headers(download.filename),
+        )
 
     @app.post("/api/jobs", status_code=202)
     async def post_job(request: SingleJobRequest) -> dict[str, str]:
@@ -375,13 +395,21 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         return reconcile_state(state)
 
     @app.get("/api/batches/{batch_id}/result")
-    async def download_batch_result(batch_id: str) -> Response:
+    async def download_batch_result(batch_id: str, result_format: str = Query("markdown", alias="format")) -> Response:
         state_path = app.state.batch_state_path(batch_id)
         if not state_path.exists():
             raise HTTPException(status_code=404, detail=f"batch 不存在: {batch_id}")
         state = reconcile_state(read_json_file(state_path))
         try:
-            archive = build_batch_result_archive(root, batch_id, state)
+            normalized_format = normalize_result_format(result_format)
+            archive = build_batch_result_archive(root, batch_id, state, normalized_format)
+            archive_filename = (
+                f"{batch_id}-results.zip"
+                if normalized_format == "markdown"
+                else f"{batch_id}-results-{normalized_format}.zip"
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except OSError as exc:
@@ -389,24 +417,36 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         return Response(
             content=archive,
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{batch_id}-results.zip"'},
+            headers=attachment_headers(archive_filename),
         )
 
     @app.get("/api/batches/{batch_id}/items/{item_job_id}/result")
-    async def download_batch_item_result(batch_id: str, item_job_id: str) -> FileResponse:
+    async def download_batch_item_result(
+        batch_id: str,
+        item_job_id: str,
+        result_format: str = Query("markdown", alias="format"),
+    ) -> Response:
         state_path = app.state.batch_state_path(batch_id)
         if not state_path.exists():
             raise HTTPException(status_code=404, detail=f"batch 不存在: {batch_id}")
         state = reconcile_state(read_json_file(state_path))
         try:
+            normalized_format = normalize_result_format(result_format)
             result_path = resolve_batch_item_result_path(root, state, item_job_id)
+            download = build_result_download(result_path, normalized_format)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"读取子任务结果失败: {exc}") from exc
-        return FileResponse(result_path, filename=result_path.name, media_type="text/markdown; charset=utf-8")
+        if download.path is not None:
+            return FileResponse(download.path, filename=download.filename, media_type=download.media_type)
+        return Response(
+            content=download.content or b"",
+            media_type=download.media_type,
+            headers=attachment_headers(download.filename),
+        )
 
     @app.post("/api/batches/{batch_id}/items/{item_job_id}/rerun", status_code=202)
     async def post_batch_item_rerun(batch_id: str, item_job_id: str, request: JobRerunRequest) -> dict[str, str]:

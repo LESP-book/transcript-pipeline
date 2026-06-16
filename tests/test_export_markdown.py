@@ -15,6 +15,7 @@ from src.export_utils import (
     render_markdown_document,
     resolve_export_input_paths,
 )
+from src.markdown_utils import markdown_document_to_plain_text
 from tests.helpers import write_minimal_settings
 
 
@@ -60,6 +61,13 @@ def test_iter_refined_json_files_filters_json_only(tmp_path: Path) -> None:
 def test_build_markdown_output_path_uses_md_extension(tmp_path: Path) -> None:
     output = build_markdown_output_path(tmp_path / "demo.json", tmp_path / "out")
     assert output.markdown_path == tmp_path / "out" / "demo.md"
+    assert output.text_path == tmp_path / "out" / "demo.txt"
+
+
+def test_markdown_document_to_plain_text_keeps_heading_text() -> None:
+    text = markdown_document_to_plain_text("# 标题\n\n> 引文\n\n- 列表项")
+
+    assert text == "标题\n\n引文\n\n列表项\n"
 
 
 def test_export_markdown_batch_raises_when_refined_dir_empty(tmp_path: Path) -> None:
@@ -107,13 +115,19 @@ def test_export_markdown_batch_writes_final_markdown(tmp_path: Path) -> None:
     summary = export_markdown_batch(loaded_settings)
 
     output_path = tmp_path / "data" / "output" / "final" / "lesson.md"
+    text_path = tmp_path / "data" / "output" / "final" / "lesson.txt"
     assert summary.total == 1
     assert summary.success == 1
     assert output_path.exists()
+    assert text_path.exists()
     markdown = output_path.read_text(encoding="utf-8")
+    plain_text = text_path.read_text(encoding="utf-8")
     assert "# lesson" in markdown
     assert "> 久有凌云志，重上井冈山。" in markdown
     assert "## 提问环节" in markdown
+    assert "lesson" in plain_text
+    assert "久有凌云志，重上井冈山。" in plain_text
+    assert "提问环节" in plain_text
 
 
 def test_export_markdown_batch_requires_final_markdown(tmp_path: Path) -> None:

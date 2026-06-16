@@ -288,6 +288,71 @@ def test_download_job_result_returns_generated_markdown(tmp_path: Path) -> None:
     assert "lesson.md" in response.headers["content-disposition"]
 
 
+def test_download_job_result_returns_generated_txt_from_markdown(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    job_dir = tmp_path / "data/jobs/job-test-001"
+    result_path = tmp_path / "data/output/final/lesson.md"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text("# 最终稿\n\n正文", encoding="utf-8")
+    (job_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "job-test-001",
+                "kind": "job",
+                "status": "success",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:31:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": str(result_path),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    response = request_json(create_app(project_root=tmp_path), "GET", "/api/jobs/job-test-001/result?format=txt")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/plain; charset=utf-8"
+    assert response.content == "最终稿\n\n正文\n".encode("utf-8")
+    assert "lesson.txt" in response.headers["content-disposition"]
+
+
+def test_download_job_result_rejects_unknown_format(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    job_dir = tmp_path / "data/jobs/job-test-001"
+    result_path = tmp_path / "data/output/final/lesson.md"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text("# 最终稿\n", encoding="utf-8")
+    (job_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "job-test-001",
+                "kind": "job",
+                "status": "success",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:31:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": str(result_path),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    response = request_json(create_app(project_root=tmp_path), "GET", "/api/jobs/job-test-001/result?format=pdf")
+
+    assert response.status_code == 400
+
+
 def test_download_job_result_rejects_unfinished_job(tmp_path: Path) -> None:
     from api_server import create_app
 
@@ -517,6 +582,46 @@ def test_download_batch_item_result_returns_child_markdown(tmp_path: Path) -> No
     assert "lesson-a.md" in response.headers["content-disposition"]
 
 
+def test_download_batch_item_result_returns_child_txt(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    batch_dir = tmp_path / "data/jobs/batches/batch-test-001"
+    result_path = tmp_path / "data/output/final/lesson-a.md"
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text("# 子任务结果\n", encoding="utf-8")
+    (batch_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "batch-test-001",
+                "kind": "batch",
+                "status": "success",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:40:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": str(batch_dir / "summary.json"),
+                "items": [
+                    {
+                        "job_id": "job-a",
+                        "status": "success",
+                        "copied_output_path": str(result_path),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    response = request_json(create_app(project_root=tmp_path), "GET", "/api/batches/batch-test-001/items/job-a/result?format=txt")
+
+    assert response.status_code == 200
+    assert response.content == "子任务结果\n".encode("utf-8")
+    assert "lesson-a.txt" in response.headers["content-disposition"]
+
+
 def test_download_batch_result_packs_summary_and_successful_outputs(tmp_path: Path) -> None:
     from api_server import create_app
 
@@ -567,6 +672,54 @@ def test_download_batch_result_packs_summary_and_successful_outputs(tmp_path: Pa
         assert "summary.json" in names
         assert "results/001-job-a-lesson-a.md" in names
         assert archive.read("results/001-job-a-lesson-a.md").decode("utf-8") == "# 子任务结果\n"
+
+
+def test_download_batch_result_packs_txt_outputs(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    batch_dir = tmp_path / "data/jobs/batches/batch-test-001"
+    result_path = tmp_path / "data/output/final/lesson-a.md"
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text("# 子任务结果\n", encoding="utf-8")
+    (batch_dir / "summary.md").write_text("# Batch Summary\n", encoding="utf-8")
+    (batch_dir / "summary.json").write_text('{"total": 1}', encoding="utf-8")
+    (batch_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "batch-test-001",
+                "kind": "batch",
+                "status": "success",
+                "created_at": "2026-03-16T01:30:00+08:00",
+                "updated_at": "2026-03-16T01:40:00+08:00",
+                "current_stage": "done",
+                "error_message": "",
+                "output_path": str(batch_dir / "summary.json"),
+                "items": [
+                    {
+                        "job_id": "job-a",
+                        "status": "success",
+                        "copied_output_path": str(result_path),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    response = request_json(create_app(project_root=tmp_path), "GET", "/api/batches/batch-test-001/result?format=txt")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert "batch-test-001-results-txt.zip" in response.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = set(archive.namelist())
+        assert "summary.md" in names
+        assert "summary.json" in names
+        assert "results/001-job-a-lesson-a.txt" in names
+        assert archive.read("results/001-job-a-lesson-a.txt").decode("utf-8") == "子任务结果\n"
 
 
 def test_get_stage_runs_lists_persisted_stage_states(tmp_path: Path) -> None:

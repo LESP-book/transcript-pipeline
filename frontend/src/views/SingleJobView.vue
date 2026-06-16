@@ -249,7 +249,7 @@ onBeforeUnmount(stopPolling);
               <n-form-item label="成果获取方式" required>
                 <n-alert type="info" :bordered="false" class="server-output-note">
                   <div class="server-output-note__body">
-                    <span>处理完成后，到任务列表点击“下载结果”获取最终 Markdown。</span>
+                    <span>处理完成后，到任务列表点击“下载结果”选择 Markdown 或 TXT。</span>
                     <small>服务器默认保存目录：{{ form.output_dir || "配置加载中..." }}</small>
                   </div>
                 </n-alert>

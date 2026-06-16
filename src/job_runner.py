@@ -888,6 +888,9 @@ def copy_final_output(job_paths: JobPaths, output_dir: Path, final_filename: str
     ensure_directory(output_dir)
     destination_path = output_dir / final_filename
     shutil.copy2(source_path, destination_path)
+    text_source_path = source_path.with_suffix(".txt")
+    if text_source_path.is_file():
+        shutil.copy2(text_source_path, destination_path.with_suffix(".txt"))
     return source_path, destination_path
 
 

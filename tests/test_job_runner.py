@@ -326,6 +326,7 @@ def test_run_single_job_copies_final_markdown_to_output_dir(
         final_dir = job_loaded_settings.path_for("final_dir")
         final_dir.mkdir(parents=True, exist_ok=True)
         (final_dir / f"{CANONICAL_INPUT_BASENAME}.md").write_text("# 最终稿\n\n正文", encoding="utf-8")
+        (final_dir / f"{CANONICAL_INPUT_BASENAME}.txt").write_text("最终稿\n\n正文\n", encoding="utf-8")
 
     monkeypatch.setattr("src.job_runner.run_job_pipeline", fake_run_job_pipeline)
 
@@ -346,6 +347,7 @@ def test_run_single_job_copies_final_markdown_to_output_dir(
     assert result.final_markdown_path.read_text(encoding="utf-8") == "# 最终稿\n\n正文"
     assert result.copied_output_path == output_dir / "lesson.md"
     assert result.copied_output_path.read_text(encoding="utf-8") == "# 最终稿\n\n正文"
+    assert (output_dir / "lesson.txt").read_text(encoding="utf-8") == "最终稿\n\n正文\n"
     assert seen["backend_override"] == "gemini_cli"
     assert seen["llm_model"] == "gpt-5.5"
     assert seen["llm_reasoning_effort"] == "medium"
@@ -661,6 +663,7 @@ def test_run_batch_jobs_marks_failed_stage_skips_later_stages_and_records_output
             final_dir = job_loaded_settings.path_for("final_dir")
             final_dir.mkdir(parents=True, exist_ok=True)
             (final_dir / f"{CANONICAL_INPUT_BASENAME}.md").write_text("# 批量输出\n", encoding="utf-8")
+            (final_dir / f"{CANONICAL_INPUT_BASENAME}.txt").write_text("批量输出\n", encoding="utf-8")
         return 0
 
     monkeypatch.setattr("src.job_runner.run_stage", fake_run_stage)
@@ -697,6 +700,7 @@ def test_run_batch_jobs_marks_failed_stage_skips_later_stages_and_records_output
     assert items_by_job_id["job-a"].status == "success"
     assert items_by_job_id["job-a"].copied_output_path == output_dir / "lesson-a.md"
     assert items_by_job_id["job-a"].copied_output_path.read_text(encoding="utf-8") == "# 批量输出\n"
+    assert (output_dir / "lesson-a.txt").read_text(encoding="utf-8") == "批量输出\n"
     assert items_by_job_id["job-b"].status == "failed"
     assert items_by_job_id["job-b"].failed_stage == "prepare-reference"
     assert "exit_code=1" in (items_by_job_id["job-b"].error_message or "")

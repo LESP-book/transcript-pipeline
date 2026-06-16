@@ -6,6 +6,7 @@ import {
   NCollapseTransition,
   NDescriptions,
   NDescriptionsItem,
+  NDropdown,
   NFlex,
   NSelect,
   NTag,
@@ -24,6 +25,7 @@ import {
   rerunJob,
   type BatchItemState,
   type JobInputSummary,
+  type ResultDownloadFormat,
 } from "../api/client";
 import JobArtifactsViewer from "./JobArtifactsViewer.vue";
 
@@ -90,33 +92,41 @@ const canRerun = computed(() => {
 const canViewArtifacts = computed(() => kind.value === "job");
 const canDownloadSingleResult = computed(() => kind.value === "job" && status.value === "success" && Boolean(props.state.output_path));
 const canDownloadBatchResult = computed(() => kind.value === "batch" && hasBatchOutputs.value);
+const resultDownloadOptions: { label: string; key: ResultDownloadFormat }[] = [
+  { label: "下载 Markdown", key: "markdown" },
+  { label: "下载 TXT", key: "txt" },
+];
 
 function openDownload(url: string) {
   window.location.href = url;
 }
 
-function handleSingleResultDownload() {
+function toResultDownloadFormat(key: string | number): ResultDownloadFormat {
+  return key === "txt" ? "txt" : "markdown";
+}
+
+function handleSingleResultDownload(format: ResultDownloadFormat = "markdown") {
   if (!stateId.value) {
     message.error("缺少任务 ID，无法下载结果。");
     return;
   }
-  openDownload(jobResultUrl(stateId.value));
+  openDownload(jobResultUrl(stateId.value, format));
 }
 
-function handleBatchResultDownload() {
+function handleBatchResultDownload(format: ResultDownloadFormat = "markdown") {
   if (!stateId.value) {
     message.error("缺少批量任务 ID，无法下载结果。");
     return;
   }
-  openDownload(batchResultUrl(stateId.value));
+  openDownload(batchResultUrl(stateId.value, format));
 }
 
-function handleBatchItemResultDownload(item: BatchItemState) {
+function handleBatchItemResultDownload(item: BatchItemState, format: ResultDownloadFormat = "markdown") {
   if (!stateId.value || !item.job_id) {
     message.error("缺少批量子任务 ID，无法下载结果。");
     return;
   }
-  openDownload(batchItemResultUrl(stateId.value, item.job_id));
+  openDownload(batchItemResultUrl(stateId.value, item.job_id, format));
 }
 
 function textValue(value: unknown) {
@@ -526,24 +536,36 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
         <n-tag :type="statusType" round size="medium" :bordered="false" class="status-badge">
           {{ String(state.status ?? "-") }}
         </n-tag>
-        <n-button
+        <n-dropdown
           v-if="canDownloadSingleResult"
-          type="success"
-          size="small"
-          secondary
-          @click.stop="handleSingleResultDownload"
+          trigger="click"
+          :options="resultDownloadOptions"
+          @select="(key) => handleSingleResultDownload(toResultDownloadFormat(key))"
         >
-          下载结果
-        </n-button>
-        <n-button
+          <n-button
+            type="success"
+            size="small"
+            secondary
+            @click.stop
+          >
+            下载结果
+          </n-button>
+        </n-dropdown>
+        <n-dropdown
           v-if="canDownloadBatchResult"
-          type="success"
-          size="small"
-          secondary
-          @click.stop="handleBatchResultDownload"
+          trigger="click"
+          :options="resultDownloadOptions"
+          @select="(key) => handleBatchResultDownload(toResultDownloadFormat(key))"
         >
-          下载全部结果
-        </n-button>
+          <n-button
+            type="success"
+            size="small"
+            secondary
+            @click.stop
+          >
+            下载全部结果
+          </n-button>
+        </n-dropdown>
         <n-button size="small" secondary @click.stop="expanded = !expanded">
           {{ expanded ? "收起详情" : "展开详情" }}
         </n-button>
@@ -606,7 +628,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
         :bordered="false"
         class="result-hint"
       >
-        结果已保存在服务器，局域网使用者可直接点击“下载结果”获取最终 Markdown。
+        结果已保存在服务器，局域网使用者可直接点击“下载结果”选择 Markdown 或 TXT。
       </n-alert>
       <n-alert
         v-else-if="canDownloadBatchResult"
@@ -614,7 +636,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
         :bordered="false"
         class="result-hint"
       >
-        批量任务已产生可下载结果，可下载全部成功产物，也可展开后按子任务分别下载。
+        批量任务已产生可下载结果，可下载全部成功产物，也可展开后按子任务分别选择 Markdown 或 TXT。
       </n-alert>
 
       <n-collapse-transition :show="expanded">
@@ -693,15 +715,21 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
                   <n-tag size="small" :type="itemStatusType(item.status)" :bordered="false">
                     {{ item.status || "-" }}
                   </n-tag>
-                  <n-button
-                    size="small"
-                    type="primary"
-                    secondary
+                  <n-dropdown
+                    trigger="click"
+                    :options="resultDownloadOptions"
                     :disabled="item.status !== 'success' || !item.copied_output_path"
-                    @click="handleBatchItemResultDownload(item)"
+                    @select="(key) => handleBatchItemResultDownload(item, toResultDownloadFormat(key))"
                   >
-                    下载结果
-                  </n-button>
+                    <n-button
+                      size="small"
+                      type="primary"
+                      secondary
+                      :disabled="item.status !== 'success' || !item.copied_output_path"
+                    >
+                      下载结果
+                    </n-button>
+                  </n-dropdown>
                   <n-select
                     size="small"
                     :value="batchItemRerunStageValue(item)"

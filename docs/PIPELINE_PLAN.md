@@ -245,11 +245,11 @@ text
 
 ### 目标
 
-将阶段 6 已生成的 `final_markdown` 写入最终输出目录。
+将阶段 6 已生成的 `final_markdown` 写入最终输出目录，并同步生成 TXT 版本供下载选择。
 
 ### 预期格式
 
-优先 Markdown 落盘，不再重组正文结构。
+Markdown 与 TXT 同时落盘，不再重组正文结构；TXT 由 Markdown 去除常见标记后生成。
 
 ### 输入
 
@@ -258,6 +258,7 @@ text
 ### 输出
 
 * `data/output/final/*.md`
+* `data/output/final/*.txt`
 
 ### 当前边界
 
@@ -320,4 +321,3 @@ text
 * 或重新验证
 
 而不是硬推进。
-

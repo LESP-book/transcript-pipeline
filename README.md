@@ -15,7 +15,7 @@
 - 第四阶段：块级对齐与分段增强版（保留为辅助调试链路）
 - 第五阶段：块级内容候选分类（保留为辅助调试链路）
 - 第六阶段：AI 后端整篇整理，直接读取 `asr.txt + reference.txt` 产出最终 Markdown 草稿（默认 `codex_api`，旧 `codex_cli` / `gemini_cli` 可显式指定）
-- 第七阶段：将阶段 6 的 Markdown 结果写入最终输出目录
+- 第七阶段：将阶段 6 的 Markdown 结果写入最终输出目录，并同步生成 TXT
 - 第八阶段：单任务 job 入口，支持显式指定视频、参考源和输出目录
 - 第九阶段：批量 job 入口，支持按 manifest、basename 配对和共享参考三种模式批量运行
 
@@ -496,7 +496,7 @@ http://192.168.1.20:5173
 
 在 Web UI 中，输出目录是主机上的服务器保存位置，普通局域网使用者不需要填写或进入这个目录。任务完成后进入 `任务列表`：
 
-- 单任务：点击任务卡片上的 `下载结果` 获取最终 Markdown。
+- 单任务：点击任务卡片上的 `下载结果`，选择下载 Markdown 或 TXT。
 - 批量任务：点击 `下载全部结果` 获取成功子任务的 ZIP 包；展开批量任务后，也可以在子任务列表中分别下载每个成功子任务的结果。
 
 也可以直接使用 Python 脚本：
@@ -697,8 +697,8 @@ http://127.0.0.1:5173
 阶段 7 说明：
 
 - 输入为 `data/intermediate/refined/*.json`
-- 输出为 `data/output/final/*.md`
-- 当前生成的是最终 Markdown 校对稿，供人工最后通读和少量修字
+- 输出为 `data/output/final/*.md` 与 `data/output/final/*.txt`
+- 当前生成的是最终校对稿，Markdown 供保留结构阅读，TXT 供纯文本下载和校对
 - 阶段 7 只负责把阶段 6 已生成的 `final_markdown` 落盘
 - 不再负责正文结构重组
 
@@ -805,7 +805,7 @@ http://127.0.0.1:5173
   - 本地 `pdf`
   - 公开网页链接
 - 网页链接若目标是 PDF，会先下载 PDF，再按阶段 3 处理
-- 最终 Markdown 会额外复制到 `--output-dir`
+- 最终 Markdown 与 TXT 会额外复制到 `--output-dir`
 - `config/glossaries/marxism_common.txt` 会默认参与构造本次任务的 `asr.initial_prompt`
 - `--book-name`、`--chapter`、`--glossary-file` 会追加到本次任务的 `initial_prompt`
 - `--backend` 只覆盖本次任务的阶段 6 后端选择，可用值为 `codex_api`、`codex_cli`、`gemini_cli`、`both`
