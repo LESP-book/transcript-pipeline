@@ -141,6 +141,14 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+新电脑的 WSL2 项目环境可以直接使用安装脚本：
+
+```bash
+bash scripts/install_wsl2_env.sh
+```
+
+详细步骤见 `docs/INSTALL_NEW_MACHINE.md`。该脚本只处理 WSL2 Linux 内部环境，不处理 Windows 宿主机安装。
+
 ## Codex API 模式
 
 当前默认 AI 后端已经切到 `codex_api`。使用前先启动 `codex-lb`，再在当前 shell 配置 API 地址和 key：
