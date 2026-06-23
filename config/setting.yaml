@@ -4,7 +4,7 @@ project:
   description: 读书会录屏整理流水线
 
 runtime:
-  profile: local_cpu
+  profile: wsl2_gpu_high_accuracy
   environment: local
   log_level: INFO
 
@@ -23,7 +23,14 @@ profiles:
     batch_size: 8
     temp_dir: /tmp/transcript-pipeline
     cache_dir: ~/.cache/transcript-pipeline
-
+  wsl2_gpu_high_accuracy:
+    device: cuda
+    asr_compute_type: float16
+    asr_model_size: large-v3-turbo
+    batch_size: 4
+    beam_size: 8
+    temp_dir: /tmp/transcript-pipeline
+    cache_dir: ~/.cache/transcript-pipeline
 paths:
   videos_dir: data/input/videos
   audio_dir: data/input/audio
@@ -72,7 +79,7 @@ reference:
   prefer_existing_text: true
   run_ocr_when_needed: true
   ai_ocr_backend: codex_api
-  gemini_ocr_model: gemini-3-flash-preview
+  gemini_ocr_model: Gemini 3.5 Flash (High)
   gemini_ocr_fallback_model: ""
   codex_ocr_model: gpt-5.4-mini
   codex_ocr_reasoning_effort: high
@@ -101,6 +108,10 @@ llm:
   enabled: false
   provider: openai
   model: gpt-5.5
+  gemini_model: Gemini 3.1 Pro (High)
+  gemini_fallback_model: ""
+  backends:
+    - codex_api
   reasoning_effort: high
   temperature: 0.1
   max_output_tokens: 4000

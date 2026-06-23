@@ -36,7 +36,7 @@ def test_main_accepts_backend_and_passes_to_run_single_job(monkeypatch, tmp_path
             "--output-dir",
             str(output_dir),
             "--backend",
-            "gemini_cli",
+            "agy",
         ],
     )
 
@@ -54,4 +54,4 @@ def test_main_accepts_backend_and_passes_to_run_single_job(monkeypatch, tmp_path
     monkeypatch.setattr(module, "run_single_job", fake_run_single_job)
 
     assert module.main() == 0
-    assert seen["backend"] == "gemini_cli"
+    assert seen["backend"] == "agy"

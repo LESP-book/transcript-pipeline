@@ -1,6 +1,6 @@
 import { onMounted, ref } from "vue";
 
-import { getConfig } from "../api/client";
+import { getConfig, getFrontendSettings } from "../api/client";
 
 export function useConfigOptions() {
   const profiles = ref<string[]>([]);
@@ -8,6 +8,8 @@ export function useConfigOptions() {
   const videoExtensions = ref<string[]>([]);
   const referenceExtensions = ref<string[]>([]);
   const activeProfile = ref("");
+  const defaultBackend = ref("");
+  const defaultOcrBackend = ref("");
   const defaultOutputDir = ref("");
   const uploadDir = ref("");
   const loading = ref(false);
@@ -23,8 +25,16 @@ export function useConfigOptions() {
       videoExtensions.value = config.video_extensions;
       referenceExtensions.value = config.reference_extensions;
       activeProfile.value = config.active_profile;
+      defaultBackend.value = config.default_backend || config.configured_backends[0] || "";
       defaultOutputDir.value = config.default_output_dir;
       uploadDir.value = config.upload_dir;
+
+      if (config.default_ocr_backend) {
+        defaultOcrBackend.value = config.default_ocr_backend;
+      } else {
+        const settings = await getFrontendSettings();
+        defaultOcrBackend.value = settings.ocr_backend;
+      }
     } catch (caught) {
       error.value = caught instanceof Error ? caught.message : "加载配置失败";
     } finally {
@@ -40,6 +50,8 @@ export function useConfigOptions() {
     videoExtensions,
     referenceExtensions,
     activeProfile,
+    defaultBackend,
+    defaultOcrBackend,
     defaultOutputDir,
     uploadDir,
     loading,

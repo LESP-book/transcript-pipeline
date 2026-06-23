@@ -19,8 +19,8 @@ from src.schemas import LoadedSettings
 MIN_EXTRACTED_PDF_TEXT_LENGTH = 10
 AI_OCR_BACKEND_CODEX_API = "codex_api"
 AI_OCR_BACKEND_CODEX_CLI = "codex_cli"
-AI_OCR_BACKEND_GEMINI_CLI = "gemini_cli"
-VALID_AI_OCR_BACKENDS = (AI_OCR_BACKEND_CODEX_API, AI_OCR_BACKEND_GEMINI_CLI, AI_OCR_BACKEND_CODEX_CLI)
+AI_OCR_BACKEND_AGY = "agy"
+VALID_AI_OCR_BACKENDS = (AI_OCR_BACKEND_CODEX_API, AI_OCR_BACKEND_AGY, AI_OCR_BACKEND_CODEX_CLI)
 META_LINE_MARKERS = (
     "CRITICAL INSTRUCTION",
     "EPHEMERAL_MESSAGE",
@@ -53,8 +53,8 @@ class PdfDependencyError(ReferencePreparationError):
     """Raised when PDF extraction dependencies are missing."""
 
 
-class GeminiOCRError(ReferencePreparationError):
-    """Raised when Gemini CLI OCR fails."""
+class AgyOCRError(ReferencePreparationError):
+    """agy OCR 调用失败。"""
 
 
 class CodexOCRError(ReferencePreparationError):
@@ -528,8 +528,8 @@ def describe_ai_ocr_backend(backend: str) -> str:
         return "Codex API"
     if backend == AI_OCR_BACKEND_CODEX_CLI:
         return "Codex CLI"
-    if backend == AI_OCR_BACKEND_GEMINI_CLI:
-        return "Gemini"
+    if backend == AI_OCR_BACKEND_AGY:
+        return "agy"
     return backend
 
 
@@ -538,8 +538,8 @@ def ai_ocr_method_name(backend: str) -> str:
         return "codex_api_pdf_ocr"
     if backend == AI_OCR_BACKEND_CODEX_CLI:
         return "codex_cli_pdf_ocr"
-    if backend == AI_OCR_BACKEND_GEMINI_CLI:
-        return "gemini_cli_pdf_ocr"
+    if backend == AI_OCR_BACKEND_AGY:
+        return "agy_pdf_ocr"
     raise ReferencePreparationError(f"未知 PDF AI OCR 后端: {backend}")
 
 
@@ -547,10 +547,10 @@ def build_ai_ocr_fallback_backends(primary_backend: str) -> list[str]:
     return [backend for backend in VALID_AI_OCR_BACKENDS if backend != primary_backend]
 
 
-def build_gemini_ocr_workspace(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[Path, Path]:
+def build_agy_ocr_workspace(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[Path, Path]:
     ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
     source_fingerprint = hashlib.sha1(str(reference_path.resolve()).encode("utf-8")).hexdigest()[:10]
-    workspace_dir = ensure_directory(ocr_dir / "gemini_cli_workspace" / f"{reference_path.stem}-{source_fingerprint}")
+    workspace_dir = ensure_directory(ocr_dir / "agy_workspace" / f"{reference_path.stem}-{source_fingerprint}")
     staged_pdf_path = workspace_dir / reference_path.name
     if staged_pdf_path.resolve() != reference_path.resolve():
         shutil.copy2(reference_path, staged_pdf_path)
@@ -610,9 +610,9 @@ def run_codex_api_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings)
     return text, [f"已使用 Codex API OCR。model={configured_model}"]
 
 
-def run_gemini_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
-    if shutil.which("gemini") is None:
-        raise GeminiOCRError("未找到 gemini CLI，无法执行 Gemini OCR。")
+def run_agy_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
+    if shutil.which("agy") is None:
+        raise AgyOCRError("未找到 agy CLI，无法执行 agy OCR。")
 
     reference_settings = loaded_settings.settings.reference
     models_to_try = [reference_settings.gemini_ocr_model]
@@ -620,12 +620,20 @@ def run_gemini_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) ->
     if fallback_model and fallback_model not in models_to_try:
         models_to_try.append(fallback_model)
 
-    workspace_dir, staged_pdf_path = build_gemini_ocr_workspace(reference_path, loaded_settings)
+    workspace_dir, staged_pdf_path = build_agy_ocr_workspace(reference_path, loaded_settings)
     prompt = build_gemini_ocr_prompt(staged_pdf_path.name)
     last_error: str | None = None
 
     for index, model_name in enumerate(models_to_try):
-        command = ["gemini", "-m", model_name, "-p", prompt]
+        command = [
+            "agy",
+            "--model",
+            model_name,
+            "--print",
+            prompt,
+            "--print-timeout",
+            f"{reference_settings.ocr_timeout_seconds}s",
+        ]
         try:
             completed = subprocess.run(
                 command,
@@ -636,28 +644,28 @@ def run_gemini_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) ->
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise GeminiOCRError(f"Gemini OCR 超时: {reference_path.name}") from exc
+            raise AgyOCRError(f"agy OCR 超时: {reference_path.name}") from exc
         except OSError as exc:
-            raise GeminiOCRError(f"Gemini OCR 启动失败: {reference_path.name} | {exc}") from exc
+            raise AgyOCRError(f"agy OCR 启动失败: {reference_path.name} | {exc}") from exc
 
         if completed.returncode != 0:
             stderr = completed.stderr.strip() or completed.stdout.strip()
-            last_error = stderr or f"gemini exited with code {completed.returncode}"
+            last_error = stderr or f"agy exited with code {completed.returncode}"
             if is_gemini_capacity_error(last_error) and index < len(models_to_try) - 1:
                 continue
-            raise GeminiOCRError(f"Gemini OCR 失败: {reference_path.name} | {last_error}")
+            raise AgyOCRError(f"agy OCR 失败: {reference_path.name} | {last_error}")
 
         text = sanitize_gemini_ocr_text(completed.stdout)
         if is_effectively_empty_text(text):
-            last_error = "Gemini OCR 返回为空或接近空"
+            last_error = "agy OCR 返回为空或接近空"
             continue
 
         ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
-        sidecar_path = ocr_dir / f"{reference_path.stem}.gemini_ocr.txt"
+        sidecar_path = ocr_dir / f"{reference_path.stem}.agy_ocr.txt"
         sidecar_path.write_text(text, encoding="utf-8")
-        return text, [f"PDF 文字层为空，已使用 Gemini OCR fallback。model={model_name}"]
+        return text, [f"PDF 文字层为空，已使用 agy OCR fallback。model={model_name}"]
 
-    raise GeminiOCRError(f"Gemini OCR 未返回有效文本: {reference_path.name} | {last_error or 'unknown error'}")
+    raise AgyOCRError(f"agy OCR 未返回有效文本: {reference_path.name} | {last_error or 'unknown error'}")
 
 
 def run_codex_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
@@ -719,8 +727,8 @@ def run_pdf_ai_ocr_backend(reference_path: Path, loaded_settings: LoadedSettings
     if backend == AI_OCR_BACKEND_CODEX_API:
         text, warnings = run_codex_api_pdf_ocr(reference_path, loaded_settings)
         return text, ai_ocr_method_name(backend), warnings
-    if backend == AI_OCR_BACKEND_GEMINI_CLI:
-        text, warnings = run_gemini_pdf_ocr(reference_path, loaded_settings)
+    if backend == AI_OCR_BACKEND_AGY:
+        text, warnings = run_agy_pdf_ocr(reference_path, loaded_settings)
         return text, ai_ocr_method_name(backend), warnings
     if backend == AI_OCR_BACKEND_CODEX_CLI:
         text, warnings = run_codex_pdf_ocr(reference_path, loaded_settings)
@@ -796,7 +804,7 @@ def read_pdf_reference(reference_path: Path, loaded_settings: LoadedSettings) ->
 
     try:
         return run_pdf_ai_ocr_backend(reference_path, loaded_settings, primary_backend)
-    except (GeminiOCRError, CodexOCRError) as exc:
+    except (AgyOCRError, CodexOCRError) as exc:
         extracted_text, warnings = extract_pdf_text(reference_path)
         if not is_effectively_empty_text(extracted_text):
             return (
@@ -822,7 +830,7 @@ def read_pdf_reference(reference_path: Path, loaded_settings: LoadedSettings) ->
                     method,
                     [f"{primary_label} OCR 失败，已回退到 {fallback_label} OCR。reason={exc}"] + warnings + ocr_warnings,
                 )
-            except (GeminiOCRError, CodexOCRError) as fallback_exc:
+            except (AgyOCRError, CodexOCRError) as fallback_exc:
                 failure_reasons.append(f"{fallback_label}_reason={fallback_exc}")
 
         ocr_text, ocr_warnings = run_tesseract_pdf_ocr(reference_path, loaded_settings)

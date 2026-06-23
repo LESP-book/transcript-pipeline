@@ -197,7 +197,7 @@ def test_write_job_settings_applies_model_overrides(tmp_path: Path) -> None:
         model_overrides=ModelOverrides(
             llm_model="gpt-5.5",
             llm_reasoning_effort="low",
-            ocr_backend="gemini_cli",
+            ocr_backend="agy",
             ocr_model="gpt-5.4-mini",
             ocr_reasoning_effort="high",
         ),
@@ -207,7 +207,7 @@ def test_write_job_settings_applies_model_overrides(tmp_path: Path) -> None:
 
     assert payload["llm"]["model"] == "gpt-5.5"
     assert payload["llm"]["reasoning_effort"] == "low"
-    assert payload["reference"]["ai_ocr_backend"] == "gemini_cli"
+    assert payload["reference"]["ai_ocr_backend"] == "agy"
     assert payload["reference"]["codex_ocr_model"] == "gpt-5.4-mini"
     assert payload["reference"]["codex_ocr_reasoning_effort"] == "high"
 
@@ -336,7 +336,7 @@ def test_run_single_job_copies_final_markdown_to_output_dir(
         video=str(video_path),
         reference=str(reference_path),
         output_dir=str(output_dir),
-        backend="gemini_cli",
+        backend="agy",
         model="gpt-5.5",
         reasoning_effort="medium",
         ocr_model="gpt-5.4-mini",
@@ -348,7 +348,7 @@ def test_run_single_job_copies_final_markdown_to_output_dir(
     assert result.copied_output_path == output_dir / "lesson.md"
     assert result.copied_output_path.read_text(encoding="utf-8") == "# 最终稿\n\n正文"
     assert (output_dir / "lesson.txt").read_text(encoding="utf-8") == "最终稿\n\n正文\n"
-    assert seen["backend_override"] == "gemini_cli"
+    assert seen["backend_override"] == "agy"
     assert seen["llm_model"] == "gpt-5.5"
     assert seen["llm_reasoning_effort"] == "medium"
     assert seen["ocr_model"] == "gpt-5.4-mini"

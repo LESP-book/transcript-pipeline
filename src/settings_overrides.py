@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from src.schemas import LoadedSettings
 
-VALID_OCR_BACKENDS = {"codex_api", "codex_cli", "gemini_cli"}
+VALID_OCR_BACKENDS = {"codex_api", "codex_cli", "agy"}
 
 
 class SettingsOverrideError(ValueError):

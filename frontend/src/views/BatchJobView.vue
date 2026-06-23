@@ -37,7 +37,18 @@ interface SourcePreview {
 }
 
 const message = useMessage();
-const { activeProfile, backends, defaultOutputDir, error, loading, profiles, referenceExtensions, videoExtensions } = useConfigOptions();
+const {
+  activeProfile,
+  backends,
+  defaultBackend,
+  defaultOcrBackend,
+  defaultOutputDir,
+  error,
+  loading,
+  profiles,
+  referenceExtensions,
+  videoExtensions,
+} = useConfigOptions();
 const batchState = ref<JobState | null>(null);
 const submitting = ref(false);
 const previewLoading = ref(false);
@@ -83,8 +94,8 @@ const form = reactive<{
 
 const ocrBackendOptions = [
   { label: "Codex API", value: "codex_api" },
+  { label: "agy（Gemini）", value: "agy" },
   { label: "Codex CLI", value: "codex_cli" },
-  { label: "Gemini CLI", value: "gemini_cli" },
 ];
 const contentTypeOptions = [
   { label: "读书会整理", value: "book_club" },
@@ -158,6 +169,18 @@ watch(activeProfile, (value) => {
 watch(defaultOutputDir, (value) => {
   if (!form.output_dir && value) {
     form.output_dir = value;
+  }
+});
+
+watch(defaultBackend, (value) => {
+  if (!form.backend && value) {
+    form.backend = value;
+  }
+});
+
+watch(defaultOcrBackend, (value) => {
+  if (!form.ocr_backend && value) {
+    form.ocr_backend = value;
   }
 });
 

@@ -10,7 +10,7 @@ from src.markdown_utils import markdown_document_to_plain_text
 from src.runtime_utils import ensure_directory
 from src.schemas import LoadedSettings
 
-REFINEMENT_SIDECAR_SUFFIXES = (".codex_api.json", ".codex_cli.json", ".gemini_cli.json")
+REFINEMENT_SIDECAR_SUFFIXES = (".codex_api.json", ".codex_cli.json", ".agy.json")
 
 
 class ExportError(RuntimeError):

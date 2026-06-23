@@ -8,7 +8,7 @@ import pytest
 from src.config_loader import load_settings
 from src.reference_utils import (
     CodexOCRError,
-    GeminiOCRError,
+    AgyOCRError,
     ReferenceInputEmptyError,
     build_reference_output_paths,
     is_effectively_empty_text,
@@ -20,7 +20,7 @@ from src.reference_utils import (
     run_codex_pdf_ocr,
     sanitize_ocrmypdf_text,
     sanitize_gemini_ocr_text,
-    run_gemini_pdf_ocr,
+    run_agy_pdf_ocr,
 )
 from tests.helpers import write_minimal_settings
 
@@ -115,11 +115,11 @@ def test_prepare_reference_file_uses_ocr_fallback_when_pdf_text_layer_empty(
     assert "Codex API OCR 提取出来的中文文本内容" in result.extracted_text
 
 
-def test_prepare_reference_file_prefers_gemini_ocr_even_when_pdf_has_text_layer(
+def test_prepare_reference_file_prefers_agy_ocr_even_when_pdf_has_text_layer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True, "ai_ocr_backend": "gemini_cli"})
+    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True, "ai_ocr_backend": "agy"})
     reference_dir = tmp_path / "data/input/reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
     source = reference_dir / "book.pdf"
@@ -128,8 +128,8 @@ def test_prepare_reference_file_prefers_gemini_ocr_even_when_pdf_has_text_layer(
     loaded_settings = load_settings(project_root=tmp_path)
 
     monkeypatch.setattr(
-        "src.reference_utils.run_gemini_pdf_ocr",
-        lambda _path, _settings: ("这是 Gemini 优先 OCR 的结果。", ["已优先使用 Gemini OCR。model=gemini-3-flash-preview"]),
+        "src.reference_utils.run_agy_pdf_ocr",
+        lambda _path, _settings: ("这是 agy 优先 OCR 的结果。", ["已优先使用 agy OCR。model=Gemini 3.5 Flash (High)"]),
     )
     monkeypatch.setattr(
         "src.reference_utils.extract_pdf_text",
@@ -139,16 +139,16 @@ def test_prepare_reference_file_prefers_gemini_ocr_even_when_pdf_has_text_layer(
     result = prepare_reference_file(source, loaded_settings)
 
     assert result.success is True
-    assert result.extraction_method == "gemini_cli_pdf_ocr"
-    assert "Gemini 优先 OCR 的结果" in result.extracted_text
-    assert "优先使用 Gemini OCR" in " ".join(result.warnings)
+    assert result.extraction_method == "agy_pdf_ocr"
+    assert "agy 优先 OCR 的结果" in result.extracted_text
+    assert "优先使用 agy OCR" in " ".join(result.warnings)
 
 
-def test_prepare_reference_file_falls_back_to_text_layer_when_gemini_ocr_fails_and_pdf_has_text(
+def test_prepare_reference_file_falls_back_to_text_layer_when_agy_ocr_fails_and_pdf_has_text(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True, "ai_ocr_backend": "gemini_cli"})
+    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True, "ai_ocr_backend": "agy"})
     reference_dir = tmp_path / "data/input/reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
     source = reference_dir / "book.pdf"
@@ -156,10 +156,10 @@ def test_prepare_reference_file_falls_back_to_text_layer_when_gemini_ocr_fails_a
 
     loaded_settings = load_settings(project_root=tmp_path)
 
-    def fake_gemini_ocr(_path: Path, _settings) -> tuple[str, list[str]]:
-        raise GeminiOCRError("capacity exhausted")
+    def fake_agy_ocr(_path: Path, _settings) -> tuple[str, list[str]]:
+        raise AgyOCRError("capacity exhausted")
 
-    monkeypatch.setattr("src.reference_utils.run_gemini_pdf_ocr", fake_gemini_ocr)
+    monkeypatch.setattr("src.reference_utils.run_agy_pdf_ocr", fake_agy_ocr)
     monkeypatch.setattr(
         "src.reference_utils.extract_pdf_text",
         lambda _path: ("这是 PDF 文字层内容。", []),
@@ -169,15 +169,15 @@ def test_prepare_reference_file_falls_back_to_text_layer_when_gemini_ocr_fails_a
 
     assert result.success is True
     assert result.extraction_method == "pypdf_text_extract"
-    assert "Gemini OCR 失败，已回退到 PDF 文字层提取" in " ".join(result.warnings)
+    assert "agy OCR 失败，已回退到 PDF 文字层提取" in " ".join(result.warnings)
     assert result.extracted_text == "这是 PDF 文字层内容。"
 
 
-def test_prepare_reference_file_falls_back_to_codex_ocr_when_gemini_ocr_fails(
+def test_prepare_reference_file_falls_back_to_codex_ocr_when_agy_ocr_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True, "ai_ocr_backend": "gemini_cli"})
+    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True, "ai_ocr_backend": "agy"})
     reference_dir = tmp_path / "data/input/reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
     source = reference_dir / "scan.pdf"
@@ -190,10 +190,10 @@ def test_prepare_reference_file_falls_back_to_codex_ocr_when_gemini_ocr_fails(
         lambda _path: ("", ["PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。"]),
     )
 
-    def fake_gemini_ocr(_path: Path, _settings) -> tuple[str, list[str]]:
-        raise GeminiOCRError("network close")
+    def fake_agy_ocr(_path: Path, _settings) -> tuple[str, list[str]]:
+        raise AgyOCRError("network close")
 
-    monkeypatch.setattr("src.reference_utils.run_gemini_pdf_ocr", fake_gemini_ocr)
+    monkeypatch.setattr("src.reference_utils.run_agy_pdf_ocr", fake_agy_ocr)
     monkeypatch.setattr(
         "src.reference_utils.run_codex_api_pdf_ocr",
         lambda _path, _settings: (_ for _ in ()).throw(CodexOCRError("codex api unavailable")),
@@ -211,7 +211,7 @@ def test_prepare_reference_file_falls_back_to_codex_ocr_when_gemini_ocr_fails(
 
     assert result.success is True
     assert result.extraction_method == "codex_cli_pdf_ocr"
-    assert "Gemini OCR 失败，已回退到 Codex CLI OCR" in " ".join(result.warnings)
+    assert "agy OCR 失败，已回退到 Codex CLI OCR" in " ".join(result.warnings)
     assert "Codex OCR 提取出来的中文文本内容" in result.extracted_text
 
 
@@ -232,8 +232,8 @@ def test_prepare_reference_file_falls_back_to_ocrmypdf_when_codex_ocr_also_fails
         lambda _path: ("", ["PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。"]),
     )
 
-    def fake_gemini_ocr(_path: Path, _settings) -> tuple[str, list[str]]:
-        raise GeminiOCRError("network close")
+    def fake_agy_ocr(_path: Path, _settings) -> tuple[str, list[str]]:
+        raise AgyOCRError("network close")
 
     def fake_codex_ocr(_path: Path, _settings) -> tuple[str, list[str]]:
         raise CodexOCRError("codex cli timeout")
@@ -242,7 +242,7 @@ def test_prepare_reference_file_falls_back_to_ocrmypdf_when_codex_ocr_also_fails
         "src.reference_utils.run_codex_api_pdf_ocr",
         lambda _path, _settings: (_ for _ in ()).throw(CodexOCRError("codex api timeout")),
     )
-    monkeypatch.setattr("src.reference_utils.run_gemini_pdf_ocr", fake_gemini_ocr)
+    monkeypatch.setattr("src.reference_utils.run_agy_pdf_ocr", fake_agy_ocr)
     monkeypatch.setattr("src.reference_utils.run_codex_pdf_ocr", fake_codex_ocr)
     monkeypatch.setattr(
         "src.reference_utils.run_tesseract_pdf_ocr",
@@ -288,7 +288,7 @@ def test_prepare_reference_file_keeps_pdf_failure_when_ocr_disabled(
     ]
 
 
-def test_run_gemini_pdf_ocr_stages_pdf_into_isolated_workspace(
+def test_run_agy_pdf_ocr_stages_pdf_into_isolated_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -308,20 +308,20 @@ def test_run_gemini_pdf_ocr_stages_pdf_into_isolated_workspace(
 
         class Completed:
             returncode = 0
-            stdout = "这是 Gemini OCR 的结果。"
+            stdout = "这是 agy OCR 的结果。"
             stderr = ""
 
         return Completed()
 
-    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/gemini")
+    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/agy")
     monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
 
-    text, warnings = run_gemini_pdf_ocr(source, loaded_settings)
+    text, warnings = run_agy_pdf_ocr(source, loaded_settings)
 
     command = seen["command"]
     assert isinstance(command, list)
-    assert text == "这是 Gemini OCR 的结果。"
-    assert "Gemini OCR fallback" in " ".join(warnings)
+    assert text == "这是 agy OCR 的结果。"
+    assert "agy OCR fallback" in " ".join(warnings)
     assert command[2] == loaded_settings.settings.reference.gemini_ocr_model
     assert seen["cwd"] != str(tmp_path)
     assert seen["timeout"] == loaded_settings.settings.reference.ocr_timeout_seconds
@@ -329,8 +329,8 @@ def test_run_gemini_pdf_ocr_stages_pdf_into_isolated_workspace(
     staged_pdf = Path(str(seen["cwd"])) / source.name
     assert staged_pdf.exists()
     assert staged_pdf.read_bytes() == source.read_bytes()
-    assert f"@{{{source.name}}}" in command[-1]
-    assert str(source) not in command[-1]
+    assert f"@{{{source.name}}}" in command[4]
+    assert str(source) not in command[4]
 
 
 def test_run_codex_pdf_ocr_uses_configured_model_prompt_and_reasoning_effort(
@@ -543,14 +543,14 @@ def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_responses(
     assert "https://api.redworker.org/v1/responses" in command
 
 
-def test_run_gemini_pdf_ocr_uses_reference_fallback_model_only_for_ocr(
+def test_run_agy_pdf_ocr_uses_reference_fallback_model_only_for_ocr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_settings(
         tmp_path,
-        reference_overrides={"gemini_ocr_model": "gemini-3-flash-preview", "gemini_ocr_fallback_model": "gemini-2.5-flash"},
-        llm_overrides={"gemini_model": "gemini-3.1-pro-preview", "gemini_fallback_model": "gemini-3-flash-preview"},
+        reference_overrides={"gemini_ocr_model": "Gemini 3.5 Flash (High)", "gemini_ocr_fallback_model": "Gemini 3.5 Flash (Low)"},
+        llm_overrides={"gemini_model": "Gemini 3.1 Pro (High)", "gemini_fallback_model": ""},
     )
     loaded_settings = load_settings(project_root=tmp_path)
 
@@ -569,21 +569,21 @@ def test_run_gemini_pdf_ocr_uses_reference_fallback_model_only_for_ocr(
                 self.stdout = stdout
                 self.stderr = stderr
 
-        if command[2] == "gemini-3-flash-preview":
+        if command[2] == "Gemini 3.5 Flash (High)":
             return Completed(1, "", "429 MODEL_CAPACITY_EXHAUSTED")
-        return Completed(0, "这是 Gemini OCR 的结果。", "")
+        return Completed(0, "这是 agy OCR 的结果。", "")
 
-    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/gemini")
+    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/agy")
     monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
 
-    text, warnings = run_gemini_pdf_ocr(source, loaded_settings)
+    text, warnings = run_agy_pdf_ocr(source, loaded_settings)
 
-    assert text == "这是 Gemini OCR 的结果。"
+    assert text == "这是 agy OCR 的结果。"
     assert commands == [
-        ["gemini", "-m", "gemini-3-flash-preview", "-p", commands[0][4]],
-        ["gemini", "-m", "gemini-2.5-flash", "-p", commands[1][4]],
+        ["agy", "--model", "Gemini 3.5 Flash (High)", "--print", commands[0][4], "--print-timeout", "480s"],
+        ["agy", "--model", "Gemini 3.5 Flash (Low)", "--print", commands[1][4], "--print-timeout", "480s"],
     ]
-    assert "model=gemini-2.5-flash" in " ".join(warnings)
+    assert "model=Gemini 3.5 Flash (Low)" in " ".join(warnings)
 
 
 def test_sanitize_gemini_ocr_text_removes_leakage_page_markers_and_tail_repetition() -> None:
@@ -616,7 +616,7 @@ Page 1:
     )
 
 
-def test_run_gemini_pdf_ocr_sanitizes_model_output_before_return_and_sidecar(
+def test_run_agy_pdf_ocr_sanitizes_model_output_before_return_and_sidecar(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -644,12 +644,12 @@ OK, I will output purely the text from these pages.
 
         return Completed()
 
-    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/gemini")
+    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/agy")
     monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
 
-    text, _warnings = run_gemini_pdf_ocr(source, loaded_settings)
+    text, _warnings = run_agy_pdf_ocr(source, loaded_settings)
 
-    sidecar_path = loaded_settings.path_for("ocr_dir") / f"{source.stem}.gemini_ocr.txt"
+    sidecar_path = loaded_settings.path_for("ocr_dir") / f"{source.stem}.agy_ocr.txt"
     assert text == "第二节 巩固国家统一的重要政策措施"
     assert sidecar_path.read_text(encoding="utf-8") == "第二节 巩固国家统一的重要政策措施"
 

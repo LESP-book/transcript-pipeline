@@ -14,7 +14,7 @@ from src.refine_utils import (
     BACKEND_CODEX_API,
     BACKEND_CODEX,
     BACKEND_FALLBACK,
-    BACKEND_GEMINI,
+    BACKEND_AGY,
     BackendDocumentRefinementResult,
     PreReplacementSegment,
     CLIBackendError,
@@ -37,7 +37,7 @@ from src.refine_utils import (
     run_codex_api,
     resolve_refinement_input_paths,
     run_codex_cli,
-    run_gemini_cli,
+    run_agy,
     validate_minimal_edit_result,
 )
 from tests.helpers import write_minimal_settings
@@ -116,10 +116,10 @@ def test_build_fulltext_refine_prompt_contains_fulltext_context(tmp_path: Path) 
 
 def test_resolve_requested_backends_supports_single_and_dual_mode() -> None:
     assert resolve_requested_backends(None, [BACKEND_CODEX_API]) == [BACKEND_CODEX_API]
-    assert resolve_requested_backends("codex_api", [BACKEND_GEMINI]) == [BACKEND_CODEX_API]
-    assert resolve_requested_backends("codex_cli", [BACKEND_GEMINI]) == [BACKEND_CODEX]
-    assert resolve_requested_backends("gemini_cli", [BACKEND_CODEX]) == [BACKEND_GEMINI]
-    assert resolve_requested_backends("both", [BACKEND_CODEX]) == [BACKEND_CODEX, BACKEND_GEMINI]
+    assert resolve_requested_backends("codex_api", [BACKEND_AGY]) == [BACKEND_CODEX_API]
+    assert resolve_requested_backends("codex_cli", [BACKEND_AGY]) == [BACKEND_CODEX]
+    assert resolve_requested_backends("agy", [BACKEND_CODEX]) == [BACKEND_AGY]
+    assert resolve_requested_backends("both", [BACKEND_CODEX]) == [BACKEND_CODEX, BACKEND_AGY]
 
 
 def test_build_refinement_blocks_includes_adjacent_context() -> None:
@@ -492,9 +492,9 @@ def test_parse_backend_document_result_requires_fulltext() -> None:
         "refinement_notes": ["note"],
     }
 
-    result = parse_backend_document_result(BACKEND_GEMINI, payload)
+    result = parse_backend_document_result(BACKEND_AGY, payload)
 
-    assert result.backend == BACKEND_GEMINI
+    assert result.backend == BACKEND_AGY
     assert result.model_name == ""
     assert result.final_markdown == "# 标题\n\n> 完整精修文本"
     assert result.needs_review_sections[0]["excerpt"] == "片段"
@@ -518,8 +518,8 @@ def test_extract_event_stream_text_raises_on_failed_event() -> None:
         extract_event_stream_text(stream_text)
 
 
-def test_run_gemini_cli_uses_configured_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_minimal_settings(tmp_path, llm_overrides={"gemini_model": "gemini-2.5-flash", "timeout_seconds": 1800})
+def test_run_agy_uses_configured_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_minimal_settings(tmp_path, llm_overrides={"gemini_model": "Gemini 3.1 Pro (High)", "timeout_seconds": 1800})
     loaded_settings = load_settings(project_root=tmp_path)
     seen: dict[str, object] = {}
 
@@ -541,11 +541,19 @@ def test_run_gemini_cli_uses_configured_model(tmp_path: Path, monkeypatch: pytes
 
     monkeypatch.setattr("src.refine_utils.run_subprocess", fake_run_subprocess)
 
-    result = run_gemini_cli("prompt", loaded_settings)
+    result = run_agy("prompt", loaded_settings)
 
     assert "完整精修文本" in result.final_markdown
-    assert result.model_name == "gemini-2.5-flash"
-    assert seen["command"] == ["gemini", "-m", "gemini-2.5-flash", "-p", "prompt"]
+    assert result.model_name == "Gemini 3.1 Pro (High)"
+    assert seen["command"] == [
+        "agy",
+        "--model",
+        "Gemini 3.1 Pro (High)",
+        "--print",
+        "prompt",
+        "--print-timeout",
+        "1800s",
+    ]
     assert seen["prompt"] == ""
     assert seen["cwd"] == tmp_path
     assert seen["timeout_seconds"] == 1800
@@ -743,15 +751,15 @@ def test_run_codex_api_retries_with_curl_on_cloudflare_block(
     assert "Authorization: Bearer test-key" in str(seen["input"])
 
 
-def test_run_gemini_cli_retries_with_fallback_model_on_capacity_error(
+def test_run_agy_retries_with_fallback_model_on_capacity_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_settings(
         tmp_path,
         llm_overrides={
-            "gemini_model": "gemini-3.1-pro-preview",
-            "gemini_fallback_model": "gemini-3-flash",
+            "gemini_model": "Gemini 3.1 Pro (High)",
+            "gemini_fallback_model": "Gemini 3.5 Flash (High)",
             "timeout_seconds": 1800,
         },
     )
@@ -760,9 +768,9 @@ def test_run_gemini_cli_retries_with_fallback_model_on_capacity_error(
 
     def fake_run_subprocess(command: list[str], *, prompt: str, cwd: Path, timeout_seconds: int) -> str:
         seen_commands.append(command)
-        if command[2] == "gemini-3.1-pro-preview":
+        if command[2] == "Gemini 3.1 Pro (High)":
             raise CLIBackendRetryableError(
-                "CLI 命令执行失败: gemini -m gemini-3.1-pro-preview -p prompt | 429 MODEL_CAPACITY_EXHAUSTED"
+                "CLI 命令执行失败: agy --model 'Gemini 3.1 Pro (High)' --print prompt | 429 MODEL_CAPACITY_EXHAUSTED"
             )
         return json.dumps(
             {
@@ -777,13 +785,13 @@ def test_run_gemini_cli_retries_with_fallback_model_on_capacity_error(
 
     monkeypatch.setattr("src.refine_utils.run_subprocess", fake_run_subprocess)
 
-    result = run_gemini_cli("prompt", loaded_settings)
+    result = run_agy("prompt", loaded_settings)
 
     assert result.final_markdown == "# 标题\n\n备用模型结果"
-    assert result.model_name == "gemini-3-flash"
+    assert result.model_name == "Gemini 3.5 Flash (High)"
     assert seen_commands == [
-        ["gemini", "-m", "gemini-3.1-pro-preview", "-p", "prompt"],
-        ["gemini", "-m", "gemini-3-flash", "-p", "prompt"],
+        ["agy", "--model", "Gemini 3.1 Pro (High)", "--print", "prompt", "--print-timeout", "1800s"],
+        ["agy", "--model", "Gemini 3.5 Flash (High)", "--print", "prompt", "--print-timeout", "1800s"],
     ]
 
 
@@ -798,8 +806,8 @@ def test_compare_backend_documents_prefers_reference_closer_result_for_quote_hea
         refinement_notes=[],
     )
     gemini_result = BackendDocumentRefinementResult(
-        backend=BACKEND_GEMINI,
-        model_name="gemini-3.1-pro-preview",
+        backend=BACKEND_AGY,
+        model_name="Gemini 3.1 Pro (High)",
         final_markdown="# 文稿\n\n九月零云至 崇尚敬江山。\n\n兵起奋是人还 三十八年过去。",
         refinement_strategy="final_markdown_cleanup",
         refinement_reason="gemini",
@@ -911,7 +919,7 @@ def test_build_single_pass_refine_prompt_adds_backend_specific_review_warning(tm
     gemini_prompt = build_single_pass_refine_prompt(
         prompt_text,
         input_paths,
-        backend=BACKEND_GEMINI,
+        backend=BACKEND_AGY,
         pre_replaced_segments=segments,
         reference_full_text="久有凌云志，重上井冈山。",
     )
@@ -924,7 +932,7 @@ def test_refine_batch_writes_dual_backend_outputs_without_selected_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write_minimal_settings(tmp_path, llm_overrides={"backends": [BACKEND_CODEX, BACKEND_GEMINI]})
+    write_minimal_settings(tmp_path, llm_overrides={"backends": [BACKEND_CODEX, BACKEND_AGY]})
     asr_path = write_refine_inputs(tmp_path)
     loaded_settings = load_settings(project_root=tmp_path)
 
@@ -932,7 +940,7 @@ def test_refine_batch_writes_dual_backend_outputs_without_selected_result(
         backend = kwargs["backend"]
         return BackendDocumentRefinementResult(
             backend=backend,
-            model_name="gpt-5.4" if backend == BACKEND_CODEX else "gemini-3.1-pro-preview",
+            model_name="gpt-5.4" if backend == BACKEND_CODEX else "Gemini 3.1 Pro (High)",
             final_markdown=f"# demo\n\n{backend} 结果",
             refinement_strategy="single_pass_safe_replace",
             refinement_reason=f"{backend}_done",
@@ -945,25 +953,25 @@ def test_refine_batch_writes_dual_backend_outputs_without_selected_result(
 
     monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
 
-    summary = refine_batch(loaded_settings, requested_backends=[BACKEND_CODEX, BACKEND_GEMINI])
+    summary = refine_batch(loaded_settings, requested_backends=[BACKEND_CODEX, BACKEND_AGY])
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
     result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
     codex_path = output_path.json_path.with_name("demo.codex_cli.json")
-    gemini_path = output_path.json_path.with_name("demo.gemini_cli.json")
+    agy_path = output_path.json_path.with_name("demo.agy.json")
 
     assert summary.success == 1
-    assert summary.items[0].selected_backends == [BACKEND_CODEX, BACKEND_GEMINI]
-    assert result["refinement_backends"] == [BACKEND_CODEX, BACKEND_GEMINI]
+    assert summary.items[0].selected_backends == [BACKEND_CODEX, BACKEND_AGY]
+    assert result["refinement_backends"] == [BACKEND_CODEX, BACKEND_AGY]
     assert result["selected_backend"] is None
     assert result["comparison_summary"] == "manual_selection_required"
     assert result["final_markdown"] == ""
     assert result["model_results"][BACKEND_CODEX]["final_markdown"] == "# demo\n\ncodex_cli 结果"
-    assert result["model_results"][BACKEND_GEMINI]["final_markdown"] == "# demo\n\ngemini_cli 结果"
+    assert result["model_results"][BACKEND_AGY]["final_markdown"] == "# demo\n\nagy 结果"
     assert codex_path.exists()
-    assert gemini_path.exists()
+    assert agy_path.exists()
 
 
-def test_refine_batch_supports_single_gemini_backend_via_override(
+def test_refine_batch_supports_single_agy_backend_via_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -975,29 +983,29 @@ def test_refine_batch_supports_single_gemini_backend_via_override(
         backend = kwargs["backend"]
         return BackendDocumentRefinementResult(
             backend=backend,
-            model_name="gemini-3.1-pro-preview",
-            final_markdown="# demo\n\nGemini 单跑结果",
+            model_name="Gemini 3.1 Pro (High)",
+            final_markdown="# demo\n\nagy 单跑结果",
             refinement_strategy="single_pass_safe_replace",
-            refinement_reason="gemini_done",
+            refinement_reason="agy_done",
             needs_review_sections=[],
-            refinement_notes=["gemini_note"],
-            edited_plain_text="Gemini plain text",
+            refinement_notes=["agy_note"],
+            edited_plain_text="agy plain text",
             fidelity_report={"passed": True},
             section_map=[{"backend": backend}],
         )
 
     monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
 
-    summary = refine_batch(loaded_settings, requested_backends=[BACKEND_GEMINI])
+    summary = refine_batch(loaded_settings, requested_backends=[BACKEND_AGY])
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
     result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
 
     assert summary.success == 1
-    assert summary.backends == [BACKEND_GEMINI]
-    assert result["refinement_backends"] == [BACKEND_GEMINI]
-    assert result["selected_backend"] == BACKEND_GEMINI
-    assert result["final_markdown"] == "# demo\n\nGemini 单跑结果"
-    assert result["model_results"][BACKEND_GEMINI]["model_name"] == "gemini-3.1-pro-preview"
+    assert summary.backends == [BACKEND_AGY]
+    assert result["refinement_backends"] == [BACKEND_AGY]
+    assert result["selected_backend"] == BACKEND_AGY
+    assert result["final_markdown"] == "# demo\n\nagy 单跑结果"
+    assert result["model_results"][BACKEND_AGY]["model_name"] == "Gemini 3.1 Pro (High)"
 
 
 def test_refine_batch_marks_programmatic_fallback_as_degraded_status(
@@ -1032,7 +1040,7 @@ def test_refine_batch_marks_programmatic_fallback_as_degraded_status(
     )
 
 
-def test_refine_batch_falls_back_to_codex_when_single_gemini_backend_fails(
+def test_refine_batch_falls_back_to_codex_when_single_agy_backend_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1040,8 +1048,8 @@ def test_refine_batch_falls_back_to_codex_when_single_gemini_backend_fails(
     asr_path = write_refine_inputs(tmp_path)
     loaded_settings = load_settings(project_root=tmp_path)
 
-    def fake_run_gemini_payload(_prompt: str, _loaded_settings) -> dict[str, object]:
-        raise CLIBackendError("gemini failed")
+    def fake_run_agy_payload(_prompt: str, _loaded_settings) -> dict[str, object]:
+        raise CLIBackendError("agy failed")
 
     def fake_run_codex_payload(_prompt: str, _loaded_settings) -> dict[str, object]:
         return {
@@ -1054,18 +1062,18 @@ def test_refine_batch_falls_back_to_codex_when_single_gemini_backend_fails(
             "refinement_reason": "single_pass_codex",
         }
 
-    monkeypatch.setattr("src.refine_utils.run_gemini_cli_payload", fake_run_gemini_payload)
+    monkeypatch.setattr("src.refine_utils.run_agy_payload", fake_run_agy_payload)
     monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
 
-    refine_batch(loaded_settings, requested_backends=[BACKEND_GEMINI])
+    refine_batch(loaded_settings, requested_backends=[BACKEND_AGY])
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
     result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
 
-    assert result["refinement_backends"] == [BACKEND_GEMINI]
+    assert result["refinement_backends"] == [BACKEND_AGY]
     assert result["selected_backend"] == BACKEND_CODEX
     assert result["final_markdown"] == "# demo\n\nCodex 回退结果"
-    assert result["backend_status"]["gemini_cli"] == "failed_on_file"
-    assert result["backend_status"]["codex_cli"] == "returned_single_pass:model=codex_cli:fallback_from=gemini_cli"
+    assert result["backend_status"]["agy"] == "failed_on_file"
+    assert result["backend_status"]["codex_cli"] == "returned_single_pass:model=codex_cli:fallback_from=agy"
     assert result["model_results"][BACKEND_CODEX]["final_markdown"] == "# demo\n\nCodex 回退结果"
 
 
@@ -1216,6 +1224,6 @@ def test_refine_batch_uses_fallback_when_all_backends_fail(
     assert summary.success == 1
     assert result["refinement_backends"] == [BACKEND_CODEX_API]
     assert result["backend_status"]["codex_api"] == "failed_on_file"
-    assert "gemini_cli" not in result["backend_status"]
+    assert "agy" not in result["backend_status"]
     assert result["backend_status"]["fallback"] == "used"
     assert result["selected_backend"] == BACKEND_FALLBACK

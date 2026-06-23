@@ -28,15 +28,15 @@ def write_export_inputs(tmp_path: Path, basename: str = "demo") -> Path:
     refined_payload = {
         "source_asr_file": f"data/intermediate/asr/{basename}.txt",
         "source_reference_file": f"data/intermediate/extracted_text/{basename}.txt",
-        "refinement_backends": ["codex_cli", "gemini_cli"],
+        "refinement_backends": ["codex_cli", "agy"],
         "backend_status": {
             "codex_cli": "returned_fulltext",
-            "gemini_cli": "returned_fulltext",
+            "agy": "returned_fulltext",
         },
         "prompt_mode": "fulltext",
         "total_blocks": 4,
-        "selected_backend": "gemini_cli",
-        "comparison_summary": "selected=gemini_cli:82.1;runner_up=codex_cli:79.9",
+        "selected_backend": "agy",
+        "comparison_summary": "selected=agy:82.1;runner_up=codex_cli:79.9",
         "final_markdown": f"# {basename}\n\n中央人民广播电台现在播送毛主席诗词。\n\n> 久有凌云志，重上井冈山。\n\n## 提问环节\n\n请问这一句是什么意思？",
         "refined_full_text": "中央人民广播电台现在播送毛主席诗词。\n\n久有凌云志，重上井冈山。\n\n请问这一句是什么意思？",
     }
@@ -49,7 +49,7 @@ def test_iter_refined_json_files_filters_json_only(tmp_path: Path) -> None:
     refined_dir.mkdir(parents=True, exist_ok=True)
     (refined_dir / "a.json").write_text("{}", encoding="utf-8")
     (refined_dir / "a.codex_cli.json").write_text("{}", encoding="utf-8")
-    (refined_dir / "a.gemini_cli.json").write_text("{}", encoding="utf-8")
+    (refined_dir / "a.agy.json").write_text("{}", encoding="utf-8")
     (refined_dir / "a.codex_api.json").write_text("{}", encoding="utf-8")
     (refined_dir / "b.txt").write_text("ignore", encoding="utf-8")
 
@@ -156,7 +156,7 @@ def test_export_markdown_batch_rejects_dual_backend_index_without_selected_resul
             {
                 "model_results": {
                     "codex_cli": {"final_markdown": "# dual\n\ncodex"},
-                    "gemini_cli": {"final_markdown": "# dual\n\ngemini"},
+                    "agy": {"final_markdown": "# dual\n\ngemini"},
                 },
                 "final_markdown": "",
             },

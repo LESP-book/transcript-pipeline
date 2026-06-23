@@ -45,8 +45,10 @@ def test_get_config_returns_profiles_and_backends(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "profiles": ["local_cpu"],
-        "backends": ["codex_api", "codex_cli", "gemini_cli", "both"],
+        "backends": ["codex_api", "agy", "codex_cli", "both"],
         "configured_backends": ["codex_api"],
+        "default_backend": "codex_api",
+        "default_ocr_backend": "codex_api",
         "active_profile": "local_cpu",
         "video_extensions": [".mkv", ".mov", ".mp4", ".webm"],
         "reference_extensions": [".txt", ".md", ".pdf"],
@@ -96,7 +98,7 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
             "codex_lb_base_url": "https://api.example.test",
             "codex_lb_api_key": "sk-test-secret",
             "profile": "local_cpu",
-            "backend": "gemini_cli",
+            "backend": "agy",
             "remote_concurrency": 4,
             "book_name": "测试书",
             "chapter": "第一章",
@@ -115,7 +117,7 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
     assert payload["codex_lb_api_key"] == ""
     assert payload["has_codex_lb_api_key"] is True
     assert payload["profile"] == "local_cpu"
-    assert payload["backend"] == "gemini_cli"
+    assert payload["backend"] == "agy"
     assert payload["remote_concurrency"] == 4
     assert payload["book_name"] == "测试书"
     assert payload["chapter"] == "第一章"
@@ -127,7 +129,7 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
     settings_path = tmp_path / "data/jobs/frontend-settings.json"
     persisted = json.loads(settings_path.read_text(encoding="utf-8"))
     assert persisted["codex_lb_api_key"] == "sk-test-secret"
-    assert persisted["backend"] == "gemini_cli"
+    assert persisted["backend"] == "agy"
     assert persisted["remote_concurrency"] == 4
 
     clear_response = request_json(
@@ -993,8 +995,8 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
         json_body={
             "model": "gpt-5.5",
             "reasoning_effort": "high",
-            "backend": "gemini_cli",
-            "ocr_backend": "gemini_cli",
+            "backend": "agy",
+            "ocr_backend": "agy",
             "ocr_model": "gpt-5.4-mini",
             "ocr_reasoning_effort": "high",
         },
@@ -1013,10 +1015,10 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
 
     assert response.status_code == 202
     assert seen == {
-        "backend_override": "gemini_cli",
+        "backend_override": "agy",
         "model": "gpt-5.5",
         "reasoning_effort": "high",
-        "ocr_backend": "gemini_cli",
+        "ocr_backend": "agy",
         "ocr_model": "gpt-5.4-mini",
         "ocr_reasoning_effort": "high",
         "refine_prompt": "# 单任务自定义阶段六指令\n\n请保留讲解原话。",

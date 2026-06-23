@@ -192,6 +192,8 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             "profiles": sorted(loaded_settings.settings.profiles.keys()),
             "backends": [*VALID_REFINEMENT_BACKENDS, "both"],
             "configured_backends": list(loaded_settings.settings.llm.backends),
+            "default_backend": loaded_settings.settings.llm.backends[0] if loaded_settings.settings.llm.backends else "",
+            "default_ocr_backend": loaded_settings.settings.reference.ai_ocr_backend,
             "active_profile": loaded_settings.active_profile_name,
             "video_extensions": sorted(supported_video_extensions(loaded_settings)),
             "reference_extensions": list(supported_reference_extensions()),

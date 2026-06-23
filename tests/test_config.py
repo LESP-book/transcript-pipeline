@@ -13,14 +13,15 @@ def test_load_settings_success() -> None:
 
     assert loaded_settings.settings.project.name == "transcript-pipeline"
     assert loaded_settings.settings_path == (PROJECT_ROOT / "config/settings.yaml").resolve()
+    assert loaded_settings.active_profile_name == "wsl2_gpu_high_accuracy"
     assert loaded_settings.settings.llm.backends == ["codex_api"]
     assert loaded_settings.settings.llm.model == "gpt-5.5"
-    assert loaded_settings.settings.llm.gemini_model == "gemini-3.1-pro-preview"
-    assert loaded_settings.settings.llm.gemini_fallback_model == "gemini-3-flash-preview"
+    assert loaded_settings.settings.llm.gemini_model == "Gemini 3.1 Pro (High)"
+    assert loaded_settings.settings.llm.gemini_fallback_model == ""
     assert loaded_settings.settings.llm.reasoning_effort == "high"
     assert loaded_settings.settings.reference.ocr_timeout_seconds == 480
     assert loaded_settings.settings.reference.ai_ocr_backend == "codex_api"
-    assert loaded_settings.settings.reference.gemini_ocr_model == "gemini-3-flash-preview"
+    assert loaded_settings.settings.reference.gemini_ocr_model == "Gemini 3.5 Flash (High)"
     assert loaded_settings.settings.reference.gemini_ocr_fallback_model == ""
     assert loaded_settings.settings.reference.codex_ocr_model == "gpt-5.4-mini"
     assert loaded_settings.settings.reference.codex_ocr_reasoning_effort == "high"

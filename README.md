@@ -14,7 +14,7 @@
 - 第三阶段：参考原文统一提取
 - 第四阶段：块级对齐与分段增强版（保留为辅助调试链路）
 - 第五阶段：块级内容候选分类（保留为辅助调试链路）
-- 第六阶段：AI 后端整篇整理，直接读取 `asr.txt + reference.txt` 产出最终 Markdown 草稿（默认 `codex_api`，旧 `codex_cli` / `gemini_cli` 可显式指定）
+- 第六阶段：AI 后端整篇整理，直接读取 `asr.txt + reference.txt` 产出最终 Markdown 草稿（默认 `codex_api`，`agy` / `codex_cli` 可显式指定）
 - 第七阶段：将阶段 6 的 Markdown 结果写入最终输出目录，并同步生成 TXT
 - 第八阶段：单任务 job 入口，支持显式指定视频、参考源和输出目录
 - 第九阶段：批量 job 入口，支持按 manifest、basename 配对和共享参考三种模式批量运行
@@ -218,7 +218,7 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 - PDF OCR 模型：`reference.codex_ocr_model = gpt-5.4-mini`
 - PDF OCR reasoning：`reference.codex_ocr_reasoning_effort = high`
 - PDF OCR 等待时间：`reference.ocr_timeout_seconds = 480`
-- `--backend both` 保持旧语义，只同时运行 `codex_cli` 和 `gemini_cli`
+- `--backend both` 保持旧语义，只同时运行 `codex_cli` 和 `agy`
 
 临时指定阶段 6 模型和 reasoning：
 
@@ -626,10 +626,10 @@ http://127.0.0.1:5173
 .venv/bin/python scripts/06_refine.py
 ```
 
-只运行 Gemini：
+只运行 agy：
 
 ```bash
-.venv/bin/python scripts/06_refine.py --backend gemini_cli
+.venv/bin/python scripts/06_refine.py --backend agy
 ```
 
 显式运行 Codex API：
@@ -647,7 +647,7 @@ http://127.0.0.1:5173
   --reasoning-effort "high"
 ```
 
-同时运行旧 Codex CLI 和 Gemini CLI：
+同时运行旧 Codex CLI 和 agy：
 
 ```bash
 .venv/bin/python scripts/06_refine.py --backend both
@@ -662,11 +662,11 @@ http://127.0.0.1:5173
 阶段 6 说明：
 
 - 默认按 `config/settings.yaml` 中的 `llm.backends` 运行后端，当前默认是 `codex_api`
-- 可用 `--backend codex_api|codex_cli|gemini_cli|both` 临时覆盖
+- 可用 `--backend codex_api|codex_cli|agy|both` 临时覆盖
 - `codex_api` 通过 `codex-lb` 调用，`CODEX_LB_BASE_URL` 和 `CODEX_LB_API_KEY` 必须在环境变量中可用
 - 阶段 6 模型可用 `--model` 临时覆盖，reasoning 可用 `--reasoning-effort` 临时覆盖
-- `both` 保持旧语义，只展开为 `codex_cli + gemini_cli`
-- Gemini 主模型默认是 `gemini-3.1-pro-preview`
+- `both` 保持旧语义，只展开为 `codex_cli + agy`
+- Gemini 主模型默认是 `Gemini 3.1 Pro (High)`
 - 主输入是 `data/intermediate/asr/*.txt` 和同 basename 的 `data/intermediate/extracted_text/*.txt`
 - 不再依赖 `classified.json` 作为阶段 6 的主输入
 - 提示词贴近网页端单轮整理模式，直接要求输出最终 Markdown
@@ -674,7 +674,7 @@ http://127.0.0.1:5173
 - 非 fallback AI 后端会写主索引文件 `basename.json`，并按后端额外写侧车文件，例如：
   - `basename.codex_api.json`
   - `basename.codex_cli.json`
-  - `basename.gemini_cli.json`
+  - `basename.agy.json`
 - 双模型模式下主索引文件不会自动选主结果，`final_markdown` 留空，需人工决定使用哪一份
 - `final_markdown` 已直接包含：
   - 原文朗读引用块 `>`
@@ -746,7 +746,7 @@ http://127.0.0.1:5173
   --reference "/path/to/reference.pdf" \
   --output-dir "/path/to/output" \
   --profile "wsl2_gpu_max_accuracy" \
-  --backend "gemini_cli"
+  --backend "agy"
 ```
 
 指定阶段 6 使用 Codex API：
@@ -773,7 +773,7 @@ http://127.0.0.1:5173
   --ocr-reasoning-effort "high"
 ```
 
-同时运行旧 Codex CLI 和 Gemini CLI：
+同时运行旧 Codex CLI 和 agy：
 
 ```bash
 .venv/bin/python scripts/08_run_job.py \
@@ -808,7 +808,7 @@ http://127.0.0.1:5173
 - 最终 Markdown 与 TXT 会额外复制到 `--output-dir`
 - `config/glossaries/marxism_common.txt` 会默认参与构造本次任务的 `asr.initial_prompt`
 - `--book-name`、`--chapter`、`--glossary-file` 会追加到本次任务的 `initial_prompt`
-- `--backend` 只覆盖本次任务的阶段 6 后端选择，可用值为 `codex_api`、`codex_cli`、`gemini_cli`、`both`
+- `--backend` 只覆盖本次任务的阶段 6 后端选择，可用值为 `codex_api`、`codex_cli`、`agy`、`both`
 - 单任务入口同样支持 `--model`、`--reasoning-effort`、`--ocr-model`、`--ocr-reasoning-effort`
 - 附加词表文件格式为一行一个词条
 - `local_cpu` 与 `wsl2_gpu` 使用 `beam_size = 5`
@@ -893,7 +893,7 @@ basename 配对模式：
 - GPU 高精度建议优先使用 `wsl2_gpu_high_accuracy`
 - `prepare-reference` 与 `refine` 默认按 `--remote-concurrency 2` 并发运行
 - `extract-audio` 与 `transcribe` 仍按单任务顺序执行，避免本地资源阶段过载
-- `--backend` 只覆盖本次批量任务的阶段 6 后端选择，可用值为 `codex_api`、`codex_cli`、`gemini_cli`、`both`
+- `--backend` 只覆盖本次批量任务的阶段 6 后端选择，可用值为 `codex_api`、`codex_cli`、`agy`、`both`
 - 批量入口同样支持 `--model`、`--reasoning-effort`、`--ocr-model`、`--ocr-reasoning-effort`
 - 每次批量运行都会写出 `data/jobs/batches/<batch_id>/manifest.json`
 - 每次批量运行都会写出 `data/jobs/batches/<batch_id>/summary.json` 与 `summary.md`

@@ -84,7 +84,7 @@ class ReferenceSettings(AppBaseModel):
     run_ocr_when_needed: bool = False
     sentence_split_enabled: bool = True
     ai_ocr_backend: str = "codex_api"
-    gemini_ocr_model: str = "gemini-3-flash-preview"
+    gemini_ocr_model: str = "Gemini 3.5 Flash (High)"
     gemini_ocr_fallback_model: str = ""
     codex_ocr_model: str = "gpt-5.4-mini"
     codex_ocr_reasoning_effort: str = "high"
@@ -146,8 +146,8 @@ class LLMSettings(AppBaseModel):
     enabled: bool = True
     provider: str = "local_cli"
     model: str = "gpt-5.5"
-    gemini_model: str = "gemini-3.1-pro-preview"
-    gemini_fallback_model: str = "gemini-3-flash-preview"
+    gemini_model: str = "Gemini 3.1 Pro (High)"
+    gemini_fallback_model: str = ""
     backends: list[str] = Field(default_factory=lambda: ["codex_api"])
     enable_fallback: bool = True
     block_batch_size: int = 2

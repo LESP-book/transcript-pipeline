@@ -20,10 +20,10 @@ from src.schemas import LoadedSettings
 PROMPT_MISSING_ERROR = "缺少阶段 6 提示词配置，请检查 prompts.classify_and_correct"
 BACKEND_CODEX_API = "codex_api"
 BACKEND_CODEX = "codex_cli"
-BACKEND_GEMINI = "gemini_cli"
+BACKEND_AGY = "agy"
 BACKEND_FALLBACK = "local_fallback"
-LEGACY_DUAL_REFINEMENT_BACKENDS = (BACKEND_CODEX, BACKEND_GEMINI)
-VALID_REFINEMENT_BACKENDS = (BACKEND_CODEX_API, BACKEND_CODEX, BACKEND_GEMINI)
+LEGACY_DUAL_REFINEMENT_BACKENDS = (BACKEND_CODEX, BACKEND_AGY)
+VALID_REFINEMENT_BACKENDS = (BACKEND_CODEX_API, BACKEND_AGY, BACKEND_CODEX)
 TARGET_MINIMAL_EDIT_BLOCKS = 20
 
 
@@ -671,7 +671,7 @@ def build_single_pass_refine_prompt(
     reference_full_text: str,
 ) -> str:
     backend_review_message = "你的结果会交给 Gemini 和 Claude 审核，请认真校对，不要敷衍。"
-    if backend == BACKEND_GEMINI:
+    if backend == BACKEND_AGY:
         backend_review_message = "你的结果会交给 Codex 和 Claude 审核，请认真校对，不要敷衍。"
 
     has_reference = input_paths.reference_text_path is not None
@@ -1011,7 +1011,7 @@ def run_codex_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocume
     )
 
 
-def run_gemini_cli_payload(prompt: str, loaded_settings: LoadedSettings) -> dict[str, Any]:
+def run_agy_payload(prompt: str, loaded_settings: LoadedSettings) -> dict[str, Any]:
     llm_settings = loaded_settings.settings.llm
     models_to_try = [llm_settings.gemini_model]
     fallback_model = llm_settings.gemini_fallback_model.strip()
@@ -1020,7 +1020,15 @@ def run_gemini_cli_payload(prompt: str, loaded_settings: LoadedSettings) -> dict
 
     last_error: CLIBackendError | None = None
     for index, model_name in enumerate(models_to_try):
-        command = ["gemini", "-m", model_name, "-p", prompt]
+        command = [
+            "agy",
+            "--model",
+            model_name,
+            "--print",
+            prompt,
+            "--print-timeout",
+            f"{llm_settings.timeout_seconds}s",
+        ]
         try:
             output = run_subprocess(
                 command,
@@ -1043,12 +1051,12 @@ def run_gemini_cli_payload(prompt: str, loaded_settings: LoadedSettings) -> dict
 
     if last_error is not None:
         raise last_error
-    raise CLIBackendError("Gemini CLI 调用失败，未获得可用结果。")
+    raise CLIBackendError("agy 调用失败，未获得可用结果。")
 
 
-def run_gemini_cli(prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
-    payload = run_gemini_cli_payload(prompt, loaded_settings)
-    return parse_backend_document_result(BACKEND_GEMINI, payload)
+def run_agy(prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
+    payload = run_agy_payload(prompt, loaded_settings)
+    return parse_backend_document_result(BACKEND_AGY, payload)
 
 
 def run_backend_cli(backend: str, prompt: str, loaded_settings: LoadedSettings) -> BackendDocumentRefinementResult:
@@ -1056,8 +1064,8 @@ def run_backend_cli(backend: str, prompt: str, loaded_settings: LoadedSettings) 
         return run_codex_api(prompt, loaded_settings)
     if backend == BACKEND_CODEX:
         return run_codex_cli(prompt, loaded_settings)
-    if backend == BACKEND_GEMINI:
-        return run_gemini_cli(prompt, loaded_settings)
+    if backend == BACKEND_AGY:
+        return run_agy(prompt, loaded_settings)
     raise CLIBackendError(f"未知阶段 6 后端: {backend}")
 
 
@@ -1066,8 +1074,8 @@ def run_backend_payload(backend: str, prompt: str, loaded_settings: LoadedSettin
         return run_codex_api_payload(prompt, loaded_settings)
     if backend == BACKEND_CODEX:
         return run_codex_cli_payload(prompt, loaded_settings)
-    if backend == BACKEND_GEMINI:
-        return run_gemini_cli_payload(prompt, loaded_settings)
+    if backend == BACKEND_AGY:
+        return run_agy_payload(prompt, loaded_settings)
     raise CLIBackendError(f"未知阶段 6 后端: {backend}")
 
 
@@ -1612,7 +1620,7 @@ def refine_batch(
                     backend=backend,
                     fallback_backend=(
                         BACKEND_CODEX
-                        if backend == BACKEND_GEMINI
+                        if backend == BACKEND_AGY
                         and BACKEND_CODEX not in active_backends
                         and BACKEND_CODEX_API not in active_backends
                         else None

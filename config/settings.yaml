@@ -4,7 +4,7 @@ project:
   description: 读书会录屏整理流水线
 
 runtime:
-  profile: local_cpu
+  profile: wsl2_gpu_high_accuracy
   environment: local
   log_level: INFO
 
@@ -101,7 +101,7 @@ reference:
   run_ocr_when_needed: true
   sentence_split_enabled: true
   ai_ocr_backend: codex_api
-  gemini_ocr_model: gemini-3-flash-preview
+  gemini_ocr_model: Gemini 3.5 Flash (High)
   gemini_ocr_fallback_model: ""
   codex_ocr_model: gpt-5.4-mini
   codex_ocr_reasoning_effort: high
@@ -171,8 +171,8 @@ llm:
   enabled: true
   provider: local_cli
   model: gpt-5.5
-  gemini_model: gemini-3.1-pro-preview
-  gemini_fallback_model: gemini-3-flash-preview
+  gemini_model: Gemini 3.1 Pro (High)
+  gemini_fallback_model: ""
   backends:
     - codex_api
   enable_fallback: true

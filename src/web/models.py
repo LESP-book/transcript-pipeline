@@ -12,10 +12,10 @@ class SingleJobRequest(BaseModel):
     content_type: Literal["book_club", "conversation"] = "book_club"
     config: str | None = None
     profile: str | None = None
-    backend: Literal["codex_api", "codex_cli", "gemini_cli", "both"] | None = None
+    backend: Literal["codex_api", "codex_cli", "agy", "both"] | None = None
     model: str | None = None
     reasoning_effort: str | None = None
-    ocr_backend: Literal["codex_api", "codex_cli", "gemini_cli"] | None = None
+    ocr_backend: Literal["codex_api", "codex_cli", "agy"] | None = None
     ocr_model: str | None = None
     ocr_reasoning_effort: str | None = None
     book_name: str | None = None
@@ -33,10 +33,10 @@ class BatchJobRequest(BaseModel):
     content_type: Literal["book_club", "conversation"] = "book_club"
     config: str | None = None
     profile: str | None = None
-    backend: Literal["codex_api", "codex_cli", "gemini_cli", "both"] | None = None
+    backend: Literal["codex_api", "codex_cli", "agy", "both"] | None = None
     model: str | None = None
     reasoning_effort: str | None = None
-    ocr_backend: Literal["codex_api", "codex_cli", "gemini_cli"] | None = None
+    ocr_backend: Literal["codex_api", "codex_cli", "agy"] | None = None
     ocr_model: str | None = None
     ocr_reasoning_effort: str | None = None
     glossary_file: str | None = None
@@ -49,10 +49,10 @@ class BatchJobRequest(BaseModel):
 class StageRunRequest(BaseModel):
     config: str | None = None
     profile: str | None = None
-    backend: Literal["codex_api", "codex_cli", "gemini_cli", "both"] | None = None
+    backend: Literal["codex_api", "codex_cli", "agy", "both"] | None = None
     model: str | None = None
     reasoning_effort: str | None = None
-    ocr_backend: Literal["codex_api", "codex_cli", "gemini_cli"] | None = None
+    ocr_backend: Literal["codex_api", "codex_cli", "agy"] | None = None
     ocr_model: str | None = None
     ocr_reasoning_effort: str | None = None
 
@@ -60,9 +60,9 @@ class StageRunRequest(BaseModel):
 class JobRerunRequest(BaseModel):
     start_stage: str
     profile: str | None = None
-    backend: Literal["codex_api", "codex_cli", "gemini_cli", "both"] | None = None
+    backend: Literal["codex_api", "codex_cli", "agy", "both"] | None = None
     model: str | None = None
     reasoning_effort: str | None = None
-    ocr_backend: Literal["codex_api", "codex_cli", "gemini_cli"] | None = None
+    ocr_backend: Literal["codex_api", "codex_cli", "agy"] | None = None
     ocr_model: str | None = None
     ocr_reasoning_effort: str | None = None
