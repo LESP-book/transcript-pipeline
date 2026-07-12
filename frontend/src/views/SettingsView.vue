@@ -37,6 +37,15 @@ const reasoningOptions = ["low", "medium", "high", "xhigh"].map((value) => ({
   value,
 }));
 
+const modelOptions = [
+  { label: "GPT-5.6 Sol（推荐：阶段 6 精修）", value: "gpt-5.6" },
+  { label: "GPT-5.6 Terra（推荐：PDF OCR）", value: "gpt-5.6-terra" },
+  { label: "GPT-5.6 Luna（成本优先）", value: "gpt-5.6-luna" },
+  { label: "GPT-5.5（兼容旧设置）", value: "gpt-5.5" },
+  { label: "GPT-5.4（兼容旧设置）", value: "gpt-5.4" },
+  { label: "GPT-5.4 mini（兼容旧设置）", value: "gpt-5.4-mini" },
+];
+
 const apiKeyStatus = computed(() => {
   if (form.codex_lb_api_key.trim()) {
     return "本次会写入新 API key";
@@ -145,13 +154,13 @@ onMounted(loadSettings);
         <n-card title="模型默认值" class="view-card settings-card">
           <n-form label-placement="top">
             <n-form-item label="阶段 6 模型">
-              <n-input v-model:value="form.model" placeholder="gpt-5.5" />
+              <n-select v-model:value="form.model" :options="modelOptions" />
             </n-form-item>
             <n-form-item label="阶段 6 推理模式">
               <n-select v-model:value="form.reasoning_effort" :options="reasoningOptions" />
             </n-form-item>
             <n-form-item label="PDF OCR 模型">
-              <n-input v-model:value="form.ocr_model" placeholder="gpt-5.4-mini" />
+              <n-select v-model:value="form.ocr_model" :options="modelOptions" />
             </n-form-item>
             <n-form-item label="PDF OCR 推理模式">
               <n-select v-model:value="form.ocr_reasoning_effort" :options="reasoningOptions" />

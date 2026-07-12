@@ -211,20 +211,22 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
   --manifest "/path/to/jobs.yaml" \
   --remote-concurrency 2 \
   --backend "codex_api" \
-  --model "gpt-5.5" \
+  --model "gpt-5.6" \
   --reasoning-effort "high" \
-  --ocr-model "gpt-5.4-mini" \
+  --ocr-model "gpt-5.6-terra" \
   --ocr-reasoning-effort "high"
 ```
 
 相关默认配置：
 
 - 阶段 6：`llm.backends = ["codex_api"]`
-- 阶段 6 默认模型：`llm.model = gpt-5.5`
+- 阶段 6 默认模型：`llm.model = gpt-5.6`（GPT-5.6 Sol）
 - 阶段 6 默认 reasoning：`llm.reasoning_effort = high`
 - PDF OCR：`reference.ai_ocr_backend = codex_api`
-- PDF OCR 模型：`reference.codex_ocr_model = gpt-5.4-mini`
+- PDF OCR 模型：`reference.codex_ocr_model = gpt-5.6-terra`（GPT-5.6 Terra）
 - PDF OCR reasoning：`reference.codex_ocr_reasoning_effort = high`
+- PDF OCR 最大并发：`reference.codex_ocr_max_concurrency = 0` 表示不等待前页完成；如需限制活动请求数，可填写正整数
+- PDF OCR 投递间隔：`reference.codex_ocr_submit_interval_seconds = 5.0` 秒；每次只新增一张图片，页面可同时执行和乱序完成，最终仍按原始页码拼接
 - PDF OCR 等待时间：`reference.ocr_timeout_seconds = 480`
 - `--backend both` 保持旧语义，只同时运行 `codex_cli` 和 `agy`
 
@@ -233,7 +235,7 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 ```bash
 .venv/bin/python scripts/06_refine.py \
   --backend codex_api \
-  --model "gpt-5.5" \
+  --model "gpt-5.6" \
   --reasoning-effort "high"
 ```
 
@@ -241,7 +243,7 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 
 ```bash
 .venv/bin/python scripts/03_prepare_reference.py \
-  --ocr-model "gpt-5.4-mini" \
+  --ocr-model "gpt-5.6-terra" \
   --ocr-reasoning-effort "high"
 ```
 
@@ -253,9 +255,9 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
   --reference "/path/to/reference.pdf" \
   --output-dir "/path/to/output" \
   --backend "codex_api" \
-  --model "gpt-5.5" \
+  --model "gpt-5.6" \
   --reasoning-effort "high" \
-  --ocr-model "gpt-5.4-mini" \
+  --ocr-model "gpt-5.6-terra" \
   --ocr-reasoning-effort "high"
 ```
 
@@ -651,7 +653,7 @@ http://127.0.0.1:5173
 ```bash
 .venv/bin/python scripts/06_refine.py \
   --backend codex_api \
-  --model "gpt-5.5" \
+  --model "gpt-5.6" \
   --reasoning-effort "high"
 ```
 
@@ -775,9 +777,9 @@ http://127.0.0.1:5173
   --reference "/path/to/reference.pdf" \
   --output-dir "/path/to/output" \
   --backend "codex_api" \
-  --model "gpt-5.5" \
+  --model "gpt-5.6" \
   --reasoning-effort "high" \
-  --ocr-model "gpt-5.4-mini" \
+  --ocr-model "gpt-5.6-terra" \
   --ocr-reasoning-effort "high"
 ```
 
@@ -833,9 +835,9 @@ manifest 模式：
   --manifest "/path/to/jobs.yaml" \
   --remote-concurrency 2 \
   --backend "codex_api" \
-  --model "gpt-5.5" \
+  --model "gpt-5.6" \
   --reasoning-effort "high" \
-  --ocr-model "gpt-5.4-mini" \
+  --ocr-model "gpt-5.6-terra" \
   --ocr-reasoning-effort "high"
 ```
 
@@ -985,8 +987,8 @@ JSON 中间结果至少包含：
 PDF 支持边界：
 
 - 当前 PDF 默认优先尝试 `codex_api` OCR
-- `codex_api` OCR 会先在本地用 `pdftoppm` 将 PDF 页面渲染成 PNG，再通过 codex-lb `/v1/responses` 发送 `input_image`
-- `codex_api` OCR 默认模型是 `gpt-5.4-mini`，reasoning effort 是 `high`
+- `codex_api` OCR 会先在本地用 `pdftoppm` 将 PDF 页面渲染成 PNG，核对页号完整后，再通过 codex-lb `/v1/responses` 逐页发送一个 `input_image`；仅在所有页面 OCR 成功后按页序合并结果，且不会在页边界额外插入换行
+- `codex_api` OCR 默认模型是 `gpt-5.6-terra`，reasoning effort 是 `high`
 - 直接运行阶段 3 时，可用 `--ocr-model` 和 `--ocr-reasoning-effort` 临时覆盖 OCR 模型与 reasoning
 - 如果 Codex API OCR 失败，但 PDF 自带文字层可提取，则回退到文字层提取
 - 如果 Codex API OCR 失败，且文字层为空或接近空，并且 `reference.run_ocr_when_needed = true`，会继续尝试其他 AI OCR 后端，最后回退到 `ocrmypdf + tesseract`

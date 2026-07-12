@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from src.config_loader import load_settings
+from src.codex_lb_client import CodexLBClientError
 from src.reference_utils import (
     CodexOCRError,
     AgyOCRError,
@@ -339,7 +340,10 @@ def test_run_codex_pdf_ocr_uses_configured_model_prompt_and_reasoning_effort(
 ) -> None:
     write_minimal_settings(
         tmp_path,
-        reference_overrides={"codex_ocr_model": "gpt-5.4-mini", "codex_ocr_reasoning_effort": "high"},
+        reference_overrides={
+            "codex_ocr_model": "gpt-5.4-mini",
+            "codex_ocr_reasoning_effort": "high",
+        },
     )
     loaded_settings = load_settings(project_root=tmp_path)
 
@@ -410,6 +414,7 @@ def test_render_pdf_pages_as_png_data_urls_uses_pdftoppm(
 
     monkeypatch.setattr("src.reference_utils.shutil.which", lambda name: "/usr/bin/pdftoppm" if name == "pdftoppm" else None)
     monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
+    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 2)
 
     data_urls = render_pdf_pages_as_png_data_urls(source)
 
@@ -418,13 +423,80 @@ def test_render_pdf_pages_as_png_data_urls_uses_pdftoppm(
     assert seen["command"][2] == str(source)
 
 
+def test_render_pdf_pages_as_png_data_urls_rejects_missing_pages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "scan.pdf"
+    source.write_bytes(b"%PDF-1.4 fake")
+
+    def fake_run(command, *, text, capture_output, check):
+        _ = text, capture_output, check
+        output_prefix = Path(command[-1])
+        output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        (output_prefix.parent / "page-1.png").write_bytes(b"page-one")
+        (output_prefix.parent / "page-3.png").write_bytes(b"page-three")
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/pdftoppm")
+    monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
+    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 3)
+
+    with pytest.raises(CodexOCRError, match="页面渲染不完整"):
+        render_pdf_pages_as_png_data_urls(source)
+
+
+def test_render_pdf_pages_as_png_data_urls_sorts_page_numbers_numerically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "scan.pdf"
+    source.write_bytes(b"%PDF-1.4 fake")
+
+    def fake_run(command, *, text, capture_output, check):
+        _ = text, capture_output, check
+        output_prefix = Path(command[-1])
+        output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        for page_number in range(1, 11):
+            (output_prefix.parent / f"page-{page_number}.png").write_bytes(str(page_number).encode("ascii"))
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/pdftoppm")
+    monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
+    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 10)
+
+    data_urls = render_pdf_pages_as_png_data_urls(source)
+
+    assert data_urls == [
+        f"data:image/png;base64,{base64_value}"
+        for base64_value in ("MQ==", "Mg==", "Mw==", "NA==", "NQ==", "Ng==", "Nw==", "OA==", "OQ==", "MTA=")
+    ]
+
+
 def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_settings(
         tmp_path,
-        reference_overrides={"codex_ocr_model": "gpt-5.4-mini", "codex_ocr_reasoning_effort": "high"},
+        reference_overrides={
+            "codex_ocr_model": "gpt-5.4-mini",
+            "codex_ocr_reasoning_effort": "high",
+            "codex_ocr_max_concurrency": 1,
+            "codex_ocr_submit_interval_seconds": 0,
+        },
     )
     loaded_settings = load_settings(project_root=tmp_path)
     monkeypatch.setenv("CODEX_LB_API_KEY", "test-key")
@@ -432,7 +504,7 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
     source = tmp_path / "external" / "scan.pdf"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(b"%PDF-1.4 fake")
-    seen: dict[str, object] = {"requests": []}
+    seen: dict[str, object] = {"requests": [], "response_payloads": []}
 
     class FakeResponse:
         def __init__(self, payload: dict | str = "") -> None:
@@ -460,9 +532,14 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
         }
         seen["requests"].append(request_record)
         if request.full_url == "http://127.0.0.1:2455/v1/responses":
-            seen["response_payload"] = json.loads(body.decode("utf-8"))
+            response_payload = json.loads(body.decode("utf-8"))
+            response_payloads = seen["response_payloads"]
+            assert isinstance(response_payloads, list)
+            response_payloads.append(response_payload)
+            page_number = len(response_payloads)
+            delta = "目录" if page_number == 1 else "第2页 OCR 识别出的完整正文内容。"
             event_payload = json.dumps(
-                {"type": "response.output_text.delta", "delta": "这是 Codex API OCR 的结果。"},
+                {"type": "response.output_text.delta", "delta": delta},
                 ensure_ascii=False,
             )
             return FakeResponse(f"event: response.output_text.delta\ndata: {event_payload}\n\n")
@@ -476,26 +553,66 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
 
     text, warnings = run_codex_api_pdf_ocr(source, loaded_settings)
 
-    assert text == "这是 Codex API OCR 的结果。"
+    assert text == "目录第2页 OCR 识别出的完整正文内容。"
     assert "Codex API OCR" in " ".join(warnings)
     requests = seen["requests"]
     assert isinstance(requests, list)
-    assert len(requests) == 1
-    assert requests[0]["method"] == "POST"
-    assert requests[0]["headers"]["authorization"] == "Bearer test-key"
-    assert requests[0]["headers"]["accept"] == "text/event-stream"
-    response_payload = seen["response_payload"]
-    assert isinstance(response_payload, dict)
-    assert response_payload["model"] == "gpt-5.4-mini"
-    assert response_payload["reasoning"] == {"effort": "high"}
-    assert response_payload["stream"] is True
-    content = response_payload["input"][0]["content"]
-    assert "页面图片做 OCR 提取" in content[0]["text"]
-    assert "页面数量：2" in content[0]["text"]
-    assert {"type": "input_image", "image_url": "data:image/png;base64,Zmlyc3Q="} in content
-    assert {"type": "input_image", "image_url": "data:image/png;base64,c2Vjb25k"} in content
+    assert len(requests) == 2
+    response_payloads = seen["response_payloads"]
+    assert isinstance(response_payloads, list)
+    for page_number, (request, response_payload, image_url) in enumerate(
+        zip(requests, response_payloads, ["data:image/png;base64,Zmlyc3Q=", "data:image/png;base64,c2Vjb25k"], strict=True),
+        start=1,
+    ):
+        assert request["method"] == "POST"
+        assert request["headers"]["authorization"] == "Bearer test-key"
+        assert request["headers"]["accept"] == "text/event-stream"
+        assert response_payload["model"] == "gpt-5.4-mini"
+        assert response_payload["reasoning"] == {"effort": "high"}
+        assert response_payload["stream"] is True
+        content = response_payload["input"][0]["content"]
+        assert len(content) == 2
+        assert "单页图片做 OCR 提取" in content[0]["text"]
+        assert f"当前页：{page_number}" in content[0]["text"]
+        assert "PDF 总页数：2" in content[0]["text"]
+        assert content[1] == {"type": "input_image", "image_url": image_url}
     sidecar_path = loaded_settings.path_for("ocr_dir") / f"{source.stem}.codex_api_ocr.txt"
-    assert sidecar_path.read_text(encoding="utf-8") == "这是 Codex API OCR 的结果。"
+    assert sidecar_path.read_text(encoding="utf-8") == "目录第2页 OCR 识别出的完整正文内容。"
+
+
+def test_run_codex_api_pdf_ocr_stops_without_sidecar_when_a_page_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(
+        tmp_path,
+        reference_overrides={"codex_ocr_max_concurrency": 1, "codex_ocr_submit_interval_seconds": 0},
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+    monkeypatch.setenv("CODEX_LB_API_KEY", "test-key")
+    source = tmp_path / "external" / "scan.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4 fake")
+    calls: list[dict[str, object]] = []
+
+    def fake_responses_stream_text(_client, payload: dict[str, object]) -> str:
+        calls.append(payload)
+        if len(calls) == 2:
+            raise CodexLBClientError("context_length_exceeded")
+        return "第一页 OCR 识别出的完整正文内容。"
+
+    monkeypatch.setattr(
+        "src.reference_utils.render_pdf_pages_as_png_data_urls",
+        lambda _path: ["data:image/png;base64,Zmlyc3Q=", "data:image/png;base64,c2Vjb25k"],
+    )
+    monkeypatch.setattr("src.reference_utils.CodexLBClient.responses_stream_text", fake_responses_stream_text)
+
+    with pytest.raises(CodexOCRError, match="第 2 页失败"):
+        run_codex_api_pdf_ocr(source, loaded_settings)
+
+    sidecar_path = loaded_settings.path_for("ocr_dir") / f"{source.stem}.codex_api_ocr.txt"
+    assert len(calls) == 2
+    assert not sidecar_path.exists()
 
 
 def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_responses(

@@ -1,0 +1,36 @@
+feature: 2026-07-11-stage-runner-file-mode
+created: 2026-07-11
+
+steps:
+  - action: "文件契约与隔离工作区：定义阶段输入槽、暂存校验和结果归档"
+    exit_signal: "文件只进入对应 stage-run 工作区，输出可形成命名 ZIP"
+    status: done
+  - action: "API 编排：接入上传、文件运行提交、状态与下载端点"
+    exit_signal: "文件运行可提交，非法路径和槽位被拒绝，成功运行可下载"
+    status: done
+  - action: "页面交互：提供文件/目录模式、阶段输入槽、归档名称和下载动作"
+    exit_signal: "按阶段只显示相关文件输入，目录模式保持原行为"
+    status: done
+  - action: "验证收尾：覆盖 API、构建、全量回归和页面检查"
+    exit_signal: "测试与构建通过，文件模式不写入全局目录"
+    status: done
+
+checks:
+  - item: "所有本机文件先经过阶段输入槽扩展名校验，再进入专用暂存根"
+    source: 名词契约
+    status: done
+  - item: "文件运行只接受专用暂存根内的路径，并复制到对应 run 工作区"
+    source: 跨层纪律
+    status: done
+  - item: "配对阶段对不同原文件名保持可运行的统一工作区文件名"
+    source: 编排骨架
+    status: done
+  - item: "下载只由 run ID 解析已持久化归档，不接受任意文件路径"
+    source: 跨层纪律
+    status: done
+  - item: "目录模式仍使用原有 StageRunRequest，覆盖参数不写入全局设置"
+    source: 兼容性
+    status: done
+  - item: "文件模式不写入全局输入、中间产物或最终输出目录"
+    source: 范围守护
+    status: done

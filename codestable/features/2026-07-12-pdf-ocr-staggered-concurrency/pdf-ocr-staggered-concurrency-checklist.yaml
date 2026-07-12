@@ -1,0 +1,33 @@
+feature: 2026-07-12-pdf-ocr-staggered-concurrency
+created: 2026-07-12
+
+steps:
+  - action: "配置契约：加入可配置的 OCR 客户端并发限制和投递间隔"
+    exit_signal: "默认 0 表示连续投递，负并发数或负间隔被配置模型拒绝"
+    status: done
+  - action: "调度编排：实现连续错峰页任务并接入 Codex PDF OCR"
+    exit_signal: "并发受限、启动错峰、乱序结果按页重排，失败停止新投递"
+    status: done
+  - action: "验证收尾：覆盖针对性测试、全量回归和可执行样例"
+    exit_signal: "测试通过，完整 sidecar 与跨页连续拼接契约保持不变"
+    status: done
+
+checks:
+  - item: "客户端并发限制与投递间隔均来自配置，默认分别为 0（不限）和 5 秒"
+    source: 配置契约
+    status: done
+  - item: "线程池不预排队全部页面，失败后不再提交尚未启动的页"
+    source: 编排纪律
+    status: done
+  - item: "每个结果按原始页码入槽，不依赖完成顺序"
+    source: 结果完整性
+    status: done
+  - item: "任一页失败不写部分 sidecar，并保留真实失败页码和原因"
+    source: 错误语义
+    status: done
+  - item: "跨页拼接不额外插入换行，不截断或跳过合法文本"
+    source: 兼容性
+    status: done
+  - item: "没有新增自动重试、页数上限或静默降级"
+    source: 范围守护
+    status: done

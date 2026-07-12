@@ -88,6 +88,7 @@ export interface BatchItemState {
 }
 
 export interface JobInputSummary {
+  [key: string]: string | undefined;
   video_source?: string;
   reference_source?: string;
   output_dir?: string;
@@ -115,6 +116,8 @@ export interface JobState {
   failed?: number;
   items?: BatchItemState[];
   input_summary?: JobInputSummary;
+  run_mode?: string;
+  download_name?: string;
 }
 
 export interface JobListResponse {
@@ -195,6 +198,31 @@ export interface StageRunPayload {
   ocr_backend?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
+}
+
+export interface StageFileRunPayload extends StageRunPayload {
+  input_files: Record<string, string>;
+  result_name: string;
+}
+
+export interface StageFileInputSlot {
+  key: string;
+  label: string;
+  extensions: string[];
+}
+
+export interface StageFileContract {
+  stage_name: string;
+  input_slots: StageFileInputSlot[];
+  default_result_name: string;
+}
+
+export interface StageInputUploadResponse {
+  stage_name: string;
+  slot: string;
+  name: string;
+  path: string;
+  size: number;
 }
 
 export interface JobRerunPayload {
@@ -316,6 +344,27 @@ export async function uploadFile(
   return (await response.json()) as UploadResponse;
 }
 
+export async function uploadStageInput(
+  stageName: string,
+  slotKey: string,
+  file: File,
+): Promise<StageInputUploadResponse> {
+  const response = await fetch(
+    `/api/stage-inputs/${encodeURIComponent(stageName)}/${encodeURIComponent(slotKey)}${buildQuery({ filename: file.name })}`,
+    {
+      method: "POST",
+      body: file,
+    },
+  );
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(formatApiError(response.status, detail));
+  }
+
+  return (await response.json()) as StageInputUploadResponse;
+}
+
 export function submitJob(payload: SingleJobPayload): Promise<{ job_id: string }> {
   return requestJson<{ job_id: string }>("/api/jobs", {
     method: "POST",
@@ -381,6 +430,21 @@ export function submitStageRun(stageName: string, payload: StageRunPayload): Pro
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function getStageFileContract(stageName: string): Promise<StageFileContract> {
+  return requestJson<StageFileContract>(`/api/stages/${encodeURIComponent(stageName)}/file-contract`);
+}
+
+export function submitStageFileRun(stageName: string, payload: StageFileRunPayload): Promise<{ run_id: string }> {
+  return requestJson<{ run_id: string }>(`/api/stages/${encodeURIComponent(stageName)}/file-run`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function stageFileResultUrl(runId: string): string {
+  return `/api/stage-runs/${encodeURIComponent(runId)}/result`;
 }
 
 export function getStageRun(runId: string): Promise<JobState> {

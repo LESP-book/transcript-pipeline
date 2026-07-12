@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from src.codex_lb_client import CodexLBClient, CodexLBClientError
+from src.codex_lb_client import CodexLBClient
+from src.ocr_scheduler import OCRPageTask, StaggeredPageTaskError, run_staggered_page_ocr_tasks
 from src.runtime_utils import ensure_directory
 from src.schemas import LoadedSettings
 
@@ -39,6 +40,7 @@ META_LINE_MARKERS = (
     "我将读取 PDF 文件",
 )
 OCR_SECTION_LABEL_SUFFIXES = ("段", "章", "节", "篇", "部分", "附录")
+LOGGER = logging.getLogger(__name__)
 
 
 class ReferencePreparationError(RuntimeError):
@@ -472,28 +474,41 @@ def build_codex_ocr_prompt(reference_path: str | Path) -> str:
     )
 
 
-def build_codex_api_image_ocr_prompt(reference_path: str | Path, page_count: int) -> str:
+def build_codex_api_image_ocr_prompt(reference_path: str | Path, page_number: int, page_count: int) -> str:
     return "\n".join(
         [
-            "你现在要对一份中文 PDF 的页面图片做 OCR 提取。",
+            "你现在要对一份中文 PDF 的单页图片做 OCR 提取。",
             "任务要求：",
             "1. 只输出提取后的纯文本。",
             "2. 不要解释，不要总结，不要添加说明。",
             "3. 保留原文顺序，尽量保留自然段。",
             "4. 不要输出 Markdown，不要输出 JSON。",
             "5. 不要输出页码、分页标记、页眉、页尾、Page 1 之类的分页提示。",
-            "6. 下面的图片已经按 PDF 页序渲染，请直接识别图片中的正文。",
+            "6. 本次只提供当前这一页图片，请直接识别其中的正文。",
             "",
             f"PDF 文件名：{Path(reference_path).name}",
-            f"页面数量：{page_count}",
+            f"当前页：{page_number}",
+            f"PDF 总页数：{page_count}",
         ]
     )
+
+
+def get_pdf_page_count(reference_path: Path) -> int:
+    PdfReader = import_pdf_reader()
+    try:
+        page_count = len(PdfReader(str(reference_path)).pages)
+    except Exception as exc:
+        raise CodexOCRError(f"Codex API OCR 无法读取 PDF 页数: {reference_path.name} | {exc}") from exc
+    if page_count < 1:
+        raise CodexOCRError(f"Codex API OCR PDF 没有可处理的页面: {reference_path.name}")
+    return page_count
 
 
 def render_pdf_pages_as_png_data_urls(reference_path: Path) -> list[str]:
     if shutil.which("pdftoppm") is None:
         raise CodexOCRError("未找到 pdftoppm，无法将 PDF 页面渲染为图片供 Codex API OCR。")
 
+    expected_page_count = get_pdf_page_count(reference_path)
     with tempfile.TemporaryDirectory(prefix=f"{reference_path.stem}.codex_api_pages_") as temp_dir:
         output_prefix = Path(temp_dir) / "page"
         command = ["pdftoppm", "-png", str(reference_path), str(output_prefix)]
@@ -509,7 +524,23 @@ def render_pdf_pages_as_png_data_urls(reference_path: Path) -> list[str]:
                 f"Codex API OCR 页面渲染失败: {reference_path.name} | {stderr or f'pdftoppm exited with code {completed.returncode}'}"
             )
 
-        page_paths = sorted(Path(temp_dir).glob("page-*.png"))
+        page_entries: list[tuple[int, Path]] = []
+        for page_path in Path(temp_dir).glob("page-*.png"):
+            match = re.fullmatch(r"page-(\d+)\.png", page_path.name)
+            if match is None:
+                raise CodexOCRError(f"Codex API OCR 页面渲染生成了无法识别的文件名: {page_path.name}")
+            page_entries.append((int(match.group(1)), page_path))
+
+        page_entries.sort(key=lambda entry: entry[0])
+        rendered_page_numbers = [page_number for page_number, _ in page_entries]
+        expected_page_numbers = list(range(1, expected_page_count + 1))
+        if rendered_page_numbers != expected_page_numbers:
+            raise CodexOCRError(
+                f"Codex API OCR 页面渲染不完整: {reference_path.name} | "
+                f"期望页码 {expected_page_numbers}，实际页码 {rendered_page_numbers}"
+            )
+
+        page_paths = [page_path for _, page_path in page_entries]
         if not page_paths:
             raise CodexOCRError(f"Codex API OCR 页面渲染未生成图片: {reference_path.name}")
 
@@ -574,15 +605,20 @@ def run_codex_api_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings)
         raise CodexOCRError("codex_api OCR 需要配置 reference.codex_ocr_model。")
 
     client = CodexLBClient(loaded_settings.settings.codex_lb, timeout_seconds=reference_settings.ocr_timeout_seconds)
-    try:
-        page_images = render_pdf_pages_as_png_data_urls(reference_path)
-        content: list[dict[str, str]] = [
-            {"type": "input_text", "text": build_codex_api_image_ocr_prompt(reference_path.name, len(page_images))}
-        ]
-        for index, image_url in enumerate(page_images, start=1):
-            content.append({"type": "input_text", "text": f"\n\n[第 {index} 页]"})
-            content.append({"type": "input_image", "image_url": image_url})
+    page_images = render_pdf_pages_as_png_data_urls(reference_path)
+    page_tasks = [
+        OCRPageTask(page_number=page_number, image_url=image_url)
+        for page_number, image_url in enumerate(page_images, start=1)
+    ]
 
+    def recognize_page(task: OCRPageTask) -> str:
+        content: list[dict[str, str]] = [
+            {
+                "type": "input_text",
+                "text": build_codex_api_image_ocr_prompt(reference_path.name, task.page_number, len(page_images)),
+            },
+            {"type": "input_image", "image_url": task.image_url},
+        ]
         payload: dict[str, object] = {
             "model": configured_model,
             "input": [
@@ -597,17 +633,28 @@ def run_codex_api_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings)
         configured_reasoning_effort = reference_settings.codex_ocr_reasoning_effort.strip()
         if configured_reasoning_effort:
             payload["reasoning"] = {"effort": configured_reasoning_effort}
-        text = sanitize_gemini_ocr_text(strip_fenced_text(client.responses_stream_text(payload)))
-    except CodexLBClientError as exc:
-        raise CodexOCRError(f"Codex API OCR 失败: {reference_path.name} | {exc}") from exc
 
+        return sanitize_gemini_ocr_text(strip_fenced_text(client.responses_stream_text(payload)))
+
+    try:
+        page_texts = run_staggered_page_ocr_tasks(
+            page_tasks,
+            recognize_page,
+            max_concurrency=reference_settings.codex_ocr_max_concurrency,
+            submit_interval_seconds=reference_settings.codex_ocr_submit_interval_seconds,
+            logger=LOGGER,
+        )
+    except StaggeredPageTaskError as exc:
+        raise CodexOCRError(f"Codex API OCR 第 {exc.page_number} 页失败: {reference_path.name} | {exc.cause}") from exc.cause
+
+    text = "".join(page_texts)
     if is_effectively_empty_text(text):
         raise CodexOCRError(f"Codex API OCR 未返回有效文本: {reference_path.name}")
 
     ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
     sidecar_path = ocr_dir / f"{reference_path.stem}.codex_api_ocr.txt"
     sidecar_path.write_text(text, encoding="utf-8")
-    return text, [f"已使用 Codex API OCR。model={configured_model}"]
+    return text, [f"已使用 Codex API OCR。model={configured_model}；已完成 {len(page_texts)}/{len(page_images)} 页。"]
 
 
 def run_agy_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:

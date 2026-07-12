@@ -26,14 +26,22 @@ from src.web.downloads import (
     resolve_job_result_path,
 )
 from src.web.fs_browser import list_fs_items, resolve_allowed_browse_path, resolve_parent_path
-from src.web.frontend_settings import FrontendSettingsUpdate, frontend_settings_response, save_frontend_settings
-from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageRunRequest
+from src.web.frontend_settings import FrontendSettingsUpdate, frontend_settings_response, load_frontend_settings, save_frontend_settings
+from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageFileRunRequest, StageRunRequest
+from src.web.stage_file_runs import (
+    StageFileRunError,
+    build_stage_input_destination,
+    normalize_result_name,
+    stage_input_slots,
+    validate_stage_input_files,
+)
 from src.web.state_store import collect_state_items, create_initial_state, read_json_file, update_state, write_json_file
 from src.web.tasks import (
     execute_batch_item_rerun,
     execute_batch_job,
     execute_job_rerun,
     execute_single_job,
+    execute_stage_file_run,
     execute_stage_run,
     submit_task,
 )
@@ -159,6 +167,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     app.state.execute_job_rerun = execute_job_rerun
     app.state.execute_batch_job = execute_batch_job
     app.state.execute_batch_item_rerun = execute_batch_item_rerun
+    app.state.execute_stage_file_run = execute_stage_file_run
     app.state.execute_stage_run = execute_stage_run
     
     # Active jobs in-memory tracker
@@ -503,6 +512,95 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             raise HTTPException(status_code=500, detail=f"无法删除批量任务目录: {exc}")
         return {"success": True}
 
+    @app.get("/api/stages/{stage_name}/file-contract")
+    async def get_stage_file_contract(stage_name: str) -> dict[str, object]:
+        try:
+            loaded_settings = load_settings(project_root=root)
+            normalized_stage_name = normalize_stage_name(stage_name)
+            slots = stage_input_slots(normalized_stage_name, loaded_settings)
+        except (ConfigLoadError, StageFileRunError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "stage_name": normalized_stage_name,
+            "input_slots": [
+                {
+                    "key": slot.key,
+                    "label": slot.label,
+                    "extensions": list(slot.extensions),
+                }
+                for slot in slots
+            ],
+            "default_result_name": f"{normalized_stage_name}-result",
+        }
+
+    @app.post("/api/stage-inputs/{stage_name}/{slot_key}")
+    async def post_stage_input(
+        stage_name: str,
+        slot_key: str,
+        request: Request,
+        filename: str = Query(...),
+    ) -> dict[str, object]:
+        try:
+            loaded_settings = load_settings(project_root=root)
+            normalized_stage_name = normalize_stage_name(stage_name)
+            destination = build_stage_input_destination(
+                project_root=root,
+                stage_name=normalized_stage_name,
+                slot_key=slot_key,
+                filename=filename,
+                loaded_settings=loaded_settings,
+            )
+        except (ConfigLoadError, StageFileRunError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        size = await save_upload_request(request, destination)
+        return {
+            "stage_name": normalized_stage_name,
+            "slot": slot_key,
+            "name": destination.name,
+            "path": str(destination),
+            "size": size,
+        }
+
+    @app.post("/api/stages/{stage_name}/file-run", status_code=202)
+    async def post_stage_file_run(stage_name: str, request: StageFileRunRequest) -> dict[str, str]:
+        try:
+            frontend_settings = load_frontend_settings(root)
+            normalized_stage_name = normalize_stage_name(stage_name)
+            effective_profile = (request.profile or "").strip() or frontend_settings.profile
+            loaded_settings = load_settings(
+                settings_path=request.config,
+                profile_name=effective_profile,
+                project_root=root,
+            )
+            staged_inputs = validate_stage_input_files(
+                project_root=root,
+                stage_name=normalized_stage_name,
+                input_files=request.input_files,
+                loaded_settings=loaded_settings,
+            )
+            result_name = normalize_result_name(request.result_name)
+        except (ConfigLoadError, StageFileRunError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        run_id = uuid.uuid4().hex[:12]
+        app.state.active_jobs.add(run_id)
+        state = create_initial_state(run_id, "stage-run")
+        state["current_stage"] = normalized_stage_name
+        state["run_mode"] = "file"
+        state["download_name"] = f"{result_name}.zip"
+        state["input_summary"] = {slot_key: path.name for slot_key, path in staged_inputs.items()}
+        write_json_file(app.state.stage_run_state_path(run_id), state)
+        submit_task(
+            app,
+            app.state.execute_stage_file_run,
+            app=app,
+            run_id=run_id,
+            stage_name=normalized_stage_name,
+            payload=request.model_dump(),
+        )
+        return {"run_id": run_id}
+
     @app.post("/api/stages/{stage_name}", status_code=202)
     async def post_stage_run(stage_name: str, request: StageRunRequest) -> dict[str, str]:
         run_id = uuid.uuid4().hex[:12]
@@ -527,6 +625,28 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             raise HTTPException(status_code=404, detail=f"stage run 不存在: {run_id}")
         state = read_json_file(state_path)
         return reconcile_state(state)
+
+    @app.get("/api/stage-runs/{run_id}/result")
+    async def download_stage_file_result(run_id: str) -> FileResponse:
+        state_path = app.state.stage_run_state_path(run_id)
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail=f"stage run 不存在: {run_id}")
+        state = reconcile_state(read_json_file(state_path))
+        if state.get("run_mode") != "file":
+            raise HTTPException(status_code=400, detail="只有本机文件模式的单阶段运行支持结果下载。")
+        if state.get("status") != "success":
+            raise HTTPException(status_code=400, detail="阶段任务尚未成功完成，暂无可下载结果。")
+
+        result_root = (root / "data/jobs/stage-runs" / run_id / "result").resolve()
+        result_path = Path(str(state.get("output_path") or "")).resolve()
+        try:
+            result_path.relative_to(result_root)
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail="阶段结果路径无效。") from exc
+        if not result_path.is_file():
+            raise HTTPException(status_code=404, detail="阶段结果归档不存在。")
+        download_name = str(state.get("download_name") or result_path.name)
+        return FileResponse(result_path, filename=download_name, media_type="application/zip")
 
     @app.get("/api/stage-runs")
     async def list_stage_runs() -> dict[str, list[dict]]:

@@ -32,7 +32,13 @@ from src.web.frontend_settings import (
     codex_lb_environment,
     load_frontend_settings,
 )
-from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageRunRequest
+from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageFileRunRequest, StageRunRequest
+from src.web.stage_file_runs import (
+    StageFileRunError,
+    build_stage_file_workspace,
+    build_stage_result_archive,
+    place_stage_inputs,
+)
 from src.web.state_store import create_initial_state, read_json_file, write_json_file
 
 
@@ -635,6 +641,85 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
             output_path=stage_output_path(loaded_settings, normalized_stage_name),
         )
     except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
+        app.state.update_state(
+            state_path,
+            status="failed",
+            error_message=str(exc),
+        )
+    finally:
+        app.state.active_jobs.discard(run_id)
+
+
+def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payload: dict) -> None:
+    state_path = app.state.stage_run_state_path(run_id)
+    root = app.state.project_root
+
+    app.state.active_jobs.add(run_id)
+    try:
+        request = StageFileRunRequest.model_validate(payload)
+        frontend_settings = load_frontend_settings(root)
+        normalized_stage_name = normalize_stage_name(stage_name)
+        effective_profile = first_text(request.profile, frontend_settings.profile)
+        effective_backend = first_text(request.backend, frontend_settings.backend)
+        base_loaded_settings = load_settings(
+            settings_path=request.config,
+            profile_name=effective_profile,
+            project_root=root,
+        )
+        workspace = build_stage_file_workspace(root, run_id)
+        place_stage_inputs(
+            project_root=root,
+            workspace=workspace,
+            stage_name=normalized_stage_name,
+            input_files=request.input_files,
+            loaded_settings=base_loaded_settings,
+        )
+        write_job_settings(
+            project_root=root,
+            loaded_settings=base_loaded_settings,
+            job_paths=workspace.job_paths,
+            profile_name=base_loaded_settings.active_profile_name,
+            model_overrides=ModelOverrides(
+                llm_model=request.model or frontend_settings.model or None,
+                llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+                ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
+                ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
+                ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
+            ),
+        )
+        workspace_loaded_settings = load_settings(
+            settings_path=workspace.job_paths.settings_path,
+            project_root=root,
+        )
+        logger = setup_logging(workspace_loaded_settings.settings.runtime.log_level)
+        app.state.update_state(
+            state_path,
+            status="running",
+            current_stage=normalized_stage_name,
+        )
+        with codex_lb_environment(frontend_settings):
+            exit_code = run_stage(
+                normalized_stage_name,
+                workspace_loaded_settings,
+                logger,
+                backend_override=effective_backend,
+            )
+        if exit_code != 0:
+            raise JobRunnerError(f"文件模式 stage 运行失败: stage={normalized_stage_name} exit_code={exit_code}")
+
+        archive_path = build_stage_result_archive(
+            workspace=workspace,
+            stage_name=normalized_stage_name,
+            result_name=request.result_name,
+        )
+        app.state.update_state(
+            state_path,
+            status="success",
+            current_stage=normalized_stage_name,
+            output_path=str(archive_path),
+            download_name=archive_path.name,
+        )
+    except (ConfigLoadError, JobRunnerError, StageFileRunError, ValueError, OSError) as exc:
         app.state.update_state(
             state_path,
             status="failed",

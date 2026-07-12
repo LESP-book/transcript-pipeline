@@ -57,6 +57,11 @@ class StageRunRequest(BaseModel):
     ocr_reasoning_effort: str | None = None
 
 
+class StageFileRunRequest(StageRunRequest):
+    input_files: dict[str, str]
+    result_name: str
+
+
 class JobRerunRequest(BaseModel):
     start_stage: str
     profile: str | None = None

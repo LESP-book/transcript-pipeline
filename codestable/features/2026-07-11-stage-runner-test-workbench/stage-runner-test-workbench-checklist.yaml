@@ -1,0 +1,36 @@
+feature: 2026-07-11-stage-runner-test-workbench
+created: 2026-07-11
+
+steps:
+  - action: "静态结构：为单阶段页建立阶段指引与按阶段显示的本次运行覆盖表单"
+    exit_signal: "切换阶段时可见控件与测试说明正确变化"
+    status: done
+  - action: "交互逻辑：将当前覆盖状态映射为既有 StageRunPayload 并保留空值默认语义"
+    exit_signal: "提交请求包含已选覆盖，未选覆盖不改变全局设置"
+    status: done
+  - action: "状态接入：加载既有 stage-run 历史并恢复指定运行的状态展示与轮询"
+    exit_signal: "页面刷新后可载入历史运行，终态不再轮询"
+    status: done
+  - action: "联调与样式收尾：完成构建、后端回归与页面可用性检查"
+    exit_signal: "构建和测试通过，测试路径在页面上可完成"
+    status: done
+
+checks:
+  - item: "StageRunPayload 覆盖字段仅作用于当前提交，不写入 FrontendSettings"
+    source: 名词契约
+    status: done
+  - item: "prepare-reference 与 refine 只提交各自相关的覆盖字段"
+    source: 编排骨架
+    status: done
+  - item: "历史状态通过既有 stage-run API 读取，运行中轮询、终态停止"
+    source: 跨层纪律
+    status: done
+  - item: "功能仅挂入既有 /stage-runner 页面，不增加路由、端点或配置项"
+    source: 挂载点
+    status: done
+  - item: "不出现文件上传、目录遍历或通过 .. 访问非本任务产物的逻辑"
+    source: 范围守护
+    status: done
+  - item: "阶段指引、覆盖提交、空值默认语义与历史恢复均有可观察验证"
+    source: 验收场景
+    status: done

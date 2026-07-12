@@ -876,6 +876,178 @@ def test_post_upload_rejects_empty_file(tmp_path: Path) -> None:
     assert "上传文件为空" in response.text
 
 
+def test_post_stage_input_writes_file_under_stage_input_upload_root(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    response = request_raw(
+        create_app(project_root=tmp_path),
+        "POST",
+        "/api/stage-inputs/transcribe/audio",
+        content=b"audio-bytes",
+        params={"filename": "lesson.wav"},
+    )
+
+    assert response.status_code == 200
+    uploaded_path = Path(response.json()["path"])
+    assert uploaded_path.is_relative_to(tmp_path / "data/uploads/stage-inputs/transcribe/audio")
+    assert uploaded_path.read_bytes() == b"audio-bytes"
+
+
+def test_post_stage_input_rejects_file_extension_outside_slot_contract(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    response = request_raw(
+        create_app(project_root=tmp_path),
+        "POST",
+        "/api/stage-inputs/transcribe/audio",
+        content=b"not-audio",
+        params={"filename": "lesson.txt"},
+    )
+
+    assert response.status_code == 400
+    assert "音频文件不支持 .txt" in response.text
+
+
+def test_post_stage_file_run_rejects_path_outside_stage_input_upload_root(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    outside_path = tmp_path / "lesson.wav"
+    outside_path.write_bytes(b"audio")
+
+    response = request_json(
+        create_app(project_root=tmp_path),
+        "POST",
+        "/api/stages/transcribe/file-run",
+        json_body={
+            "input_files": {"audio": str(outside_path)},
+            "result_name": "lesson-asr",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "暂存文件" in response.text
+
+
+def test_stage_file_run_uses_isolated_workspace_and_downloads_result(tmp_path: Path, monkeypatch) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+
+    def fake_run_stage(stage_name, loaded_settings, logger, backend_override=None) -> int:
+        _ = logger, backend_override
+        assert stage_name == "transcribe"
+        assert (loaded_settings.path_for("audio_dir") / "source.wav").read_bytes() == b"audio-bytes"
+        output_path = loaded_settings.path_for("asr_dir") / "source.txt"
+        output_path.write_text("转录结果", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("src.web.tasks.run_stage", fake_run_stage)
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+    upload_response = request_raw(
+        app,
+        "POST",
+        "/api/stage-inputs/transcribe/audio",
+        content=b"audio-bytes",
+        params={"filename": "lesson.wav"},
+    )
+    assert upload_response.status_code == 200
+
+    submit_response = request_json(
+        app,
+        "POST",
+        "/api/stages/transcribe/file-run",
+        json_body={
+            "input_files": {"audio": upload_response.json()["path"]},
+            "result_name": "lesson-asr",
+            "profile": "local_cpu",
+        },
+    )
+
+    assert submit_response.status_code == 202
+    run_id = submit_response.json()["run_id"]
+    state = request_json(app, "GET", f"/api/stage-runs/{run_id}").json()
+    assert state["status"] == "success"
+    assert state["run_mode"] == "file"
+    assert state["download_name"] == "lesson-asr.zip"
+    assert not (tmp_path / "data/input/audio/source.wav").exists()
+
+    result_response = request_json(app, "GET", f"/api/stage-runs/{run_id}/result")
+    assert result_response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(result_response.content)) as archive:
+        assert archive.namelist() == ["asr/source.txt"]
+        assert archive.read("asr/source.txt").decode("utf-8") == "转录结果"
+
+
+def test_stage_file_run_executes_export_with_uploaded_refinement_json(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+    upload_response = request_raw(
+        app,
+        "POST",
+        "/api/stage-inputs/export-markdown/refined_json",
+        content=json.dumps({"final_markdown": "# 整理稿\n\n正文"}, ensure_ascii=False).encode("utf-8"),
+        params={"filename": "refined-result.json"},
+    )
+    assert upload_response.status_code == 200
+
+    submit_response = request_json(
+        app,
+        "POST",
+        "/api/stages/export-markdown/file-run",
+        json_body={
+            "input_files": {"refined_json": upload_response.json()["path"]},
+            "result_name": "exported-draft",
+        },
+    )
+
+    assert submit_response.status_code == 202
+    run_id = submit_response.json()["run_id"]
+    state = request_json(app, "GET", f"/api/stage-runs/{run_id}").json()
+    assert state["status"] == "success"
+    assert not (tmp_path / "data/intermediate/refined/source.json").exists()
+
+    result_response = request_json(app, "GET", f"/api/stage-runs/{run_id}/result")
+    assert result_response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(result_response.content)) as archive:
+        assert archive.read("final/source.md").decode("utf-8") == "# 整理稿\n\n正文\n"
+        assert "final/source.txt" in archive.namelist()
+
+
+def test_stage_file_result_download_rejects_archive_outside_its_run_directory(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    run_id = "stage-file-outside"
+    state_path = tmp_path / "data/jobs/stage-runs" / run_id / "state.json"
+    outside_archive = tmp_path / "outside.zip"
+    outside_archive.write_bytes(b"not-a-real-archive")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "id": run_id,
+                "kind": "stage-run",
+                "status": "success",
+                "run_mode": "file",
+                "output_path": str(outside_archive),
+                "download_name": "outside.zip",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    response = request_json(create_app(project_root=tmp_path), "GET", f"/api/stage-runs/{run_id}/result")
+
+    assert response.status_code == 500
+    assert "结果路径无效" in response.text
+
+
 def test_post_job_returns_job_id_and_persists_state(tmp_path: Path) -> None:
     from api_server import create_app
 
