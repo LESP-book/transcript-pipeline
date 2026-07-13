@@ -175,6 +175,36 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 .venv/bin/python scripts/03_prepare_reference.py
 ```
 
+## 独立 PDF 书籍 OCR
+
+如果只需要把扫描版或图片型 PDF 书籍识别成文本，不需要放入录屏整理流水线，可直接运行独立命令：
+
+```bash
+.venv/bin/python scripts/10_ocr_pdf_books.py "/path/to/book.pdf"
+```
+
+也可以把一个书籍目录一次性处理；会递归扫描其中的 PDF，并在输出目录中保留原有子目录层级：
+
+```bash
+.venv/bin/python scripts/10_ocr_pdf_books.py \
+  "/path/to/books" \
+  --output-dir "/path/to/ocr-text"
+```
+
+默认输出目录是 `output/pdf/ocr/`，每本 PDF 对应一个同名 `.txt`。该命令不读取
+`data/input/reference/`，也不会生成录屏整理流水线的中间 JSON。它沿用当前的 Codex API
+逐页 OCR：每页单独识别、按页码重排；任意页面失败时不会写出该书的新 TXT。使用前仍需按上文设置
+`CODEX_LB_BASE_URL` 和 `CODEX_LB_API_KEY`，并安装 `pdftoppm`。
+
+可临时覆盖书籍 OCR 模型：
+
+```bash
+.venv/bin/python scripts/10_ocr_pdf_books.py \
+  "/path/to/book.pdf" \
+  --ocr-model "gpt-5.6-terra" \
+  --ocr-reasoning-effort "high"
+```
+
 阶段 6 精修默认读取 `llm.backends`，当前默认也是 `codex_api`：
 
 ```bash
@@ -547,6 +577,7 @@ http://127.0.0.1:5173
 - `单任务`：对应 `scripts/08_run_job.py`
 - `批量任务`：对应 `scripts/09_run_batch_jobs.py`
 - `单阶段`：对应 `scripts/run_pipeline.py --stage`
+- `PDF OCR`：独立上传单本 PDF 或 PDF 目录，识别完成后逐本下载 TXT，并可在页面任务历史中恢复查看
 - `任务列表`：查看 `data/jobs/` 下已有任务状态，下载单任务结果、批量结果 ZIP 和批量子任务结果
 - `设置`：配置 Codex API 的 base URL、API key、阶段 6 模型和 PDF OCR 模型
 - 单任务视频、参考源、术语词表会通过浏览器选择使用者本机文件并上传到主机
@@ -558,6 +589,7 @@ http://127.0.0.1:5173
 - `./start_web.sh` 会在同一个终端内管理前端和后端，按 `Ctrl+C` 可同时停止两个服务
 - Web UI 设置会保存到 `data/jobs/frontend-settings.json`，该路径默认被 `.gitignore` 忽略
 - 上传文件会保存到 `data/uploads/`，该目录默认被 `.gitignore` 忽略
+- PDF OCR 的上传文件会位于 `data/uploads/pdf-ocr/`，结果与状态会隔离保存在 `data/jobs/pdf-ocr/`，不会写入录屏整理流水线的数据目录
 - 局域网访问前，请确保主机防火墙允许前端端口 `5173` 和后端端口 `8000`
 - 单阶段页面运行的是**当前配置文件绑定的数据目录**，不是临时单文件运行器
 - 长任务使用 `state.json` 持久化状态，页面会通过轮询显示 `pending / running / success / failed`

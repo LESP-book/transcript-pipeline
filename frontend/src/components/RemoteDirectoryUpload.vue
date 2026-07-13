@@ -6,7 +6,7 @@ import { uploadFile, type UploadKind, type UploadResponse } from "../api/client"
 
 const props = defineProps<{
   modelValue: string;
-  kind: Extract<UploadKind, "video" | "reference">;
+  kind: Extract<UploadKind, "video" | "reference" | "pdf_ocr">;
   label: string;
   extensions: string[];
   buttonText?: string;

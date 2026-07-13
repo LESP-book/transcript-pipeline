@@ -798,6 +798,111 @@ def test_post_upload_writes_video_under_project_upload_dir(tmp_path: Path) -> No
     assert uploaded_path.is_relative_to(tmp_path / "data/uploads/videos")
 
 
+def test_post_upload_writes_pdf_ocr_input_under_dedicated_upload_dir(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    response = request_raw(
+        create_app(project_root=tmp_path),
+        "POST",
+        "/api/uploads",
+        params={"kind": "pdf_ocr", "filename": "书籍.PDF"},
+        content=b"pdf-bytes",
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    uploaded_path = Path(payload["path"])
+    assert payload["kind"] == "pdf_ocr"
+    assert payload["name"] == "书籍.pdf"
+    assert uploaded_path.read_bytes() == b"pdf-bytes"
+    assert uploaded_path.is_relative_to(tmp_path / "data/uploads/pdf-ocr")
+
+
+def test_pdf_book_ocr_api_creates_task_and_serves_task_result(tmp_path: Path) -> None:
+    from api_server import create_app
+    from src.web.pdf_book_ocr import build_pdf_book_ocr_task_paths
+
+    write_minimal_settings(tmp_path)
+    input_path = tmp_path / "data/uploads/pdf-ocr/20260713/group-001/book.pdf"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_bytes(b"pdf")
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+    seen: dict[str, object] = {}
+
+    def fake_execute_pdf_book_ocr(*, app, task_id: str, payload: dict) -> None:
+        seen["task_id"] = task_id
+        seen["payload"] = payload
+        task_paths = build_pdf_book_ocr_task_paths(tmp_path, task_id)
+        result_path = task_paths.output_dir / "book.txt"
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text("OCR 文本", encoding="utf-8")
+        app.state.update_state(
+            task_paths.state_path,
+            status="success",
+            current_stage="done",
+            output_path=str(task_paths.output_dir),
+            total=1,
+            success=1,
+            failed=0,
+            items=[
+                {
+                    "source_file": "book.pdf",
+                    "output_file": "book.txt",
+                    "success": True,
+                    "text_length": len("OCR 文本"),
+                    "warnings": [],
+                    "error": "",
+                }
+            ],
+        )
+        app.state.active_jobs.discard(task_id)
+
+    app.state.execute_pdf_book_ocr = fake_execute_pdf_book_ocr
+    submit_response = request_json(
+        app,
+        "POST",
+        "/api/pdf-book-ocr",
+        json_body={"input_path": str(input_path)},
+    )
+
+    assert submit_response.status_code == 202
+    task_id = submit_response.json()["task_id"]
+    assert seen["task_id"] == task_id
+    assert seen["payload"] == {"input_path": str(input_path), "config": None, "ocr_model": None, "ocr_reasoning_effort": None}
+
+    status_response = request_json(app, "GET", f"/api/pdf-book-ocr/{task_id}")
+    assert status_response.status_code == 200
+    assert status_response.json()["items"][0]["output_file"] == "book.txt"
+
+    list_response = request_json(app, "GET", "/api/pdf-book-ocr")
+    assert list_response.status_code == 200
+    assert [item["id"] for item in list_response.json()["items"]] == [task_id]
+
+    result_response = request_json(app, "GET", f"/api/pdf-book-ocr/{task_id}/results/book.txt")
+    assert result_response.status_code == 200
+    assert result_response.content == "OCR 文本".encode("utf-8")
+    assert "book.txt" in result_response.headers["content-disposition"]
+
+
+def test_pdf_book_ocr_api_rejects_input_outside_uploaded_pdf_area(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    outside_input = tmp_path / "book.pdf"
+    outside_input.write_bytes(b"pdf")
+
+    response = request_json(
+        create_app(project_root=tmp_path),
+        "POST",
+        "/api/pdf-book-ocr",
+        json_body={"input_path": str(outside_input)},
+    )
+
+    assert response.status_code == 400
+    assert "本页面上传" in response.text
+
+
 def test_post_upload_groups_directory_files(tmp_path: Path) -> None:
     from api_server import create_app
 

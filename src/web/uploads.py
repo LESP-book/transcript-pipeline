@@ -10,15 +10,17 @@ from fastapi import HTTPException, Request
 from src.config_loader import LoadedSettings
 from src.job_runner import sanitize_filename_stem, supported_reference_extensions, supported_video_extensions
 
-UploadKind = Literal["video", "reference", "manifest", "glossary"]
+UploadKind = Literal["video", "reference", "manifest", "glossary", "pdf_ocr"]
 
 MANIFEST_EXTENSIONS = {".json", ".yaml", ".yml"}
 GLOSSARY_EXTENSIONS = {".txt", ".md"}
+PDF_OCR_EXTENSIONS = {".pdf"}
 UPLOAD_KIND_DIRS: dict[str, str] = {
     "video": "videos",
     "reference": "reference",
     "manifest": "manifests",
     "glossary": "glossaries",
+    "pdf_ocr": "pdf-ocr",
 }
 
 
@@ -35,6 +37,8 @@ def upload_allowed_extensions(kind: UploadKind, loaded_settings: LoadedSettings)
         return MANIFEST_EXTENSIONS
     if kind == "glossary":
         return GLOSSARY_EXTENSIONS
+    if kind == "pdf_ocr":
+        return PDF_OCR_EXTENSIONS
     raise HTTPException(status_code=400, detail=f"不支持的上传类型: {kind}")
 
 

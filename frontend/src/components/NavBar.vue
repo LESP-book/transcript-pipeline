@@ -41,6 +41,11 @@ const menuOptions = computed<MenuOption[]>(() => [
     icon: renderIcon("M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16zM12 22V12 M12 12L4 7.5 M12 12l8-4.5"),
   },
   {
+    key: "/pdf-book-ocr",
+    label: () => h(RouterLink, { to: "/pdf-book-ocr" }, { default: () => "PDF OCR" }),
+    icon: renderIcon("M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5"),
+  },
+  {
     key: "/jobs",
     label: () => h(RouterLink, { to: "/jobs" }, { default: () => "任务列表" }),
     icon: renderIcon("M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"),

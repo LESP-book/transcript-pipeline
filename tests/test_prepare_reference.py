@@ -580,6 +580,38 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
     assert sidecar_path.read_text(encoding="utf-8") == "目录第2页 OCR 识别出的完整正文内容。"
 
 
+def test_run_codex_api_pdf_ocr_writes_to_explicit_sidecar_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    source = tmp_path / "external" / "book.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4 fake")
+    explicit_sidecar_path = tmp_path / "book-ocr" / "part-01" / "book.txt"
+
+    monkeypatch.setattr(
+        "src.reference_utils.render_pdf_pages_as_png_data_urls",
+        lambda _path: ["data:image/png;base64,Zmlyc3Q="],
+    )
+    monkeypatch.setattr(
+        "src.reference_utils.CodexLBClient.responses_stream_text",
+        lambda _client, _payload: "这是一段完整的书籍 OCR 正文内容。",
+    )
+
+    text, _warnings = run_codex_api_pdf_ocr(
+        source,
+        loaded_settings,
+        sidecar_path=explicit_sidecar_path,
+    )
+
+    assert text == "这是一段完整的书籍 OCR 正文内容。"
+    assert explicit_sidecar_path.read_text(encoding="utf-8") == text
+    default_sidecar_path = loaded_settings.path_for("ocr_dir") / f"{source.stem}.codex_api_ocr.txt"
+    assert not default_sidecar_path.exists()
+
+
 def test_run_codex_api_pdf_ocr_stops_without_sidecar_when_a_page_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

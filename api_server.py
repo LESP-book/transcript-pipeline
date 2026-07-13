@@ -27,7 +27,21 @@ from src.web.downloads import (
 )
 from src.web.fs_browser import list_fs_items, resolve_allowed_browse_path, resolve_parent_path
 from src.web.frontend_settings import FrontendSettingsUpdate, frontend_settings_response, load_frontend_settings, save_frontend_settings
-from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageFileRunRequest, StageRunRequest
+from src.web.models import (
+    BatchJobRequest,
+    JobRerunRequest,
+    PDFBookOCRRequest,
+    SingleJobRequest,
+    StageFileRunRequest,
+    StageRunRequest,
+)
+from src.web.pdf_book_ocr import (
+    PDFBookOCRTaskError,
+    build_pdf_book_ocr_task_paths,
+    create_pdf_book_ocr_task_id,
+    resolve_pdf_book_ocr_output_file,
+    resolve_uploaded_pdf_ocr_input,
+)
 from src.web.stage_file_runs import (
     StageFileRunError,
     build_stage_input_destination,
@@ -40,6 +54,7 @@ from src.web.tasks import (
     execute_batch_item_rerun,
     execute_batch_job,
     execute_job_rerun,
+    execute_pdf_book_ocr,
     execute_single_job,
     execute_stage_file_run,
     execute_stage_run,
@@ -167,6 +182,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     app.state.execute_job_rerun = execute_job_rerun
     app.state.execute_batch_job = execute_batch_job
     app.state.execute_batch_item_rerun = execute_batch_item_rerun
+    app.state.execute_pdf_book_ocr = execute_pdf_book_ocr
     app.state.execute_stage_file_run = execute_stage_file_run
     app.state.execute_stage_run = execute_stage_run
     
@@ -189,6 +205,16 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
                     path = app.state.stage_run_state_path(job_id)
                 app.state.update_state(path, status="failed", error_message="任务已意外中断或服务重启")
         return enrich_state_input_summary(root, state)
+
+    def reconcile_pdf_book_ocr_state(task_id: str, state: dict) -> dict:
+        if state.get("status") not in {"running", "pending"} or task_id in app.state.active_jobs:
+            return state
+        task_paths = build_pdf_book_ocr_task_paths(root, task_id)
+        return app.state.update_state(
+            task_paths.state_path,
+            status="failed",
+            error_message="PDF OCR 任务已意外中断或服务重启。",
+        )
 
     @app.get("/api/config")
     async def get_config() -> dict[str, object]:
@@ -276,6 +302,64 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             "directory": str(upload_group_path(destination, group_id, relative_path)),
             "size": size,
         }
+
+    @app.post("/api/pdf-book-ocr", status_code=202)
+    async def post_pdf_book_ocr(request: PDFBookOCRRequest) -> dict[str, str]:
+        try:
+            resolve_uploaded_pdf_ocr_input(root, request.input_path)
+        except PDFBookOCRTaskError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        task_id = create_pdf_book_ocr_task_id()
+        task_paths = build_pdf_book_ocr_task_paths(root, task_id)
+        state = create_initial_state(task_id, "pdf-ocr")
+        state["input_summary"] = {"input_path": request.input_path}
+        write_json_file(task_paths.state_path, state)
+        app.state.active_jobs.add(task_id)
+        submit_task(
+            app,
+            app.state.execute_pdf_book_ocr,
+            app=app,
+            task_id=task_id,
+            payload=request.model_dump(),
+        )
+        return {"task_id": task_id}
+
+    @app.get("/api/pdf-book-ocr")
+    async def list_pdf_book_ocr_tasks() -> dict[str, list[dict]]:
+        items = collect_state_items(root / "data/jobs/pdf-ocr")
+        return {
+            "items": [
+                reconcile_pdf_book_ocr_state(str(item.get("id") or ""), item)
+                for item in items
+            ]
+        }
+
+    @app.get("/api/pdf-book-ocr/{task_id}")
+    async def get_pdf_book_ocr_status(task_id: str) -> dict:
+        try:
+            task_paths = build_pdf_book_ocr_task_paths(root, task_id)
+        except PDFBookOCRTaskError as exc:
+            raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。") from exc
+        if not task_paths.state_path.exists():
+            raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。")
+        return reconcile_pdf_book_ocr_state(task_id, read_json_file(task_paths.state_path))
+
+    @app.get("/api/pdf-book-ocr/{task_id}/results/{result_path:path}")
+    async def download_pdf_book_ocr_result(task_id: str, result_path: str) -> FileResponse:
+        try:
+            task_paths = build_pdf_book_ocr_task_paths(root, task_id)
+        except PDFBookOCRTaskError as exc:
+            raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。") from exc
+        if not task_paths.state_path.exists():
+            raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。")
+        try:
+            output_file = resolve_pdf_book_ocr_output_file(task_paths, result_path)
+        except PDFBookOCRTaskError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not output_file.is_file():
+            raise HTTPException(status_code=404, detail="PDF OCR TXT 结果不存在。")
+        return FileResponse(output_file, filename=output_file.name, media_type="text/plain; charset=utf-8")
 
     @app.get("/api/jobs")
     async def list_jobs() -> dict[str, list[dict]]:

@@ -1,0 +1,663 @@
+<script setup lang="ts">
+import {
+  NAlert,
+  NButton,
+  NCard,
+  NEmpty,
+  NFlex,
+  NForm,
+  NFormItem,
+  NGrid,
+  NGridItem,
+  NInput,
+  NRadioButton,
+  NRadioGroup,
+  NSelect,
+  NSpace,
+  NTag,
+  useMessage,
+} from "naive-ui";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+
+import {
+  getFrontendSettings,
+  getPDFBookOCRTask,
+  listPDFBookOCRTasks,
+  pdfBookOCRResultUrl,
+  submitPDFBookOCR,
+  type PDFBookOCRItem,
+  type PDFBookOCRTask,
+} from "../api/client";
+import RemoteDirectoryUpload from "../components/RemoteDirectoryUpload.vue";
+import RemoteFileUpload from "../components/RemoteFileUpload.vue";
+
+type InputMode = "file" | "directory";
+
+const message = useMessage();
+const inputMode = ref<InputMode>("file");
+const currentTask = ref<PDFBookOCRTask | null>(null);
+const activeTaskId = ref("");
+const submitting = ref(false);
+const historyLoading = ref(false);
+const taskHistory = ref<PDFBookOCRTask[]>([]);
+const pollingHandle = ref<number | null>(null);
+const pdfExtensions = [".pdf"];
+const reasoningOptions = [
+  { label: "低", value: "low" },
+  { label: "中", value: "medium" },
+  { label: "高", value: "high" },
+];
+
+const form = reactive({
+  input_path: "",
+  ocr_model: "",
+  ocr_reasoning_effort: "",
+});
+
+const isTaskRunning = computed(() => {
+  return currentTask.value?.status === "pending" || currentTask.value?.status === "running";
+});
+
+const taskItems = computed(() => currentTask.value?.items ?? []);
+
+function taskStatusLabelFor(status: PDFBookOCRTask["status"] | undefined): string {
+  if (status === "pending") {
+    return "等待开始";
+  }
+  if (status === "running") {
+    return "正在识别";
+  }
+  if (status === "success") {
+    return "已完成";
+  }
+  if (status === "failed") {
+    return "识别失败";
+  }
+  return "尚未提交";
+}
+
+const taskStatusLabel = computed(() => taskStatusLabelFor(currentTask.value?.status));
+
+function taskStatusTypeFor(status: PDFBookOCRTask["status"] | undefined): "default" | "info" | "success" | "error" {
+  if (status === "success") {
+    return "success";
+  }
+  if (status === "failed") {
+    return "error";
+  }
+  if (status === "pending" || status === "running") {
+    return "info";
+  }
+  return "default";
+}
+
+const taskStatusType = computed(() => taskStatusTypeFor(currentTask.value?.status));
+
+function stopPolling() {
+  if (pollingHandle.value !== null) {
+    window.clearInterval(pollingHandle.value);
+    pollingHandle.value = null;
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  pollingHandle.value = window.setInterval(() => {
+    void refreshTask();
+  }, 2000);
+}
+
+async function refreshTask() {
+  if (!activeTaskId.value) {
+    return;
+  }
+  try {
+    const task = await getPDFBookOCRTask(activeTaskId.value);
+    currentTask.value = task;
+    if (task.status !== "pending" && task.status !== "running") {
+      stopPolling();
+      void loadTaskHistory();
+    }
+  } catch (caught) {
+    stopPolling();
+    message.error(caught instanceof Error ? caught.message : "读取 PDF OCR 任务状态失败");
+  }
+}
+
+async function loadTaskHistory() {
+  historyLoading.value = true;
+  try {
+    const tasks = (await listPDFBookOCRTasks()).items;
+    taskHistory.value = tasks;
+    if (!activeTaskId.value && tasks.length > 0) {
+      activeTaskId.value = tasks[0].id;
+      await refreshTask();
+      if (isTaskRunning.value) {
+        startPolling();
+      }
+    }
+  } catch (caught) {
+    message.error(caught instanceof Error ? caught.message : "加载 PDF OCR 任务历史失败");
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+async function loadTask(taskId: string) {
+  stopPolling();
+  activeTaskId.value = taskId;
+  await refreshTask();
+  if (isTaskRunning.value) {
+    startPolling();
+  }
+}
+
+function taskSourceLabel(task: PDFBookOCRTask): string {
+  const sourcePath = task.input_summary?.input_path ?? "";
+  const pathParts = sourcePath.split(/[\\/]/).filter(Boolean);
+  return pathParts[pathParts.length - 1] || "PDF OCR 任务";
+}
+
+async function loadDefaults() {
+  try {
+    const settings = await getFrontendSettings();
+    if (!form.ocr_model) {
+      form.ocr_model = settings.ocr_model;
+    }
+    if (!form.ocr_reasoning_effort) {
+      form.ocr_reasoning_effort = settings.ocr_reasoning_effort;
+    }
+  } catch (caught) {
+    message.error(caught instanceof Error ? caught.message : "读取 OCR 默认设置失败");
+  }
+}
+
+function sourceModeChanged() {
+  form.input_path = "";
+}
+
+function itemStatusType(item: PDFBookOCRItem): "success" | "error" {
+  return item.success ? "success" : "error";
+}
+
+function openResult(item: PDFBookOCRItem) {
+  if (!currentTask.value || !item.output_file) {
+    message.error("当前结果不可下载。");
+    return;
+  }
+  window.location.href = pdfBookOCRResultUrl(currentTask.value.id, item.output_file);
+}
+
+async function submit() {
+  if (!form.input_path) {
+    message.warning("请先选择并上传 PDF 书籍或 PDF 目录。");
+    return;
+  }
+
+  submitting.value = true;
+  try {
+    const response = await submitPDFBookOCR({
+      input_path: form.input_path,
+      ocr_model: form.ocr_model || null,
+      ocr_reasoning_effort: form.ocr_reasoning_effort || null,
+    });
+    activeTaskId.value = response.task_id;
+    await refreshTask();
+    await loadTaskHistory();
+    if (isTaskRunning.value) {
+      startPolling();
+    }
+    message.success(`PDF OCR 任务已提交：${response.task_id}`);
+  } catch (caught) {
+    message.error(caught instanceof Error ? caught.message : "提交 PDF OCR 任务失败");
+  } finally {
+    submitting.value = false;
+  }
+}
+
+watch(inputMode, sourceModeChanged);
+onMounted(() => {
+  void loadDefaults();
+  void loadTaskHistory();
+});
+onBeforeUnmount(stopPolling);
+</script>
+
+<template>
+  <n-space vertical :size="24" class="pdf-book-ocr-view">
+    <section class="view-hero pdf-book-ocr-view__hero">
+      <div>
+        <p class="view-hero__eyebrow">独立工具</p>
+        <h2 class="view-hero__title">PDF 书籍 OCR</h2>
+        <p class="view-hero__copy">上传一本书或整套 PDF，逐页识别后直接下载干净的 TXT 文本。</p>
+      </div>
+      <div class="pdf-book-ocr-view__hero-mark" aria-hidden="true">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <path d="M14 2v6h6M8 13h8M8 17h5" />
+        </svg>
+      </div>
+    </section>
+
+    <n-alert type="info" :bordered="false" class="pdf-book-ocr-view__notice">
+      本页只接收 PDF。目录上传会保留原有子目录层级；每本书的 TXT 仅在全部页面成功后才会出现。
+    </n-alert>
+
+    <n-grid :cols="2" :x-gap="20" :y-gap="20" responsive="screen" item-responsive>
+      <n-grid-item span="2 m:1">
+        <n-card class="view-card pdf-book-ocr-panel pdf-book-ocr-panel--input" :bordered="false">
+          <template #header>
+            <n-flex align="center" :size="10">
+              <span class="pdf-book-ocr-panel__index">01</span>
+              <span>选择来源与运行设置</span>
+            </n-flex>
+          </template>
+
+          <n-form label-placement="top">
+            <n-form-item label="输入方式">
+              <n-radio-group v-model:value="inputMode" name="pdf-ocr-input-mode">
+                <n-radio-button value="file">单本 PDF</n-radio-button>
+                <n-radio-button value="directory">PDF 目录</n-radio-button>
+              </n-radio-group>
+            </n-form-item>
+
+            <n-form-item :label="inputMode === 'file' ? 'PDF 书籍' : 'PDF 书籍目录'" required>
+              <RemoteFileUpload
+                v-if="inputMode === 'file'"
+                v-model="form.input_path"
+                kind="pdf_ocr"
+                label="PDF 书籍"
+                accept=".pdf"
+                button-text="选择并上传本机 PDF"
+              />
+              <RemoteDirectoryUpload
+                v-else
+                v-model="form.input_path"
+                kind="pdf_ocr"
+                label="PDF"
+                :extensions="pdfExtensions"
+                button-text="选择并上传本机 PDF 目录"
+              />
+            </n-form-item>
+
+            <n-form-item label="OCR 推理强度">
+              <n-select
+                v-model:value="form.ocr_reasoning_effort"
+                :options="reasoningOptions"
+                clearable
+                placeholder="沿用运行设置"
+              />
+            </n-form-item>
+
+            <n-form-item label="OCR 模型">
+              <n-input v-model:value="form.ocr_model" placeholder="留空则沿用运行设置" clearable />
+            </n-form-item>
+
+            <div class="pdf-book-ocr-panel__action">
+              <n-button type="primary" size="large" :loading="submitting" :disabled="!form.input_path" @click="submit">
+                开始识别
+              </n-button>
+              <span>模型与 API 密钥沿用“运行设置”中的配置。</span>
+            </div>
+          </n-form>
+        </n-card>
+      </n-grid-item>
+
+      <n-grid-item span="2 m:1">
+        <n-card class="view-card pdf-book-ocr-panel pdf-book-ocr-panel--result" :bordered="false">
+          <template #header>
+            <n-flex align="center" justify="space-between" :size="10">
+              <n-flex align="center" :size="10">
+                <span class="pdf-book-ocr-panel__index">02</span>
+                <span>识别结果</span>
+              </n-flex>
+              <n-tag :type="taskStatusType" :bordered="false">{{ taskStatusLabel }}</n-tag>
+            </n-flex>
+          </template>
+
+          <n-empty v-if="!currentTask" description="提交任务后，这里会显示每本书的状态与下载入口。" />
+
+          <template v-else>
+            <div class="pdf-book-ocr-task" :class="{ 'is-running': isTaskRunning }">
+              <div>
+                <p class="pdf-book-ocr-task__label">任务 ID</p>
+                <p class="pdf-book-ocr-task__id">{{ currentTask.id }}</p>
+              </div>
+              <div class="pdf-book-ocr-task__counts">
+                <span>总计 {{ currentTask.total ?? 0 }}</span>
+                <span>成功 {{ currentTask.success ?? 0 }}</span>
+                <span v-if="currentTask.failed">失败 {{ currentTask.failed }}</span>
+              </div>
+            </div>
+
+            <n-alert v-if="currentTask.error_message" type="error" :bordered="false" class="pdf-book-ocr-task__error">
+              {{ currentTask.error_message }}
+            </n-alert>
+
+            <n-empty v-if="!isTaskRunning && taskItems.length === 0" description="任务尚未产生可展示的结果。" />
+            <div v-else class="pdf-book-ocr-results">
+              <div v-for="item in taskItems" :key="`${item.source_file}-${item.output_file}`" class="pdf-book-ocr-result-item">
+                <div class="pdf-book-ocr-result-item__main">
+                  <n-tag size="small" :type="itemStatusType(item)" :bordered="false">
+                    {{ item.success ? '完成' : '失败' }}
+                  </n-tag>
+                  <strong>{{ item.source_file }}</strong>
+                  <span v-if="item.success" class="pdf-book-ocr-result-item__meta">{{ item.text_length }} 字</span>
+                </div>
+                <p v-if="!item.success" class="pdf-book-ocr-result-item__error">{{ item.error || 'OCR 未返回结果。' }}</p>
+                <n-button v-if="item.success" tertiary type="primary" size="small" @click="openResult(item)">下载 TXT</n-button>
+              </div>
+            </div>
+          </template>
+        </n-card>
+      </n-grid-item>
+
+      <n-grid-item span="2">
+        <n-card class="view-card pdf-book-ocr-history" :bordered="false">
+          <template #header>
+            <n-flex align="center" justify="space-between" :size="12" wrap>
+              <div>
+                <span>PDF OCR 任务历史</span>
+                <p class="pdf-book-ocr-history__copy">选择任一记录可恢复结果查看；运行中的任务会继续刷新。</p>
+              </div>
+              <n-button size="small" secondary :loading="historyLoading" @click="loadTaskHistory">刷新历史</n-button>
+            </n-flex>
+          </template>
+
+          <n-empty v-if="!historyLoading && taskHistory.length === 0" description="还没有 PDF OCR 任务记录。" />
+          <div v-else class="pdf-book-ocr-history__list">
+            <button
+              v-for="task in taskHistory"
+              :key="task.id"
+              type="button"
+              class="pdf-book-ocr-history-item"
+              :class="{ 'is-selected': currentTask?.id === task.id }"
+              @click="loadTask(task.id)"
+            >
+              <div class="pdf-book-ocr-history-item__main">
+                <strong>{{ taskSourceLabel(task) }}</strong>
+                <span>{{ task.id }}</span>
+              </div>
+              <div class="pdf-book-ocr-history-item__meta">
+                <n-tag size="small" :type="taskStatusTypeFor(task.status)" :bordered="false">
+                  {{ taskStatusLabelFor(task.status) }}
+                </n-tag>
+                <span>{{ task.updated_at }}</span>
+              </div>
+            </button>
+          </div>
+        </n-card>
+      </n-grid-item>
+    </n-grid>
+  </n-space>
+</template>
+
+<style scoped>
+.pdf-book-ocr-view__hero-mark {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 4px;
+  color: var(--primary);
+  place-items: center;
+  border: 1px solid var(--primary-alpha-20);
+  border-radius: 18px;
+  background: var(--primary-alpha-10);
+  animation: hero-mark-in 480ms ease-out both;
+}
+
+.pdf-book-ocr-view__hero-mark svg {
+  width: 30px;
+  height: 30px;
+}
+
+.pdf-book-ocr-view__notice {
+  animation: panel-enter 360ms 60ms ease-out both;
+}
+
+.pdf-book-ocr-panel {
+  min-height: 100%;
+  animation: panel-enter 420ms ease-out both;
+}
+
+.pdf-book-ocr-panel--result {
+  animation-delay: 90ms;
+}
+
+.pdf-book-ocr-panel__index {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 700;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--primary-alpha-10);
+}
+
+.pdf-book-ocr-panel__action {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding-top: 18px;
+  color: var(--text-muted);
+  font-size: 13px;
+  border-top: 1px solid rgba(148, 163, 184, 0.24);
+}
+
+.pdf-book-ocr-task {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.pdf-book-ocr-task.is-running {
+  animation: task-pulse 1.8s ease-in-out infinite;
+}
+
+.pdf-book-ocr-task__label,
+.pdf-book-ocr-task__id {
+  margin: 0;
+}
+
+.pdf-book-ocr-task__label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.pdf-book-ocr-task__id {
+  max-width: 270px;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-book-ocr-task__counts {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.pdf-book-ocr-task__counts span + span {
+  padding-left: 10px;
+  border-left: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+.pdf-book-ocr-task__error {
+  margin-top: 14px;
+}
+
+.pdf-book-ocr-results {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.pdf-book-ocr-history__copy {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.pdf-book-ocr-history__list {
+  display: grid;
+  gap: 8px;
+}
+
+.pdf-book-ocr-history-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 10px;
+  background: transparent;
+  transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
+}
+
+.pdf-book-ocr-history-item:hover,
+.pdf-book-ocr-history-item.is-selected {
+  border-color: var(--primary-alpha-20);
+  background: var(--primary-alpha-10);
+}
+
+.pdf-book-ocr-history-item:hover {
+  transform: translateY(-1px);
+}
+
+.pdf-book-ocr-history-item__main,
+.pdf-book-ocr-history-item__meta {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.pdf-book-ocr-history-item__main strong,
+.pdf-book-ocr-history-item__main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-book-ocr-history-item__main span,
+.pdf-book-ocr-history-item__meta span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.pdf-book-ocr-history-item__meta {
+  justify-items: end;
+  flex: 0 0 auto;
+}
+
+.pdf-book-ocr-result-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  transition: transform 180ms ease, background-color 180ms ease;
+}
+
+.pdf-book-ocr-result-item:hover {
+  transform: translateX(3px);
+  background: var(--primary-alpha-10);
+}
+
+.pdf-book-ocr-result-item__main {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.pdf-book-ocr-result-item__main strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-book-ocr-result-item__meta {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.pdf-book-ocr-result-item__error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--color-error);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+@keyframes panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes hero-mark-in {
+  from {
+    opacity: 0;
+    transform: scale(0.88) rotate(-8deg);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+@keyframes task-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.64;
+  }
+}
+
+@media (max-width: 640px) {
+  .pdf-book-ocr-view__hero-mark {
+    display: none;
+  }
+
+  .pdf-book-ocr-panel__action,
+  .pdf-book-ocr-task,
+  .pdf-book-ocr-history-item {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pdf-book-ocr-task__counts {
+    justify-content: flex-start;
+  }
+
+  .pdf-book-ocr-history-item__meta {
+    justify-items: start;
+  }
+}
+</style>

@@ -61,7 +61,7 @@ export interface FileListResponse {
   items: FileItem[];
 }
 
-export type UploadKind = "video" | "reference" | "manifest" | "glossary";
+export type UploadKind = "video" | "reference" | "manifest" | "glossary" | "pdf_ocr";
 
 export interface UploadResponse {
   kind: UploadKind;
@@ -236,6 +236,44 @@ export interface JobRerunPayload {
   ocr_reasoning_effort?: string | null;
 }
 
+export interface PDFBookOCRPayload {
+  input_path: string;
+  config?: string | null;
+  ocr_model?: string | null;
+  ocr_reasoning_effort?: string | null;
+}
+
+export interface PDFBookOCRItem {
+  source_file: string;
+  output_file: string;
+  success: boolean;
+  text_length: number;
+  warnings: string[];
+  error: string;
+}
+
+export interface PDFBookOCRTask {
+  id: string;
+  kind: "pdf-ocr";
+  status: "pending" | "running" | "success" | "failed";
+  created_at: string;
+  updated_at: string;
+  current_stage: string;
+  error_message: string;
+  output_path: string;
+  total?: number;
+  success?: number;
+  failed?: number;
+  items?: PDFBookOCRItem[];
+  input_summary?: {
+    input_path?: string;
+  };
+}
+
+export interface PDFBookOCRTaskListResponse {
+  items: PDFBookOCRTask[];
+}
+
 function formatApiError(status: number, rawBody: string): string {
   if (!rawBody) {
     return `请求失败：HTTP ${status}`;
@@ -342,6 +380,30 @@ export async function uploadFile(
   }
 
   return (await response.json()) as UploadResponse;
+}
+
+export function submitPDFBookOCR(payload: PDFBookOCRPayload): Promise<{ task_id: string }> {
+  return requestJson<{ task_id: string }>("/api/pdf-book-ocr", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getPDFBookOCRTask(taskId: string): Promise<PDFBookOCRTask> {
+  return requestJson<PDFBookOCRTask>(`/api/pdf-book-ocr/${encodeURIComponent(taskId)}`);
+}
+
+export function listPDFBookOCRTasks(): Promise<PDFBookOCRTaskListResponse> {
+  return requestJson<PDFBookOCRTaskListResponse>("/api/pdf-book-ocr");
+}
+
+export function pdfBookOCRResultUrl(taskId: string, outputFile: string): string {
+  const encodedPath = outputFile
+    .split("/")
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return `/api/pdf-book-ocr/${encodeURIComponent(taskId)}/results/${encodedPath}`;
 }
 
 export async function uploadStageInput(

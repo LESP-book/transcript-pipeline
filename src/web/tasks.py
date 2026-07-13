@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from scripts.run_pipeline import run_stage
 from src.config_loader import ConfigLoadError, load_settings
+from src.pdf_book_ocr import PDFBookOCRError, ocr_pdf_book_batch
 from src.job_runner import (
     BatchJobRuntime,
     BatchJobSpec,
@@ -32,7 +33,20 @@ from src.web.frontend_settings import (
     codex_lb_environment,
     load_frontend_settings,
 )
-from src.web.models import BatchJobRequest, JobRerunRequest, SingleJobRequest, StageFileRunRequest, StageRunRequest
+from src.web.models import (
+    BatchJobRequest,
+    JobRerunRequest,
+    PDFBookOCRRequest,
+    SingleJobRequest,
+    StageFileRunRequest,
+    StageRunRequest,
+)
+from src.web.pdf_book_ocr import (
+    PDFBookOCRTaskPaths,
+    build_pdf_book_ocr_task_paths,
+    relative_pdf_book_ocr_output_path,
+    resolve_uploaded_pdf_ocr_input,
+)
 from src.web.stage_file_runs import (
     StageFileRunError,
     build_stage_file_workspace,
@@ -727,3 +741,92 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
         )
     finally:
         app.state.active_jobs.discard(run_id)
+
+
+def pdf_book_ocr_source_label(source_pdf: Path, input_path: Path) -> str:
+    if input_path.is_dir():
+        try:
+            return source_pdf.relative_to(input_path).as_posix()
+        except ValueError:
+            pass
+    return source_pdf.name
+
+
+def serialize_pdf_book_ocr_items(task_paths: PDFBookOCRTaskPaths, input_path: Path, summary) -> list[dict[str, object]]:
+    serialized_items: list[dict[str, object]] = []
+    for item in summary.items:
+        serialized_items.append(
+            {
+                "source_file": pdf_book_ocr_source_label(item.source_pdf, input_path),
+                "output_file": relative_pdf_book_ocr_output_path(task_paths, item.output_text_path) if item.success else "",
+                "success": item.success,
+                "text_length": item.text_length,
+                "warnings": item.warnings,
+                "error": item.error or "",
+            }
+        )
+    return serialized_items
+
+
+def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
+    root = app.state.project_root
+    task_paths = build_pdf_book_ocr_task_paths(root, task_id)
+    state_path = task_paths.state_path
+
+    app.state.active_jobs.add(task_id)
+    try:
+        request = PDFBookOCRRequest.model_validate(payload)
+        frontend_settings = load_frontend_settings(root)
+        loaded_settings = load_settings(
+            settings_path=request.config,
+            project_root=root,
+        )
+        apply_model_overrides(
+            loaded_settings,
+            ModelOverrides(
+                ocr_model=first_text(request.ocr_model, frontend_settings.ocr_model),
+                ocr_reasoning_effort=first_text(
+                    request.ocr_reasoning_effort,
+                    frontend_settings.ocr_reasoning_effort,
+                ),
+            ),
+        )
+        input_path = resolve_uploaded_pdf_ocr_input(root, request.input_path)
+        app.state.update_state(
+            state_path,
+            status="running",
+            current_stage="ocr",
+        )
+
+        with codex_lb_environment(frontend_settings):
+            summary = ocr_pdf_book_batch(input_path, task_paths.output_dir, loaded_settings)
+
+        items = serialize_pdf_book_ocr_items(task_paths, input_path, summary)
+        if summary.failure_count == 0:
+            status = "success"
+            error_message = ""
+        elif summary.success_count == 0:
+            status = "failed"
+            error_message = "所有 PDF OCR 均失败，请查看每本书的错误详情。"
+        else:
+            status = "failed"
+            error_message = "部分 PDF OCR 失败，请查看每本书的错误详情并下载已完成的 TXT。"
+        app.state.update_state(
+            state_path,
+            status=status,
+            current_stage="done",
+            output_path=str(task_paths.output_dir),
+            total=len(summary.items),
+            success=summary.success_count,
+            failed=summary.failure_count,
+            items=items,
+            error_message=error_message,
+        )
+    except (ConfigLoadError, PDFBookOCRError, ValueError, OSError) as exc:
+        app.state.update_state(
+            state_path,
+            status="failed",
+            error_message=str(exc),
+        )
+    finally:
+        app.state.active_jobs.discard(task_id)

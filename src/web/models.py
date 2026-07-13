@@ -57,6 +57,13 @@ class StageRunRequest(BaseModel):
     ocr_reasoning_effort: str | None = None
 
 
+class PDFBookOCRRequest(BaseModel):
+    input_path: str = Field(min_length=1)
+    config: str | None = None
+    ocr_model: str | None = None
+    ocr_reasoning_effort: str | None = None
+
+
 class StageFileRunRequest(StageRunRequest):
     input_files: dict[str, str]
     result_name: str

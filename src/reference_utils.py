@@ -598,7 +598,12 @@ def build_codex_ocr_workspace(reference_path: Path, loaded_settings: LoadedSetti
     return workspace_dir, staged_pdf_path
 
 
-def run_codex_api_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
+def run_codex_api_pdf_ocr(
+    reference_path: Path,
+    loaded_settings: LoadedSettings,
+    *,
+    sidecar_path: Path | None = None,
+) -> tuple[str, list[str]]:
     reference_settings = loaded_settings.settings.reference
     configured_model = reference_settings.codex_ocr_model.strip()
     if not configured_model:
@@ -651,8 +656,12 @@ def run_codex_api_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings)
     if is_effectively_empty_text(text):
         raise CodexOCRError(f"Codex API OCR 未返回有效文本: {reference_path.name}")
 
-    ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
-    sidecar_path = ocr_dir / f"{reference_path.stem}.codex_api_ocr.txt"
+    if sidecar_path is None:
+        ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
+        sidecar_path = ocr_dir / f"{reference_path.stem}.codex_api_ocr.txt"
+    else:
+        sidecar_path = Path(sidecar_path)
+        ensure_directory(sidecar_path.parent)
     sidecar_path.write_text(text, encoding="utf-8")
     return text, [f"已使用 Codex API OCR。model={configured_model}；已完成 {len(page_texts)}/{len(page_images)} 页。"]
 
