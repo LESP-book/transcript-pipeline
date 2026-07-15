@@ -255,8 +255,8 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 - PDF OCR：`reference.ai_ocr_backend = codex_api`
 - PDF OCR 模型：`reference.codex_ocr_model = gpt-5.6-terra`（GPT-5.6 Terra）
 - PDF OCR reasoning：`reference.codex_ocr_reasoning_effort = high`
-- PDF OCR 最大并发：`reference.codex_ocr_max_concurrency = 0` 表示不等待前页完成；如需限制活动请求数，可填写正整数
-- PDF OCR 投递间隔：`reference.codex_ocr_submit_interval_seconds = 5.0` 秒；每次只新增一张图片，页面可同时执行和乱序完成，最终仍按原始页码拼接
+- PDF OCR 最大并发：`reference.codex_ocr_max_concurrency = 20`；只限制同时在途请求，必须为正整数，可按机器内存和 API 容量调整
+- PDF OCR 投递间隔：`reference.codex_ocr_submit_interval_seconds = 10.0` 秒；每次只新增一张图片，不等待前一页完成，页面可同时执行和乱序完成，最终仍按原始页码拼接
 - PDF OCR 等待时间：`reference.ocr_timeout_seconds = 480`
 - `--backend both` 保持旧语义，只同时运行 `codex_cli` 和 `agy`
 
@@ -1019,7 +1019,7 @@ JSON 中间结果至少包含：
 PDF 支持边界：
 
 - 当前 PDF 默认优先尝试 `codex_api` OCR
-- `codex_api` OCR 会先在本地用 `pdftoppm` 将 PDF 页面渲染成 PNG，核对页号完整后，再通过 codex-lb `/v1/responses` 逐页发送一个 `input_image`；仅在所有页面 OCR 成功后按页序合并结果，且不会在页边界额外插入换行
+- `codex_api` OCR 先读取 PDF 总页数，再由受限工作线程按需用 `pdftoppm` 渲染当前页，并通过 codex-lb `/v1/responses` 发送一个 `input_image`；页面完成后立即释放图片数据，不会一次性把整本书的 PNG/base64 保存在内存中；仅在所有页面 OCR 成功后按页序合并结果，且不会在页边界额外插入换行
 - `codex_api` OCR 默认模型是 `gpt-5.6-terra`，reasoning effort 是 `high`
 - 直接运行阶段 3 时，可用 `--ocr-model` 和 `--ocr-reasoning-effort` 临时覆盖 OCR 模型与 reasoning
 - 如果 Codex API OCR 失败，但 PDF 自带文字层可提取，则回退到文字层提取

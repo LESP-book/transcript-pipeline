@@ -29,8 +29,8 @@ def test_load_settings_success() -> None:
     assert loaded_settings.settings.reference.gemini_ocr_fallback_model == ""
     assert loaded_settings.settings.reference.codex_ocr_model == "gpt-5.6-terra"
     assert loaded_settings.settings.reference.codex_ocr_reasoning_effort == "high"
-    assert loaded_settings.settings.reference.codex_ocr_max_concurrency == 0
-    assert loaded_settings.settings.reference.codex_ocr_submit_interval_seconds == 5.0
+    assert loaded_settings.settings.reference.codex_ocr_max_concurrency == 20
+    assert loaded_settings.settings.reference.codex_ocr_submit_interval_seconds == 10.0
     assert loaded_settings.settings.codex_lb.base_url == "http://127.0.0.1:2455"
     assert loaded_settings.settings.codex_lb.base_url_env == "CODEX_LB_BASE_URL"
     assert loaded_settings.settings.codex_lb.api_key_env == "CODEX_LB_API_KEY"
@@ -41,6 +41,7 @@ def test_load_settings_success() -> None:
 @pytest.mark.parametrize(
     "overrides",
     [
+        {"codex_ocr_max_concurrency": 0},
         {"codex_ocr_max_concurrency": -1},
         {"codex_ocr_submit_interval_seconds": -0.1},
     ],

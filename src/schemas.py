@@ -88,9 +88,9 @@ class ReferenceSettings(AppBaseModel):
     gemini_ocr_fallback_model: str = ""
     codex_ocr_model: str = "gpt-5.6-terra"
     codex_ocr_reasoning_effort: str = "high"
-    # 0 表示不等待前一页完成，每隔配置时间持续投递一张图片；正整数可显式限制活动请求数。
-    codex_ocr_max_concurrency: int = Field(default=0, ge=0)
-    codex_ocr_submit_interval_seconds: float = Field(default=5.0, ge=0)
+    # 用户确认服务可承受 15～20 个活动请求；20 只限制同时在途数量，不改变每 10 秒新增一页的错峰机制。
+    codex_ocr_max_concurrency: int = Field(default=20, ge=1)
+    codex_ocr_submit_interval_seconds: float = Field(default=10.0, ge=0)
     ocr_timeout_seconds: int = 480
     ocr_languages: list[str] = Field(default_factory=list)
 

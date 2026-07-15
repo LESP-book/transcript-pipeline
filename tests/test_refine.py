@@ -518,6 +518,98 @@ def test_extract_event_stream_text_raises_on_failed_event() -> None:
         extract_event_stream_text(stream_text)
 
 
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    [
+        ("response.output_text.done", {"text": "完成事件中的正文。"}),
+        (
+            "response.content_part.done",
+            {"part": {"type": "output_text", "text": "内容分段完成事件中的正文。"}},
+        ),
+        (
+            "response.output_item.done",
+            {"item": {"content": [{"type": "output_text", "text": "输出项完成事件中的正文。"}]}},
+        ),
+    ],
+)
+def test_extract_event_stream_text_supports_official_done_events(
+    event_type: str,
+    payload: dict[str, object],
+) -> None:
+    event_payload = json.dumps({"type": event_type, **payload}, ensure_ascii=False)
+
+    assert extract_event_stream_text(f"event: {event_type}\ndata: {event_payload}\n\n").endswith("正文。")
+
+
+def test_extract_event_stream_text_reads_nested_output_from_completed_response() -> None:
+    completed_event = json.dumps(
+        {
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "嵌套 output 中的完整正文。"}],
+                    }
+                ],
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    assert extract_event_stream_text(f"event: response.completed\ndata: {completed_event}\n\n") == "嵌套 output 中的完整正文。"
+
+
+def test_extract_event_stream_text_prefers_deltas_without_duplicating_done_text() -> None:
+    delta = json.dumps({"type": "response.output_text.delta", "delta": "完整正文。"}, ensure_ascii=False)
+    done = json.dumps({"type": "response.output_text.done", "text": "完整正文。"}, ensure_ascii=False)
+    stream_text = (
+        f"event: response.output_text.delta\ndata: {delta}\n\n"
+        f"event: response.output_text.done\ndata: {done}\n\n"
+    )
+
+    assert extract_event_stream_text(stream_text) == "完整正文。"
+
+
+def test_extract_event_stream_text_accepts_explicit_empty_output_text_for_blank_page() -> None:
+    done = json.dumps({"type": "response.output_text.done", "text": ""}, ensure_ascii=False)
+    completed = json.dumps(
+        {
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": ""}],
+                    }
+                ],
+            },
+        },
+        ensure_ascii=False,
+    )
+    stream_text = (
+        f"event: response.output_text.done\ndata: {done}\n\n"
+        f"event: response.completed\ndata: {completed}\n\n"
+    )
+
+    assert extract_event_stream_text(stream_text) == ""
+
+
+def test_extract_event_stream_text_still_rejects_completed_response_without_output_text() -> None:
+    completed = json.dumps(
+        {
+            "type": "response.completed",
+            "response": {"status": "completed", "output": [{"type": "reasoning", "content": []}]},
+        },
+        ensure_ascii=False,
+    )
+
+    with pytest.raises(CodexLBClientError, match="未找到 output_text"):
+        extract_event_stream_text(f"event: response.completed\ndata: {completed}\n\n")
+
+
 def test_run_agy_uses_configured_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_minimal_settings(tmp_path, llm_overrides={"gemini_model": "Gemini 3.1 Pro (High)", "timeout_seconds": 1800})
     loaded_settings = load_settings(project_root=tmp_path)

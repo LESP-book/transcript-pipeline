@@ -277,7 +277,7 @@ def parse_json_response(text: str, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def extract_response_text(payload: dict[str, Any]) -> str:
+def find_response_text(payload: dict[str, Any]) -> str | None:
     output_text = payload.get("output_text")
     if isinstance(output_text, str) and output_text.strip():
         return output_text.strip()
@@ -296,7 +296,12 @@ def extract_response_text(payload: dict[str, Any]) -> str:
             collect_text_parts(item, parts)
 
     text = "".join(parts).strip()
-    if not text:
+    return text or None
+
+
+def extract_response_text(payload: dict[str, Any]) -> str:
+    text = find_response_text(payload)
+    if text is None:
         raise CodexLBClientError(f"Responses API 返回中未找到 output_text: {payload}")
     return text
 
@@ -304,6 +309,7 @@ def extract_response_text(payload: dict[str, Any]) -> str:
 def extract_event_stream_text(stream_text: str) -> str:
     parts: list[str] = []
     completed_text: str | None = None
+    saw_output_text = False
     failed_payload: dict[str, Any] | None = None
     for block in iter_sse_blocks(stream_text):
         event_name, data_text = parse_sse_block(block)
@@ -321,21 +327,54 @@ def extract_event_stream_text(stream_text: str) -> str:
             if isinstance(delta, str):
                 parts.append(delta)
             continue
+        if event_type == "response.output_text.done":
+            output_text = payload.get("text")
+            if isinstance(output_text, str):
+                saw_output_text = True
+                if output_text.strip():
+                    completed_text = output_text.strip()
+            continue
+        if event_type == "response.content_part.done":
+            if contains_output_text_part(payload.get("part")):
+                saw_output_text = True
+            content_parts: list[str] = []
+            collect_text_parts(payload.get("part"), content_parts)
+            candidate = "".join(content_parts).strip()
+            if candidate:
+                completed_text = candidate
+            continue
+        if event_type == "response.output_item.done":
+            item = payload.get("item")
+            item_parts: list[str] = []
+            if isinstance(item, dict):
+                if contains_output_text_part(item.get("content")):
+                    saw_output_text = True
+                collect_text_parts(item.get("content"), item_parts)
+                collect_text_parts(item, item_parts)
+            candidate = "".join(item_parts).strip()
+            if candidate:
+                completed_text = candidate
+            continue
         if event_type in {"response.failed", "response.incomplete"}:
             failed_payload = payload
             continue
         if event_type == "response.completed":
             response = payload.get("response")
             if isinstance(response, dict):
-                output_text = response.get("output_text")
-                if isinstance(output_text, str) and output_text.strip():
-                    completed_text = output_text.strip()
+                if contains_output_text_part(response.get("output")):
+                    saw_output_text = True
+                candidate = find_response_text(response)
+                if candidate:
+                    completed_text = candidate
 
     if failed_payload is not None:
         raise CodexLBClientError(f"Codex Responses API 返回失败事件: {failed_payload}")
     text = "".join(parts).strip() or (completed_text or "").strip()
     if text:
         return text
+    # 空白扫描页会正常完成并明确返回空的 output_text；这与响应结构缺失 output_text 是两种情况。
+    if saw_output_text:
+        return ""
     raise CodexLBClientError("Codex Responses API 流中未找到 output_text。")
 
 
@@ -378,3 +417,13 @@ def collect_text_parts(content: Any, parts: list[str]) -> None:
     if isinstance(content, list):
         for item in content:
             collect_text_parts(item, parts)
+
+
+def contains_output_text_part(content: Any) -> bool:
+    if isinstance(content, dict):
+        if content.get("type") == "output_text" and isinstance(content.get("text"), str):
+            return True
+        return contains_output_text_part(content.get("content"))
+    if isinstance(content, list):
+        return any(contains_output_text_part(item) for item in content)
+    return False

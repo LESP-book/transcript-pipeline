@@ -8,10 +8,7 @@ from src.ocr_scheduler import OCRPageTask, StaggeredPageTaskError, run_staggered
 
 
 def make_tasks(count: int) -> list[OCRPageTask]:
-    return [
-        OCRPageTask(page_number=page_number, image_url=f"page-{page_number}")
-        for page_number in range(1, count + 1)
-    ]
+    return [OCRPageTask(page_number=page_number) for page_number in range(1, count + 1)]
 
 
 def test_staggered_page_tasks_restore_page_order_after_out_of_order_completion() -> None:
@@ -96,7 +93,7 @@ def test_staggered_page_tasks_space_submissions_with_controllable_clock() -> Non
     assert dispatched_at == [100.0, 105.0, 110.0]
 
 
-def test_staggered_page_tasks_continuously_submit_without_waiting_for_previous_page() -> None:
+def test_staggered_page_tasks_keep_submitting_every_ten_seconds_without_waiting() -> None:
     now = 0.0
     lock = threading.Lock()
     all_started = threading.Event()
@@ -126,16 +123,26 @@ def test_staggered_page_tasks_continuously_submit_without_waiting_for_previous_p
     results = run_staggered_page_ocr_tasks(
         make_tasks(4),
         worker,
-        max_concurrency=0,
-        submit_interval_seconds=5,
+        max_concurrency=20,
+        submit_interval_seconds=10,
         monotonic=monotonic,
         sleep=sleep,
         on_dispatched=lambda _task, submitted_at: dispatched_at.append(submitted_at),
     )
 
     assert results == ["1", "2", "3", "4"]
-    assert dispatched_at == [0.0, 5.0, 10.0, 15.0]
+    assert dispatched_at == [0.0, 10.0, 20.0, 30.0]
     assert peak_active == 4
+
+
+def test_staggered_page_tasks_reject_zero_concurrency() -> None:
+    with pytest.raises(ValueError, match="必须是正整数"):
+        run_staggered_page_ocr_tasks(
+            make_tasks(1),
+            lambda task: str(task.page_number),
+            max_concurrency=0,
+            submit_interval_seconds=0,
+        )
 
 
 def test_staggered_page_tasks_stop_new_submissions_after_failure() -> None:

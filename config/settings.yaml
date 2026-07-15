@@ -105,9 +105,9 @@ reference:
   gemini_ocr_fallback_model: ""
   codex_ocr_model: gpt-5.6-terra
   codex_ocr_reasoning_effort: high
-  # 0 表示每隔 5 秒持续投递一张图片，不等待上一张完成；返回结果仍按页码重排。
-  codex_ocr_max_concurrency: 0
-  codex_ocr_submit_interval_seconds: 5.0
+  # 每 10 秒只新增一页，不等待前一页完成；用户确认服务可承受 15～20 个活动请求，因此用 20 作为容量上限。
+  codex_ocr_max_concurrency: 20
+  codex_ocr_submit_interval_seconds: 10.0
   ocr_timeout_seconds: 480
   ocr_languages:
     - chi_sim

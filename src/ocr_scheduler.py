@@ -10,7 +10,6 @@ from typing import Callable, Sequence
 @dataclass(frozen=True)
 class OCRPageTask:
     page_number: int
-    image_url: str
 
 
 class StaggeredPageTaskError(RuntimeError):
@@ -35,8 +34,8 @@ def run_staggered_page_ocr_tasks(
 ) -> list[str]:
     """连续错峰执行单页 OCR，并将乱序结果恢复为页码顺序。"""
 
-    if max_concurrency < 0:
-        raise ValueError("max_concurrency 不能小于 0")
+    if max_concurrency < 1:
+        raise ValueError("max_concurrency 必须是正整数")
     if submit_interval_seconds < 0:
         raise ValueError("submit_interval_seconds 不能小于 0")
     if not tasks:
@@ -52,9 +51,7 @@ def run_staggered_page_ocr_tasks(
     first_failure: tuple[OCRPageTask, Exception] | None = None
     active: dict[Future[str], OCRPageTask] = {}
 
-    # 0 表示按固定间隔持续投递、不限制活动请求数；线程仍只会在页面实际投递时按需创建。
-    worker_count = max_concurrency or len(ordered_tasks)
-    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="pdf-ocr") as executor:
+    with ThreadPoolExecutor(max_workers=max_concurrency, thread_name_prefix="pdf-ocr") as executor:
         while next_task_index < len(ordered_tasks) or active:
             completed = [future for future in active if future.done()]
             for future in completed:
@@ -82,7 +79,7 @@ def run_staggered_page_ocr_tasks(
                     continue
                 break
 
-            has_capacity = max_concurrency == 0 or len(active) < max_concurrency
+            has_capacity = len(active) < max_concurrency
             if next_task_index < len(ordered_tasks) and has_capacity:
                 delay = next_submit_at - monotonic()
                 if delay > 0:

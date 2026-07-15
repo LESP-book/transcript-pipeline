@@ -16,7 +16,7 @@ from src.reference_utils import (
     iter_reference_files,
     prepare_reference_file,
     read_text_file,
-    render_pdf_pages_as_png_data_urls,
+    render_pdf_page_as_png_data_url,
     run_codex_api_pdf_ocr,
     run_codex_pdf_ocr,
     sanitize_ocrmypdf_text,
@@ -387,7 +387,7 @@ def test_run_codex_pdf_ocr_uses_configured_model_prompt_and_reasoning_effort(
     assert f"@{{{source.name}}}" in str(seen["input"])
 
 
-def test_render_pdf_pages_as_png_data_urls_uses_pdftoppm(
+def test_render_pdf_page_as_png_data_url_uses_pdftoppm_for_requested_page(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -402,8 +402,7 @@ def test_render_pdf_pages_as_png_data_urls_uses_pdftoppm(
         assert check is False
         output_prefix = Path(command[-1])
         output_prefix.parent.mkdir(parents=True, exist_ok=True)
-        (output_prefix.parent / "page-1.png").write_bytes(b"page-one")
-        (output_prefix.parent / "page-2.png").write_bytes(b"page-two")
+        output_prefix.with_suffix(".png").write_bytes(b"page-two")
 
         class Completed:
             returncode = 0
@@ -414,16 +413,14 @@ def test_render_pdf_pages_as_png_data_urls_uses_pdftoppm(
 
     monkeypatch.setattr("src.reference_utils.shutil.which", lambda name: "/usr/bin/pdftoppm" if name == "pdftoppm" else None)
     monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
-    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 2)
+    data_url = render_pdf_page_as_png_data_url(source, 2, 10)
 
-    data_urls = render_pdf_pages_as_png_data_urls(source)
-
-    assert data_urls == ["data:image/png;base64,cGFnZS1vbmU=", "data:image/png;base64,cGFnZS10d28="]
-    assert seen["command"][:2] == ["pdftoppm", "-png"]
-    assert seen["command"][2] == str(source)
+    assert data_url == "data:image/png;base64,cGFnZS10d28="
+    assert seen["command"][:-2] == ["pdftoppm", "-f", "2", "-l", "2", "-singlefile", "-png"]
+    assert seen["command"][-2] == str(source)
 
 
-def test_render_pdf_pages_as_png_data_urls_rejects_missing_pages(
+def test_render_pdf_page_as_png_data_url_rejects_missing_rendered_page(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -432,10 +429,7 @@ def test_render_pdf_pages_as_png_data_urls_rejects_missing_pages(
 
     def fake_run(command, *, text, capture_output, check):
         _ = text, capture_output, check
-        output_prefix = Path(command[-1])
-        output_prefix.parent.mkdir(parents=True, exist_ok=True)
-        (output_prefix.parent / "page-1.png").write_bytes(b"page-one")
-        (output_prefix.parent / "page-3.png").write_bytes(b"page-three")
+        _ = command
 
         class Completed:
             returncode = 0
@@ -446,43 +440,21 @@ def test_render_pdf_pages_as_png_data_urls_rejects_missing_pages(
 
     monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/pdftoppm")
     monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
-    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 3)
-
-    with pytest.raises(CodexOCRError, match="页面渲染不完整"):
-        render_pdf_pages_as_png_data_urls(source)
+    with pytest.raises(CodexOCRError, match="未生成第 2 页图片"):
+        render_pdf_page_as_png_data_url(source, 2, 3)
 
 
-def test_render_pdf_pages_as_png_data_urls_sorts_page_numbers_numerically(
+def test_render_pdf_page_as_png_data_url_rejects_page_out_of_range(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "scan.pdf"
     source.write_bytes(b"%PDF-1.4 fake")
 
-    def fake_run(command, *, text, capture_output, check):
-        _ = text, capture_output, check
-        output_prefix = Path(command[-1])
-        output_prefix.parent.mkdir(parents=True, exist_ok=True)
-        for page_number in range(1, 11):
-            (output_prefix.parent / f"page-{page_number}.png").write_bytes(str(page_number).encode("ascii"))
-
-        class Completed:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return Completed()
-
     monkeypatch.setattr("src.reference_utils.shutil.which", lambda _name: "/usr/bin/pdftoppm")
-    monkeypatch.setattr("src.reference_utils.subprocess.run", fake_run)
-    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 10)
 
-    data_urls = render_pdf_pages_as_png_data_urls(source)
-
-    assert data_urls == [
-        f"data:image/png;base64,{base64_value}"
-        for base64_value in ("MQ==", "Mg==", "Mw==", "NA==", "NQ==", "Ng==", "Nw==", "OA==", "OQ==", "MTA=")
-    ]
+    with pytest.raises(CodexOCRError, match="页面超出范围"):
+        render_pdf_page_as_png_data_url(source, 11, 10)
 
 
 def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
@@ -504,7 +476,7 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
     source = tmp_path / "external" / "scan.pdf"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(b"%PDF-1.4 fake")
-    seen: dict[str, object] = {"requests": [], "response_payloads": []}
+    seen: dict[str, object] = {"requests": [], "response_payloads": [], "rendered_pages": []}
 
     class FakeResponse:
         def __init__(self, payload: dict | str = "") -> None:
@@ -545,10 +517,15 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
             return FakeResponse(f"event: response.output_text.delta\ndata: {event_payload}\n\n")
         pytest.fail(f"未预期的请求: {request.full_url}")
 
-    monkeypatch.setattr(
-        "src.reference_utils.render_pdf_pages_as_png_data_urls",
-        lambda _path: ["data:image/png;base64,Zmlyc3Q=", "data:image/png;base64,c2Vjb25k"],
-    )
+    def fake_render_page(_path: Path, page_number: int, page_count: int) -> str:
+        assert page_count == 2
+        rendered_pages = seen["rendered_pages"]
+        assert isinstance(rendered_pages, list)
+        rendered_pages.append(page_number)
+        return ["data:image/png;base64,Zmlyc3Q=", "data:image/png;base64,c2Vjb25k"][page_number - 1]
+
+    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 2)
+    monkeypatch.setattr("src.reference_utils.render_pdf_page_as_png_data_url", fake_render_page)
     monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
 
     text, warnings = run_codex_api_pdf_ocr(source, loaded_settings)
@@ -558,6 +535,7 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
     requests = seen["requests"]
     assert isinstance(requests, list)
     assert len(requests) == 2
+    assert seen["rendered_pages"] == [1, 2]
     response_payloads = seen["response_payloads"]
     assert isinstance(response_payloads, list)
     for page_number, (request, response_payload, image_url) in enumerate(
@@ -591,9 +569,10 @@ def test_run_codex_api_pdf_ocr_writes_to_explicit_sidecar_path(
     source.write_bytes(b"%PDF-1.4 fake")
     explicit_sidecar_path = tmp_path / "book-ocr" / "part-01" / "book.txt"
 
+    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 1)
     monkeypatch.setattr(
-        "src.reference_utils.render_pdf_pages_as_png_data_urls",
-        lambda _path: ["data:image/png;base64,Zmlyc3Q="],
+        "src.reference_utils.render_pdf_page_as_png_data_url",
+        lambda _path, _page_number, _page_count: "data:image/png;base64,Zmlyc3Q=",
     )
     monkeypatch.setattr(
         "src.reference_utils.CodexLBClient.responses_stream_text",
@@ -633,9 +612,13 @@ def test_run_codex_api_pdf_ocr_stops_without_sidecar_when_a_page_fails(
             raise CodexLBClientError("context_length_exceeded")
         return "第一页 OCR 识别出的完整正文内容。"
 
+    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 2)
     monkeypatch.setattr(
-        "src.reference_utils.render_pdf_pages_as_png_data_urls",
-        lambda _path: ["data:image/png;base64,Zmlyc3Q=", "data:image/png;base64,c2Vjb25k"],
+        "src.reference_utils.render_pdf_page_as_png_data_url",
+        lambda _path, page_number, _page_count: [
+            "data:image/png;base64,Zmlyc3Q=",
+            "data:image/png;base64,c2Vjb25k",
+        ][page_number - 1],
     )
     monkeypatch.setattr("src.reference_utils.CodexLBClient.responses_stream_text", fake_responses_stream_text)
 
@@ -678,7 +661,11 @@ def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_responses(
         return Completed()
 
     monkeypatch.setenv("CODEX_LB_BASE_URL", "https://api.redworker.org")
-    monkeypatch.setattr("src.reference_utils.render_pdf_pages_as_png_data_urls", lambda _path: ["data:image/png;base64,Zmlyc3Q="])
+    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 1)
+    monkeypatch.setattr(
+        "src.reference_utils.render_pdf_page_as_png_data_url",
+        lambda _path, _page_number, _page_count: "data:image/png;base64,Zmlyc3Q=",
+    )
     monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
     monkeypatch.setattr("src.codex_lb_client.shutil.which", lambda name: "/usr/bin/curl" if name == "curl" else None)
     monkeypatch.setattr("src.codex_lb_client.subprocess.run", fake_run)
