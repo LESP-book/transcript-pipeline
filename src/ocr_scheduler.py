@@ -12,13 +12,13 @@ class OCRPageTask:
     page_number: int
 
 
-class StaggeredPageTaskError(RuntimeError):
-    """单页 OCR 任务失败，并保留原始页码与异常。"""
+@dataclass(frozen=True)
+class OCRPageTaskRunResult:
+    texts_by_page: dict[int, str]
+    errors_by_page: dict[int, Exception]
 
-    def __init__(self, page_number: int, cause: Exception) -> None:
-        super().__init__(f"第 {page_number} 页 OCR 任务失败: {cause}")
-        self.page_number = page_number
-        self.cause = cause
+    def ordered_texts(self) -> list[str]:
+        return [self.texts_by_page[page_number] for page_number in sorted(self.texts_by_page)]
 
 
 def run_staggered_page_ocr_tasks(
@@ -31,24 +31,27 @@ def run_staggered_page_ocr_tasks(
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     on_dispatched: Callable[[OCRPageTask, float], None] | None = None,
-) -> list[str]:
-    """连续错峰执行单页 OCR，并将乱序结果恢复为页码顺序。"""
+    on_succeeded: Callable[[OCRPageTask, str], None] | None = None,
+    on_failed: Callable[[OCRPageTask, Exception], None] | None = None,
+) -> OCRPageTaskRunResult:
+    """连续错峰执行全部单页 OCR，分别保留成功结果与失败页。"""
 
     if max_concurrency < 1:
         raise ValueError("max_concurrency 必须是正整数")
     if submit_interval_seconds < 0:
         raise ValueError("submit_interval_seconds 不能小于 0")
     if not tasks:
-        return []
+        return OCRPageTaskRunResult(texts_by_page={}, errors_by_page={})
 
     ordered_tasks = sorted(tasks, key=lambda task: task.page_number)
     if len({task.page_number for task in ordered_tasks}) != len(ordered_tasks):
         raise ValueError("OCR 页任务的页码不能重复")
+    task_positions = {task.page_number: index for index, task in enumerate(ordered_tasks, start=1)}
     results: dict[int, str] = {}
+    errors: dict[int, Exception] = {}
 
     next_task_index = 0
     next_submit_at = monotonic()
-    first_failure: tuple[OCRPageTask, Exception] | None = None
     active: dict[Future[str], OCRPageTask] = {}
 
     with ThreadPoolExecutor(max_workers=max_concurrency, thread_name_prefix="pdf-ocr") as executor:
@@ -58,26 +61,30 @@ def run_staggered_page_ocr_tasks(
                 task = active.pop(future)
                 try:
                     page_text = future.result()
+                    if on_succeeded:
+                        on_succeeded(task, page_text)
                 except Exception as exc:
-                    if first_failure is None:
-                        first_failure = (task, exc)
+                    errors[task.page_number] = exc
+                    if on_failed:
+                        on_failed(task, exc)
                     if logger:
-                        logger.error("OCR 页任务失败 | page=%s/%s | %s", task.page_number, len(ordered_tasks), exc)
+                        logger.error(
+                            "OCR 页任务失败 | page=%s | batch=%s/%s | %s",
+                            task.page_number,
+                            task_positions[task.page_number],
+                            len(ordered_tasks),
+                            exc,
+                        )
                 else:
                     results[task.page_number] = page_text
                     if logger:
                         logger.info(
-                            "OCR 页任务完成 | page=%s/%s | active=%s",
+                            "OCR 页任务完成 | page=%s | batch=%s/%s | active=%s",
                             task.page_number,
+                            task_positions[task.page_number],
                             len(ordered_tasks),
                             len(active),
                         )
-
-            if first_failure is not None:
-                if active:
-                    wait(active, return_when=FIRST_COMPLETED)
-                    continue
-                break
 
             has_capacity = len(active) < max_concurrency
             if next_task_index < len(ordered_tasks) and has_capacity:
@@ -95,8 +102,9 @@ def run_staggered_page_ocr_tasks(
                     on_dispatched(task, submitted_at)
                 if logger:
                     logger.info(
-                        "OCR 页任务已投递 | page=%s/%s | active=%s",
+                        "OCR 页任务已投递 | page=%s | batch=%s/%s | active=%s",
                         task.page_number,
+                        task_positions[task.page_number],
                         len(ordered_tasks),
                         len(active),
                     )
@@ -105,9 +113,6 @@ def run_staggered_page_ocr_tasks(
             if active:
                 wait(active, return_when=FIRST_COMPLETED)
 
-    if first_failure is not None:
-        failed_task, cause = first_failure
-        raise StaggeredPageTaskError(failed_task.page_number, cause) from cause
-    if len(results) != len(ordered_tasks):
+    if len(results) + len(errors) != len(ordered_tasks):
         raise RuntimeError("OCR 页任务结束后仍存在缺失结果")
-    return [results[task.page_number] for task in ordered_tasks]
+    return OCRPageTaskRunResult(texts_by_page=results, errors_by_page=errors)

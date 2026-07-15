@@ -8,7 +8,7 @@ from fastapi import FastAPI
 
 from scripts.run_pipeline import run_stage
 from src.config_loader import ConfigLoadError, load_settings
-from src.pdf_book_ocr import PDFBookOCRError, ocr_pdf_book_batch
+from src.pdf_book_ocr import PDFBookOCRError, PDFBookOCRProgress, ocr_pdf_book_batch
 from src.job_runner import (
     BatchJobRuntime,
     BatchJobSpec,
@@ -763,9 +763,32 @@ def serialize_pdf_book_ocr_items(task_paths: PDFBookOCRTaskPaths, input_path: Pa
                 "text_length": item.text_length,
                 "warnings": item.warnings,
                 "error": item.error or "",
+                "page_count": item.page_count,
+                "completed_pages": item.completed_pages,
+                "failed_pages": len(item.failed_page_numbers),
+                "failed_page_numbers": list(item.failed_page_numbers),
+                "page_errors": {str(page_number): error for page_number, error in item.page_errors.items()},
+                "resumable": not item.success and item.page_count > item.completed_pages,
             }
         )
     return serialized_items
+
+
+def serialize_pdf_book_ocr_progress(input_path: Path, progress: PDFBookOCRProgress) -> dict[str, object]:
+    return {
+        "source_file": pdf_book_ocr_source_label(progress.source_pdf, input_path),
+        "output_file": "",
+        "success": False,
+        "text_length": 0,
+        "warnings": [],
+        "error": "",
+        "page_count": progress.page_count,
+        "completed_pages": progress.completed_pages,
+        "failed_pages": len(progress.failed_page_numbers),
+        "failed_page_numbers": list(progress.failed_page_numbers),
+        "page_errors": {str(page_number): error for page_number, error in progress.page_errors.items()},
+        "resumable": progress.completed_pages < progress.page_count,
+    }
 
 
 def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
@@ -796,18 +819,46 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
             state_path,
             status="running",
             current_stage="ocr",
+            request_payload=request.model_dump(),
+            error_message="",
         )
 
+        progress_items: dict[str, dict[str, object]] = {}
+
+        def book_progress(progress: PDFBookOCRProgress) -> None:
+            item = serialize_pdf_book_ocr_progress(input_path, progress)
+            progress_items[str(item["source_file"])] = item
+            items = [progress_items[key] for key in sorted(progress_items)]
+            app.state.update_state(
+                state_path,
+                items=items,
+                pages_total=sum(int(entry["page_count"]) for entry in items),
+                pages_completed=sum(int(entry["completed_pages"]) for entry in items),
+                pages_failed=sum(int(entry["failed_pages"]) for entry in items),
+            )
+
         with codex_lb_environment(frontend_settings):
-            summary = ocr_pdf_book_batch(input_path, task_paths.output_dir, loaded_settings)
+            summary = ocr_pdf_book_batch(
+                input_path,
+                task_paths.output_dir,
+                loaded_settings,
+                checkpoint_root=task_paths.checkpoint_dir,
+                progress_callback=book_progress,
+            )
 
         items = serialize_pdf_book_ocr_items(task_paths, input_path, summary)
+        pages_total = sum(item.page_count for item in summary.items)
+        pages_completed = sum(item.completed_pages for item in summary.items)
+        pages_failed = sum(len(item.failed_page_numbers) for item in summary.items)
         if summary.failure_count == 0:
             status = "success"
             error_message = ""
+        elif any(item.page_count > 0 for item in summary.items):
+            status = "partial"
+            error_message = f"OCR 已完成 {pages_completed}/{pages_total} 页；仍有 {pages_failed} 页待重试。"
         elif summary.success_count == 0:
             status = "failed"
-            error_message = "所有 PDF OCR 均失败，请查看每本书的错误详情。"
+            error_message = "所有 PDF OCR 均失败，且未生成可恢复的页检查点。"
         else:
             status = "failed"
             error_message = "部分 PDF OCR 失败，请查看每本书的错误详情并下载已完成的 TXT。"
@@ -819,6 +870,10 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
             total=len(summary.items),
             success=summary.success_count,
             failed=summary.failure_count,
+            pages_total=pages_total,
+            pages_completed=pages_completed,
+            pages_failed=pages_failed,
+            resumable=any(not item.success for item in summary.items),
             items=items,
             error_message=error_message,
         )

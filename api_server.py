@@ -39,6 +39,7 @@ from src.web.pdf_book_ocr import (
     PDFBookOCRTaskError,
     build_pdf_book_ocr_task_paths,
     create_pdf_book_ocr_task_id,
+    pdf_book_ocr_retry_payload,
     resolve_pdf_book_ocr_output_file,
     resolve_uploaded_pdf_ocr_input,
 )
@@ -212,8 +213,10 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         task_paths = build_pdf_book_ocr_task_paths(root, task_id)
         return app.state.update_state(
             task_paths.state_path,
-            status="failed",
-            error_message="PDF OCR 任务已意外中断或服务重启。",
+            status="partial",
+            current_stage="done",
+            resumable=True,
+            error_message="PDF OCR 任务已中断；已完成页面仍保留，可重试缺失页。",
         )
 
     @app.get("/api/config")
@@ -314,6 +317,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         task_paths = build_pdf_book_ocr_task_paths(root, task_id)
         state = create_initial_state(task_id, "pdf-ocr")
         state["input_summary"] = {"input_path": request.input_path}
+        state["request_payload"] = request.model_dump()
         write_json_file(task_paths.state_path, state)
         app.state.active_jobs.add(task_id)
         submit_task(
@@ -344,6 +348,46 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         if not task_paths.state_path.exists():
             raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。")
         return reconcile_pdf_book_ocr_state(task_id, read_json_file(task_paths.state_path))
+
+    @app.post("/api/pdf-book-ocr/{task_id}/retry", status_code=202)
+    async def retry_pdf_book_ocr(task_id: str) -> dict[str, str]:
+        try:
+            task_paths = build_pdf_book_ocr_task_paths(root, task_id)
+        except PDFBookOCRTaskError as exc:
+            raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。") from exc
+        if not task_paths.state_path.exists():
+            raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。")
+        if task_id in app.state.active_jobs:
+            raise HTTPException(status_code=409, detail="PDF OCR 任务正在运行，不能重复启动。")
+
+        state = read_json_file(task_paths.state_path)
+        if state.get("status") == "success":
+            raise HTTPException(status_code=409, detail="PDF OCR 任务已经全部完成，无需重试。")
+        try:
+            payload = pdf_book_ocr_retry_payload(state)
+            request = PDFBookOCRRequest.model_validate(payload)
+            resolve_uploaded_pdf_ocr_input(root, request.input_path)
+        except (PDFBookOCRTaskError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        app.state.update_state(
+            task_paths.state_path,
+            status="pending",
+            current_stage="resume",
+            error_message="",
+            resumable=True,
+            resume_count=int(state.get("resume_count") or 0) + 1,
+            request_payload=request.model_dump(),
+        )
+        app.state.active_jobs.add(task_id)
+        submit_task(
+            app,
+            app.state.execute_pdf_book_ocr,
+            app=app,
+            task_id=task_id,
+            payload=request.model_dump(),
+        )
+        return {"task_id": task_id}
 
     @app.get("/api/pdf-book-ocr/{task_id}/results/{result_path:path}")
     async def download_pdf_book_ocr_result(task_id: str, result_path: str) -> FileResponse:

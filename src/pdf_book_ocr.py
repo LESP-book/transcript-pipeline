@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
-from src.reference_utils import CodexOCRError, run_codex_api_pdf_ocr
+from src.reference_utils import (
+    CodexOCRError,
+    CodexOCRPageProgress,
+    CodexOCRPagesIncompleteError,
+    run_codex_api_pdf_ocr,
+)
 from src.schemas import LoadedSettings
 
 
@@ -19,6 +25,20 @@ class PDFBookOCRItem:
     text_length: int
     warnings: list[str]
     error: str | None = None
+    page_count: int = 0
+    completed_pages: int = 0
+    failed_page_numbers: tuple[int, ...] = ()
+    page_errors: dict[int, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PDFBookOCRProgress:
+    source_pdf: Path
+    output_text_path: Path
+    page_count: int
+    completed_pages: int
+    failed_page_numbers: tuple[int, ...]
+    page_errors: dict[int, str]
 
 
 @dataclass(frozen=True)
@@ -77,20 +97,65 @@ def build_pdf_book_output_path(input_path: Path, source_pdf: Path, output_dir: P
     return resolved_output_dir / relative_pdf_path.with_suffix(".txt")
 
 
+def build_pdf_book_checkpoint_dir(input_path: Path, source_pdf: Path, checkpoint_root: Path) -> Path:
+    resolved_input_path = input_path.expanduser().resolve()
+    resolved_source_pdf = source_pdf.expanduser().resolve()
+    resolved_checkpoint_root = checkpoint_root.expanduser().resolve()
+    if resolved_input_path.is_dir():
+        relative_pdf_path = resolved_source_pdf.relative_to(resolved_input_path)
+    else:
+        relative_pdf_path = Path(resolved_source_pdf.name)
+    return resolved_checkpoint_root / relative_pdf_path.parent / f"{relative_pdf_path.stem}.pages"
+
+
 def ocr_pdf_book(
     source_pdf: Path,
     output_text_path: Path,
     loaded_settings: LoadedSettings,
+    *,
+    checkpoint_dir: Path | None = None,
+    progress_callback: Callable[[PDFBookOCRProgress], None] | None = None,
 ) -> PDFBookOCRItem:
     """识别单本 PDF；只有整本各页都成功时才写出该书 TXT。"""
     resolved_source_pdf = source_pdf.expanduser().resolve()
     resolved_output_text_path = output_text_path.expanduser().resolve()
+    last_progress: CodexOCRPageProgress | None = None
+
+    def page_progress(progress: CodexOCRPageProgress) -> None:
+        nonlocal last_progress
+        last_progress = progress
+        if progress_callback:
+            progress_callback(
+                PDFBookOCRProgress(
+                    source_pdf=resolved_source_pdf,
+                    output_text_path=resolved_output_text_path,
+                    page_count=progress.page_count,
+                    completed_pages=len(progress.completed_page_numbers),
+                    failed_page_numbers=tuple(progress.page_errors),
+                    page_errors=progress.page_errors,
+                )
+            )
 
     try:
         text, warnings = run_codex_api_pdf_ocr(
             resolved_source_pdf,
             loaded_settings,
             sidecar_path=resolved_output_text_path,
+            checkpoint_dir=checkpoint_dir,
+            progress_callback=page_progress,
+        )
+    except CodexOCRPagesIncompleteError as exc:
+        return PDFBookOCRItem(
+            source_pdf=resolved_source_pdf,
+            output_text_path=resolved_output_text_path,
+            success=False,
+            text_length=0,
+            warnings=[],
+            error=str(exc),
+            page_count=exc.page_count,
+            completed_pages=len(exc.completed_page_numbers),
+            failed_page_numbers=tuple(exc.page_errors),
+            page_errors=exc.page_errors,
         )
     except CodexOCRError as exc:
         return PDFBookOCRItem(
@@ -100,6 +165,10 @@ def ocr_pdf_book(
             text_length=0,
             warnings=[],
             error=str(exc),
+            page_count=last_progress.page_count if last_progress else 0,
+            completed_pages=len(last_progress.completed_page_numbers) if last_progress else 0,
+            failed_page_numbers=tuple(last_progress.page_errors) if last_progress else (),
+            page_errors=last_progress.page_errors if last_progress else {},
         )
 
     return PDFBookOCRItem(
@@ -108,6 +177,8 @@ def ocr_pdf_book(
         success=True,
         text_length=len(text),
         warnings=warnings,
+        page_count=last_progress.page_count if last_progress else 0,
+        completed_pages=len(last_progress.completed_page_numbers) if last_progress else 0,
     )
 
 
@@ -115,17 +186,28 @@ def ocr_pdf_book_batch(
     input_path: Path,
     output_dir: Path,
     loaded_settings: LoadedSettings,
+    *,
+    checkpoint_root: Path | None = None,
+    progress_callback: Callable[[PDFBookOCRProgress], None] | None = None,
 ) -> PDFBookOCRSummary:
     """批量识别 PDF 书籍；一本失败不会阻止其余书籍继续处理。"""
     source_pdfs = iter_pdf_book_files(input_path)
-    items = [
-        ocr_pdf_book(
-            source_pdf,
-            build_pdf_book_output_path(input_path, source_pdf, output_dir),
-            loaded_settings,
+    items: list[PDFBookOCRItem] = []
+    for source_pdf in source_pdfs:
+        checkpoint_dir = (
+            build_pdf_book_checkpoint_dir(input_path, source_pdf, checkpoint_root)
+            if checkpoint_root is not None
+            else None
         )
-        for source_pdf in source_pdfs
-    ]
+        items.append(
+            ocr_pdf_book(
+                source_pdf,
+                build_pdf_book_output_path(input_path, source_pdf, output_dir),
+                loaded_settings,
+                checkpoint_dir=checkpoint_dir,
+                progress_callback=progress_callback,
+            )
+        )
     return PDFBookOCRSummary(items=items)
 
 

@@ -193,7 +193,8 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 
 默认输出目录是 `output/pdf/ocr/`，每本 PDF 对应一个同名 `.txt`。该命令不读取
 `data/input/reference/`，也不会生成录屏整理流水线的中间 JSON。它沿用当前的 Codex API
-逐页 OCR：每页单独识别、按页码重排；任意页面失败时不会写出该书的新 TXT。使用前仍需按上文设置
+逐页 OCR：每页单独识别、按页码重排，单页失败不会中止其余页面；只有全部页面齐全后才写出
+该书的新 TXT。独立 Web 工具还会持久化成功页，并可反复“重试缺失页”。使用前仍需按上文设置
 `CODEX_LB_BASE_URL` 和 `CODEX_LB_API_KEY`，并安装 `pdftoppm`。
 
 可临时覆盖书籍 OCR 模型：
@@ -577,7 +578,7 @@ http://127.0.0.1:5173
 - `单任务`：对应 `scripts/08_run_job.py`
 - `批量任务`：对应 `scripts/09_run_batch_jobs.py`
 - `单阶段`：对应 `scripts/run_pipeline.py --stage`
-- `PDF OCR`：独立上传单本 PDF 或 PDF 目录，识别完成后逐本下载 TXT，并可在页面任务历史中恢复查看
+- `PDF OCR`：独立上传单本 PDF 或 PDF 目录，识别完成后逐本下载 TXT；失败页会单独列出，任务历史可重试缺失页并沿用成功页检查点
 - `任务列表`：查看 `data/jobs/` 下已有任务状态，下载单任务结果、批量结果 ZIP 和批量子任务结果
 - `设置`：配置 Codex API 的 base URL、API key、阶段 6 模型和 PDF OCR 模型
 - 单任务视频、参考源、术语词表会通过浏览器选择使用者本机文件并上传到主机
@@ -589,7 +590,7 @@ http://127.0.0.1:5173
 - `./start_web.sh` 会在同一个终端内管理前端和后端，按 `Ctrl+C` 可同时停止两个服务
 - Web UI 设置会保存到 `data/jobs/frontend-settings.json`，该路径默认被 `.gitignore` 忽略
 - 上传文件会保存到 `data/uploads/`，该目录默认被 `.gitignore` 忽略
-- PDF OCR 的上传文件会位于 `data/uploads/pdf-ocr/`，结果与状态会隔离保存在 `data/jobs/pdf-ocr/`，不会写入录屏整理流水线的数据目录
+- PDF OCR 的上传文件会位于 `data/uploads/pdf-ocr/`；结果、任务状态和逐页检查点会隔离保存在 `data/jobs/pdf-ocr/`，不会写入录屏整理流水线的数据目录
 - 局域网访问前，请确保主机防火墙允许前端端口 `5173` 和后端端口 `8000`
 - 单阶段页面运行的是**当前配置文件绑定的数据目录**，不是临时单文件运行器
 - 长任务使用 `state.json` 持久化状态，页面会通过轮询显示 `pending / running / success / failed`
@@ -1019,7 +1020,9 @@ JSON 中间结果至少包含：
 PDF 支持边界：
 
 - 当前 PDF 默认优先尝试 `codex_api` OCR
-- `codex_api` OCR 先读取 PDF 总页数，再由受限工作线程按需用 `pdftoppm` 渲染当前页，并通过 codex-lb `/v1/responses` 发送一个 `input_image`；页面完成后立即释放图片数据，不会一次性把整本书的 PNG/base64 保存在内存中；仅在所有页面 OCR 成功后按页序合并结果，且不会在页边界额外插入换行
+- `codex_api` OCR 先读取 PDF 总页数，再由受限工作线程按需用 `pdftoppm` 渲染当前页，并通过 codex-lb `/v1/responses` 发送一个 `input_image`；页面完成后立即释放图片数据，不会一次性把整本书的 PNG/base64 保存在内存中
+- 独立 PDF OCR 任务会把每个成功页原子写入任务目录；单页失败后继续处理其余页面并记录完整失败页码，点击“重试缺失页”只重新请求没有成功检查点的页面
+- 最终 TXT 仍只在所有页检查点齐全后按页序生成，且不会在页边界额外插入换行；服务或任务进程重启不会删除已成功页面
 - `codex_api` OCR 默认模型是 `gpt-5.6-terra`，reasoning effort 是 `high`
 - 直接运行阶段 3 时，可用 `--ocr-model` 和 `--ocr-reasoning-effort` 临时覆盖 OCR 模型与 reasoning
 - 如果 Codex API OCR 失败，但 PDF 自带文字层可提取，则回退到文字层提取

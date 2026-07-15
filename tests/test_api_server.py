@@ -903,6 +903,82 @@ def test_pdf_book_ocr_api_rejects_input_outside_uploaded_pdf_area(tmp_path: Path
     assert "本页面上传" in response.text
 
 
+def test_pdf_book_ocr_retry_reuses_task_and_request_payload(tmp_path: Path) -> None:
+    from api_server import create_app
+    from src.web.pdf_book_ocr import build_pdf_book_ocr_task_paths, create_pdf_book_ocr_task_id
+    from src.web.state_store import create_initial_state, read_json_file, write_json_file
+
+    write_minimal_settings(tmp_path)
+    input_path = tmp_path / "data/uploads/pdf-ocr/20260713/group-001/book.pdf"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_bytes(b"pdf")
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+    task_id = create_pdf_book_ocr_task_id()
+    task_paths = build_pdf_book_ocr_task_paths(tmp_path, task_id)
+    state = create_initial_state(task_id, "pdf-ocr")
+    state.update(
+        {
+            "status": "partial",
+            "input_summary": {"input_path": str(input_path)},
+            "request_payload": {
+                "input_path": str(input_path),
+                "config": None,
+                "ocr_model": "gpt-5.4-mini",
+                "ocr_reasoning_effort": "high",
+            },
+        }
+    )
+    write_json_file(task_paths.state_path, state)
+    seen: dict[str, object] = {}
+
+    def fake_execute_pdf_book_ocr(*, app, task_id: str, payload: dict) -> None:
+        seen["task_id"] = task_id
+        seen["payload"] = payload
+        app.state.active_jobs.discard(task_id)
+
+    app.state.execute_pdf_book_ocr = fake_execute_pdf_book_ocr
+
+    response = request_json(app, "POST", f"/api/pdf-book-ocr/{task_id}/retry")
+
+    assert response.status_code == 202
+    assert response.json() == {"task_id": task_id}
+    assert seen == {
+        "task_id": task_id,
+        "payload": {
+            "input_path": str(input_path),
+            "config": None,
+            "ocr_model": "gpt-5.4-mini",
+            "ocr_reasoning_effort": "high",
+        },
+    }
+    updated_state = read_json_file(task_paths.state_path)
+    assert updated_state["status"] == "pending"
+    assert updated_state["current_stage"] == "resume"
+    assert updated_state["resume_count"] == 1
+
+
+def test_pdf_book_ocr_running_task_becomes_resumable_after_service_restart(tmp_path: Path) -> None:
+    from api_server import create_app
+    from src.web.pdf_book_ocr import build_pdf_book_ocr_task_paths, create_pdf_book_ocr_task_id
+    from src.web.state_store import create_initial_state, write_json_file
+
+    write_minimal_settings(tmp_path)
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+    task_id = create_pdf_book_ocr_task_id()
+    task_paths = build_pdf_book_ocr_task_paths(tmp_path, task_id)
+    state = create_initial_state(task_id, "pdf-ocr")
+    state.update({"status": "running", "pages_total": 603, "pages_completed": 194})
+    write_json_file(task_paths.state_path, state)
+
+    response = request_json(app, "GET", f"/api/pdf-book-ocr/{task_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "partial"
+    assert payload["resumable"] is True
+    assert "已完成页面仍保留" in payload["error_message"]
+
+
 def test_post_upload_groups_directory_files(tmp_path: Path) -> None:
     from api_server import create_app
 

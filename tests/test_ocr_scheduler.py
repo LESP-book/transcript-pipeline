@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from src.ocr_scheduler import OCRPageTask, StaggeredPageTaskError, run_staggered_page_ocr_tasks
+from src.ocr_scheduler import OCRPageTask, run_staggered_page_ocr_tasks
 
 
 def make_tasks(count: int) -> list[OCRPageTask]:
@@ -34,7 +34,8 @@ def test_staggered_page_tasks_restore_page_order_after_out_of_order_completion()
     )
 
     assert completion_order.index(2) < completion_order.index(1)
-    assert results == ["第1页", "第2页", "第3页"]
+    assert results.ordered_texts() == ["第1页", "第2页", "第3页"]
+    assert results.errors_by_page == {}
 
 
 def test_staggered_page_tasks_never_exceed_max_concurrency() -> None:
@@ -64,7 +65,7 @@ def test_staggered_page_tasks_never_exceed_max_concurrency() -> None:
         submit_interval_seconds=0,
     )
 
-    assert results == ["1", "2", "3", "4"]
+    assert results.ordered_texts() == ["1", "2", "3", "4"]
     assert peak_active == 2
 
 
@@ -89,7 +90,7 @@ def test_staggered_page_tasks_space_submissions_with_controllable_clock() -> Non
         on_dispatched=lambda _task, submitted_at: dispatched_at.append(submitted_at),
     )
 
-    assert results == ["1", "2", "3"]
+    assert results.ordered_texts() == ["1", "2", "3"]
     assert dispatched_at == [100.0, 105.0, 110.0]
 
 
@@ -130,7 +131,7 @@ def test_staggered_page_tasks_keep_submitting_every_ten_seconds_without_waiting(
         on_dispatched=lambda _task, submitted_at: dispatched_at.append(submitted_at),
     )
 
-    assert results == ["1", "2", "3", "4"]
+    assert results.ordered_texts() == ["1", "2", "3", "4"]
     assert dispatched_at == [0.0, 10.0, 20.0, 30.0]
     assert peak_active == 4
 
@@ -145,8 +146,9 @@ def test_staggered_page_tasks_reject_zero_concurrency() -> None:
         )
 
 
-def test_staggered_page_tasks_stop_new_submissions_after_failure() -> None:
+def test_staggered_page_tasks_continue_after_failure_and_collect_error_pages() -> None:
     called_pages: list[int] = []
+    failed_pages: list[int] = []
 
     def worker(task: OCRPageTask) -> str:
         called_pages.append(task.page_number)
@@ -154,13 +156,16 @@ def test_staggered_page_tasks_stop_new_submissions_after_failure() -> None:
             raise RuntimeError("account_stream_cap")
         return str(task.page_number)
 
-    with pytest.raises(StaggeredPageTaskError, match="第 2 页") as error:
-        run_staggered_page_ocr_tasks(
-            make_tasks(4),
-            worker,
-            max_concurrency=1,
-            submit_interval_seconds=0,
-        )
+    result = run_staggered_page_ocr_tasks(
+        make_tasks(4),
+        worker,
+        max_concurrency=1,
+        submit_interval_seconds=0,
+        on_failed=lambda task, _error: failed_pages.append(task.page_number),
+    )
 
-    assert error.value.page_number == 2
-    assert called_pages == [1, 2]
+    assert called_pages == [1, 2, 3, 4]
+    assert result.ordered_texts() == ["1", "3", "4"]
+    assert list(result.errors_by_page) == [2]
+    assert "account_stream_cap" in str(result.errors_by_page[2])
+    assert failed_pages == [2]

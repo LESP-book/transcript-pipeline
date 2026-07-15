@@ -9,6 +9,7 @@ from src.config_loader import load_settings
 from src.codex_lb_client import CodexLBClientError
 from src.reference_utils import (
     CodexOCRError,
+    CodexOCRPagesIncompleteError,
     AgyOCRError,
     ReferenceInputEmptyError,
     build_reference_output_paths,
@@ -591,7 +592,7 @@ def test_run_codex_api_pdf_ocr_writes_to_explicit_sidecar_path(
     assert not default_sidecar_path.exists()
 
 
-def test_run_codex_api_pdf_ocr_stops_without_sidecar_when_a_page_fails(
+def test_run_codex_api_pdf_ocr_continues_all_pages_without_writing_incomplete_sidecar(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -612,22 +613,88 @@ def test_run_codex_api_pdf_ocr_stops_without_sidecar_when_a_page_fails(
             raise CodexLBClientError("context_length_exceeded")
         return "第一页 OCR 识别出的完整正文内容。"
 
-    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 2)
+    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 3)
     monkeypatch.setattr(
         "src.reference_utils.render_pdf_page_as_png_data_url",
         lambda _path, page_number, _page_count: [
             "data:image/png;base64,Zmlyc3Q=",
             "data:image/png;base64,c2Vjb25k",
+            "data:image/png;base64,dGhpcmQ=",
         ][page_number - 1],
     )
     monkeypatch.setattr("src.reference_utils.CodexLBClient.responses_stream_text", fake_responses_stream_text)
 
-    with pytest.raises(CodexOCRError, match="第 2 页失败"):
+    with pytest.raises(CodexOCRPagesIncompleteError, match="页码 2") as error:
         run_codex_api_pdf_ocr(source, loaded_settings)
 
     sidecar_path = loaded_settings.path_for("ocr_dir") / f"{source.stem}.codex_api_ocr.txt"
-    assert len(calls) == 2
+    assert len(calls) == 3
+    assert error.value.completed_page_numbers == (1, 3)
+    assert "context_length_exceeded" in error.value.page_errors[2]
     assert not sidecar_path.exists()
+
+
+def test_run_codex_api_pdf_ocr_resumes_only_missing_checkpoint_pages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(
+        tmp_path,
+        reference_overrides={"codex_ocr_max_concurrency": 1, "codex_ocr_submit_interval_seconds": 0},
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+    source = tmp_path / "external" / "scan.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4 fake")
+    checkpoint_dir = tmp_path / "checkpoints"
+    sidecar_path = tmp_path / "output" / "scan.txt"
+    rendered_pages: list[int] = []
+    should_fail_page_two = True
+
+    def fake_render(_path: Path, page_number: int, _page_count: int) -> str:
+        rendered_pages.append(page_number)
+        return f"data:image/png;base64,page-{page_number}"
+
+    def fake_stream(_client, _payload: dict[str, object]) -> str:
+        page_number = rendered_pages[-1]
+        if page_number == 2 and should_fail_page_two:
+            raise CodexLBClientError("upstream_unavailable")
+        return f"第{page_number}页 OCR 识别出的完整正文内容。"
+
+    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 3)
+    monkeypatch.setattr("src.reference_utils.render_pdf_page_as_png_data_url", fake_render)
+    monkeypatch.setattr("src.reference_utils.CodexLBClient.responses_stream_text", fake_stream)
+
+    with pytest.raises(CodexOCRPagesIncompleteError):
+        run_codex_api_pdf_ocr(
+            source,
+            loaded_settings,
+            sidecar_path=sidecar_path,
+            checkpoint_dir=checkpoint_dir,
+        )
+
+    assert rendered_pages == [1, 2, 3]
+    assert (checkpoint_dir / "page-000001.txt").read_text(encoding="utf-8") == "第1页 OCR 识别出的完整正文内容。"
+    assert not (checkpoint_dir / "page-000002.txt").exists()
+    assert (checkpoint_dir / "page-000003.txt").read_text(encoding="utf-8") == "第3页 OCR 识别出的完整正文内容。"
+    assert not sidecar_path.exists()
+
+    should_fail_page_two = False
+    rendered_pages.clear()
+    text, _warnings = run_codex_api_pdf_ocr(
+        source,
+        loaded_settings,
+        sidecar_path=sidecar_path,
+        checkpoint_dir=checkpoint_dir,
+    )
+
+    assert rendered_pages == [2]
+    assert text == (
+        "第1页 OCR 识别出的完整正文内容。"
+        "第2页 OCR 识别出的完整正文内容。"
+        "第3页 OCR 识别出的完整正文内容。"
+    )
+    assert sidecar_path.read_text(encoding="utf-8") == text
 
 
 def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_responses(

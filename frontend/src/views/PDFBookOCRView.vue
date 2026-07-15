@@ -24,6 +24,7 @@ import {
   getPDFBookOCRTask,
   listPDFBookOCRTasks,
   pdfBookOCRResultUrl,
+  retryPDFBookOCR,
   submitPDFBookOCR,
   type PDFBookOCRItem,
   type PDFBookOCRTask,
@@ -38,6 +39,7 @@ const inputMode = ref<InputMode>("file");
 const currentTask = ref<PDFBookOCRTask | null>(null);
 const activeTaskId = ref("");
 const submitting = ref(false);
+const retrying = ref(false);
 const historyLoading = ref(false);
 const taskHistory = ref<PDFBookOCRTask[]>([]);
 const pollingHandle = ref<number | null>(null);
@@ -59,6 +61,13 @@ const isTaskRunning = computed(() => {
 });
 
 const taskItems = computed(() => currentTask.value?.items ?? []);
+const canRetryMissingPages = computed(() => {
+  const task = currentTask.value;
+  if (!task || isTaskRunning.value || task.status === "success") {
+    return false;
+  }
+  return task.status === "partial" || task.status === "failed";
+});
 
 function taskStatusLabelFor(status: PDFBookOCRTask["status"] | undefined): string {
   if (status === "pending") {
@@ -70,6 +79,9 @@ function taskStatusLabelFor(status: PDFBookOCRTask["status"] | undefined): strin
   if (status === "success") {
     return "已完成";
   }
+  if (status === "partial") {
+    return "待补页";
+  }
   if (status === "failed") {
     return "识别失败";
   }
@@ -78,12 +90,17 @@ function taskStatusLabelFor(status: PDFBookOCRTask["status"] | undefined): strin
 
 const taskStatusLabel = computed(() => taskStatusLabelFor(currentTask.value?.status));
 
-function taskStatusTypeFor(status: PDFBookOCRTask["status"] | undefined): "default" | "info" | "success" | "error" {
+function taskStatusTypeFor(
+  status: PDFBookOCRTask["status"] | undefined,
+): "default" | "info" | "success" | "warning" | "error" {
   if (status === "success") {
     return "success";
   }
   if (status === "failed") {
     return "error";
+  }
+  if (status === "partial") {
+    return "warning";
   }
   if (status === "pending" || status === "running") {
     return "info";
@@ -176,8 +193,22 @@ function sourceModeChanged() {
   form.input_path = "";
 }
 
-function itemStatusType(item: PDFBookOCRItem): "success" | "error" {
-  return item.success ? "success" : "error";
+function itemStatusType(item: PDFBookOCRItem): "success" | "warning" | "error" {
+  if (item.success) {
+    return "success";
+  }
+  return item.completed_pages > 0 ? "warning" : "error";
+}
+
+function itemStatusLabel(item: PDFBookOCRItem): string {
+  if (item.success) {
+    return "完成";
+  }
+  return item.completed_pages > 0 ? "待补页" : "失败";
+}
+
+function pageErrorEntries(item: PDFBookOCRItem): Array<[string, string]> {
+  return Object.entries(item.page_errors ?? {}).sort(([left], [right]) => Number(left) - Number(right));
 }
 
 function openResult(item: PDFBookOCRItem) {
@@ -212,6 +243,25 @@ async function submit() {
     message.error(caught instanceof Error ? caught.message : "提交 PDF OCR 任务失败");
   } finally {
     submitting.value = false;
+  }
+}
+
+async function retryMissingPages() {
+  if (!currentTask.value || !canRetryMissingPages.value) {
+    return;
+  }
+  retrying.value = true;
+  try {
+    const response = await retryPDFBookOCR(currentTask.value.id);
+    activeTaskId.value = response.task_id;
+    await refreshTask();
+    await loadTaskHistory();
+    startPolling();
+    message.success("已重新启动，只处理尚未成功的页面。");
+  } catch (caught) {
+    message.error(caught instanceof Error ? caught.message : "重试 PDF OCR 缺失页失败");
+  } finally {
+    retrying.value = false;
   }
 }
 
@@ -324,27 +374,55 @@ onBeforeUnmount(stopPolling);
                 <p class="pdf-book-ocr-task__id">{{ currentTask.id }}</p>
               </div>
               <div class="pdf-book-ocr-task__counts">
-                <span>总计 {{ currentTask.total ?? 0 }}</span>
-                <span>成功 {{ currentTask.success ?? 0 }}</span>
-                <span v-if="currentTask.failed">失败 {{ currentTask.failed }}</span>
+                <span>书籍 {{ currentTask.total ?? 0 }}</span>
+                <span>完整 {{ currentTask.success ?? 0 }}</span>
+                <span v-if="currentTask.pages_total">页面 {{ currentTask.pages_completed ?? 0 }}/{{ currentTask.pages_total }}</span>
+                <span v-if="currentTask.pages_failed">待补 {{ currentTask.pages_failed }}</span>
               </div>
             </div>
 
-            <n-alert v-if="currentTask.error_message" type="error" :bordered="false" class="pdf-book-ocr-task__error">
+            <n-alert
+              v-if="currentTask.error_message"
+              :type="currentTask.status === 'partial' ? 'warning' : 'error'"
+              :bordered="false"
+              class="pdf-book-ocr-task__error"
+            >
               {{ currentTask.error_message }}
             </n-alert>
 
+            <div v-if="canRetryMissingPages" class="pdf-book-ocr-task__retry">
+              <n-button type="warning" secondary :loading="retrying" @click="retryMissingPages">
+                重试缺失页
+              </n-button>
+              <span>已成功页面会保留，只重新识别尚未完成的页。</span>
+            </div>
+
             <n-empty v-if="!isTaskRunning && taskItems.length === 0" description="任务尚未产生可展示的结果。" />
             <div v-else class="pdf-book-ocr-results">
-              <div v-for="item in taskItems" :key="`${item.source_file}-${item.output_file}`" class="pdf-book-ocr-result-item">
+              <div v-for="item in taskItems" :key="item.source_file" class="pdf-book-ocr-result-item">
                 <div class="pdf-book-ocr-result-item__main">
                   <n-tag size="small" :type="itemStatusType(item)" :bordered="false">
-                    {{ item.success ? '完成' : '失败' }}
+                    {{ itemStatusLabel(item) }}
                   </n-tag>
                   <strong>{{ item.source_file }}</strong>
-                  <span v-if="item.success" class="pdf-book-ocr-result-item__meta">{{ item.text_length }} 字</span>
+                  <span v-if="item.page_count" class="pdf-book-ocr-result-item__meta">
+                    {{ item.completed_pages }}/{{ item.page_count }} 页
+                  </span>
+                  <span v-else-if="item.success" class="pdf-book-ocr-result-item__meta">{{ item.text_length }} 字</span>
                 </div>
                 <p v-if="!item.success" class="pdf-book-ocr-result-item__error">{{ item.error || 'OCR 未返回结果。' }}</p>
+                <div v-if="item.failed_page_numbers?.length" class="pdf-book-ocr-result-item__pages">
+                  <strong>待重试页：</strong>
+                  <span>{{ item.failed_page_numbers.join('、') }}</span>
+                </div>
+                <details v-if="pageErrorEntries(item).length" class="pdf-book-ocr-result-item__details">
+                  <summary>查看逐页错误详情</summary>
+                  <ul>
+                    <li v-for="[pageNumber, error] in pageErrorEntries(item)" :key="pageNumber">
+                      <strong>第 {{ pageNumber }} 页：</strong>{{ error }}
+                    </li>
+                  </ul>
+                </details>
                 <n-button v-if="item.success" tertiary type="primary" size="small" @click="openResult(item)">下载 TXT</n-button>
               </div>
             </div>
@@ -498,6 +576,15 @@ onBeforeUnmount(stopPolling);
   margin-top: 14px;
 }
 
+.pdf-book-ocr-task__retry {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .pdf-book-ocr-results {
   display: grid;
   gap: 8px;
@@ -608,6 +695,33 @@ onBeforeUnmount(stopPolling);
   line-height: 1.55;
 }
 
+.pdf-book-ocr-result-item__pages,
+.pdf-book-ocr-result-item__details {
+  grid-column: 1 / -1;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.pdf-book-ocr-result-item__pages {
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+}
+
+.pdf-book-ocr-result-item__details summary {
+  width: fit-content;
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.pdf-book-ocr-result-item__details ul {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
 @keyframes panel-enter {
   from {
     opacity: 0;
@@ -647,6 +761,7 @@ onBeforeUnmount(stopPolling);
 
   .pdf-book-ocr-panel__action,
   .pdf-book-ocr-task,
+  .pdf-book-ocr-task__retry,
   .pdf-book-ocr-history-item {
     align-items: flex-start;
     flex-direction: column;

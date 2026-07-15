@@ -68,7 +68,10 @@ def test_ocr_pdf_book_batch_uses_explicit_output_paths_and_continues_after_failu
         _loaded_settings: object,
         *,
         sidecar_path: Path | None = None,
+        checkpoint_dir: Path | None = None,
+        progress_callback=None,
     ) -> tuple[str, list[str]]:
+        _ = checkpoint_dir, progress_callback
         assert sidecar_path is not None
         seen_sidecar_paths.append(sidecar_path)
         if source_pdf.name == "bad.pdf":

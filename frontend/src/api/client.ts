@@ -250,12 +250,18 @@ export interface PDFBookOCRItem {
   text_length: number;
   warnings: string[];
   error: string;
+  page_count: number;
+  completed_pages: number;
+  failed_pages: number;
+  failed_page_numbers: number[];
+  page_errors: Record<string, string>;
+  resumable: boolean;
 }
 
 export interface PDFBookOCRTask {
   id: string;
   kind: "pdf-ocr";
-  status: "pending" | "running" | "success" | "failed";
+  status: "pending" | "running" | "success" | "partial" | "failed";
   created_at: string;
   updated_at: string;
   current_stage: string;
@@ -264,6 +270,11 @@ export interface PDFBookOCRTask {
   total?: number;
   success?: number;
   failed?: number;
+  pages_total?: number;
+  pages_completed?: number;
+  pages_failed?: number;
+  resumable?: boolean;
+  resume_count?: number;
   items?: PDFBookOCRItem[];
   input_summary?: {
     input_path?: string;
@@ -391,6 +402,12 @@ export function submitPDFBookOCR(payload: PDFBookOCRPayload): Promise<{ task_id:
 
 export function getPDFBookOCRTask(taskId: string): Promise<PDFBookOCRTask> {
   return requestJson<PDFBookOCRTask>(`/api/pdf-book-ocr/${encodeURIComponent(taskId)}`);
+}
+
+export function retryPDFBookOCR(taskId: string): Promise<{ task_id: string }> {
+  return requestJson<{ task_id: string }>(`/api/pdf-book-ocr/${encodeURIComponent(taskId)}/retry`, {
+    method: "POST",
+  });
 }
 
 export function listPDFBookOCRTasks(): Promise<PDFBookOCRTaskListResponse> {

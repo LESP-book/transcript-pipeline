@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from src.codex_lb_client import CodexLBClient
-from src.ocr_scheduler import OCRPageTask, StaggeredPageTaskError, run_staggered_page_ocr_tasks
+from src.ocr_scheduler import OCRPageTask, run_staggered_page_ocr_tasks
 from src.runtime_utils import ensure_directory
 from src.schemas import LoadedSettings
 
@@ -61,6 +61,33 @@ class AgyOCRError(ReferencePreparationError):
 
 class CodexOCRError(ReferencePreparationError):
     """Codex OCR 调用失败。"""
+
+
+class CodexOCRPagesIncompleteError(CodexOCRError):
+    """单页任务全部执行后，仍有页面没有成功结果。"""
+
+    def __init__(
+        self,
+        reference_path: Path,
+        page_count: int,
+        completed_page_numbers: list[int],
+        page_errors: dict[int, str],
+    ) -> None:
+        self.reference_path = reference_path
+        self.page_count = page_count
+        self.completed_page_numbers = tuple(sorted(completed_page_numbers))
+        self.page_errors = dict(sorted(page_errors.items()))
+        failed_pages = "、".join(str(page_number) for page_number in self.page_errors)
+        super().__init__(
+            f"Codex API OCR 仍有 {len(self.page_errors)} 页未完成: {reference_path.name} | 页码 {failed_pages}"
+        )
+
+
+@dataclass(frozen=True)
+class CodexOCRPageProgress:
+    page_count: int
+    completed_page_numbers: tuple[int, ...]
+    page_errors: dict[int, str]
 
 
 @dataclass(frozen=True)
@@ -548,6 +575,34 @@ def render_pdf_page_as_png_data_url(reference_path: Path, page_number: int, page
         return f"data:image/png;base64,{encoded}"
 
 
+def codex_ocr_page_checkpoint_path(checkpoint_dir: Path, page_number: int) -> Path:
+    return checkpoint_dir / f"page-{page_number:06d}.txt"
+
+
+def load_codex_ocr_page_checkpoints(checkpoint_dir: Path, page_count: int) -> dict[int, str]:
+    page_texts: dict[int, str] = {}
+    for page_number in range(1, page_count + 1):
+        page_path = codex_ocr_page_checkpoint_path(checkpoint_dir, page_number)
+        if not page_path.is_file():
+            continue
+        try:
+            page_texts[page_number] = page_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise CodexOCRError(f"无法读取 OCR 第 {page_number} 页检查点: {page_path} | {exc}") from exc
+    return page_texts
+
+
+def write_codex_ocr_page_checkpoint(checkpoint_dir: Path, page_number: int, page_text: str) -> None:
+    ensure_directory(checkpoint_dir)
+    page_path = codex_ocr_page_checkpoint_path(checkpoint_dir, page_number)
+    pending_path = page_path.with_suffix(".txt.pending")
+    try:
+        pending_path.write_text(page_text, encoding="utf-8")
+        pending_path.replace(page_path)
+    except OSError as exc:
+        raise CodexOCRError(f"无法写入 OCR 第 {page_number} 页检查点: {page_path} | {exc}") from exc
+
+
 def describe_ai_ocr_backend(backend: str) -> str:
     if backend == AI_OCR_BACKEND_CODEX_API:
         return "Codex API"
@@ -597,6 +652,8 @@ def run_codex_api_pdf_ocr(
     loaded_settings: LoadedSettings,
     *,
     sidecar_path: Path | None = None,
+    checkpoint_dir: Path | None = None,
+    progress_callback: Callable[[CodexOCRPageProgress], None] | None = None,
 ) -> tuple[str, list[str]]:
     reference_settings = loaded_settings.settings.reference
     configured_model = reference_settings.codex_ocr_model.strip()
@@ -605,7 +662,29 @@ def run_codex_api_pdf_ocr(
 
     client = CodexLBClient(loaded_settings.settings.codex_lb, timeout_seconds=reference_settings.ocr_timeout_seconds)
     page_count = get_pdf_page_count(reference_path)
-    page_tasks = [OCRPageTask(page_number=page_number) for page_number in range(1, page_count + 1)]
+    completed_page_texts = (
+        load_codex_ocr_page_checkpoints(checkpoint_dir, page_count)
+        if checkpoint_dir is not None
+        else {}
+    )
+    page_errors: dict[int, str] = {}
+    page_tasks = [
+        OCRPageTask(page_number=page_number)
+        for page_number in range(1, page_count + 1)
+        if page_number not in completed_page_texts
+    ]
+
+    def report_progress() -> None:
+        if progress_callback:
+            progress_callback(
+                CodexOCRPageProgress(
+                    page_count=page_count,
+                    completed_page_numbers=tuple(sorted(completed_page_texts)),
+                    page_errors=dict(sorted(page_errors.items())),
+                )
+            )
+
+    report_progress()
 
     def recognize_page(task: OCRPageTask) -> str:
         image_url = render_pdf_page_as_png_data_url(reference_path, task.page_number, page_count)
@@ -633,17 +712,47 @@ def run_codex_api_pdf_ocr(
 
         return sanitize_gemini_ocr_text(strip_fenced_text(client.responses_stream_text(payload)))
 
-    try:
-        page_texts = run_staggered_page_ocr_tasks(
-            page_tasks,
-            recognize_page,
-            max_concurrency=reference_settings.codex_ocr_max_concurrency,
-            submit_interval_seconds=reference_settings.codex_ocr_submit_interval_seconds,
-            logger=LOGGER,
-        )
-    except StaggeredPageTaskError as exc:
-        raise CodexOCRError(f"Codex API OCR 第 {exc.page_number} 页失败: {reference_path.name} | {exc.cause}") from exc.cause
+    def page_succeeded(task: OCRPageTask, page_text: str) -> None:
+        if checkpoint_dir is not None:
+            write_codex_ocr_page_checkpoint(checkpoint_dir, task.page_number, page_text)
+        completed_page_texts[task.page_number] = page_text
+        page_errors.pop(task.page_number, None)
+        report_progress()
 
+    def page_failed(task: OCRPageTask, error: Exception) -> None:
+        page_errors[task.page_number] = str(error)
+        report_progress()
+
+    page_run = run_staggered_page_ocr_tasks(
+        page_tasks,
+        recognize_page,
+        max_concurrency=reference_settings.codex_ocr_max_concurrency,
+        submit_interval_seconds=reference_settings.codex_ocr_submit_interval_seconds,
+        logger=LOGGER,
+        on_succeeded=page_succeeded,
+        on_failed=page_failed,
+    )
+    if checkpoint_dir is None:
+        completed_page_texts.update(page_run.texts_by_page)
+    for page_number, error in page_run.errors_by_page.items():
+        page_errors.setdefault(page_number, str(error))
+
+    missing_page_numbers = [
+        page_number
+        for page_number in range(1, page_count + 1)
+        if page_number not in completed_page_texts
+    ]
+    if missing_page_numbers:
+        for page_number in missing_page_numbers:
+            page_errors.setdefault(page_number, "本轮未生成成功页结果。")
+        raise CodexOCRPagesIncompleteError(
+            reference_path,
+            page_count,
+            list(completed_page_texts),
+            page_errors,
+        )
+
+    page_texts = [completed_page_texts[page_number] for page_number in range(1, page_count + 1)]
     text = "".join(page_texts)
     if is_effectively_empty_text(text):
         raise CodexOCRError(f"Codex API OCR 未返回有效文本: {reference_path.name}")

@@ -20,6 +20,7 @@ class PDFBookOCRTaskPaths:
     task_root: Path
     state_path: Path
     output_dir: Path
+    checkpoint_dir: Path
 
 
 def create_pdf_book_ocr_task_id() -> str:
@@ -36,7 +37,20 @@ def build_pdf_book_ocr_task_paths(project_root: Path, task_id: str) -> PDFBookOC
         task_root=task_root,
         state_path=task_root / "state.json",
         output_dir=task_root / "output",
+        checkpoint_dir=task_root / "pages",
     )
+
+
+def pdf_book_ocr_retry_payload(state: dict) -> dict[str, object]:
+    request_payload = state.get("request_payload")
+    if isinstance(request_payload, dict) and isinstance(request_payload.get("input_path"), str):
+        return dict(request_payload)
+
+    input_summary = state.get("input_summary")
+    input_path = input_summary.get("input_path") if isinstance(input_summary, dict) else None
+    if not isinstance(input_path, str) or not input_path.strip():
+        raise PDFBookOCRTaskError("PDF OCR 历史任务缺少输入路径，无法重试。")
+    return {"input_path": input_path}
 
 
 def resolve_uploaded_pdf_ocr_input(project_root: Path, input_path: str) -> Path:

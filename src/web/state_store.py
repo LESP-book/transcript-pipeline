@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,7 +15,13 @@ def now_iso() -> str:
 
 def write_json_file(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    pending_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.pending")
+    try:
+        pending_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        pending_path.replace(path)
+    finally:
+        if pending_path.exists():
+            pending_path.unlink()
 
 
 def read_json_file(path: Path) -> dict:
