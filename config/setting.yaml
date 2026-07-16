@@ -83,9 +83,9 @@ reference:
   gemini_ocr_fallback_model: ""
   codex_ocr_model: gpt-5.6-terra
   codex_ocr_reasoning_effort: high
-  # 每 10 秒只新增一页，不等待前一页完成；用户确认服务可承受 15～20 个活动请求，因此用 20 作为容量上限。
-  codex_ocr_max_concurrency: 20
-  codex_ocr_submit_interval_seconds: 10.0
+  # 默认每 5 秒新增一页，不等待前一页完成；最多允许 40 个请求同时在途，Web 任务可单独覆盖。
+  codex_ocr_max_concurrency: 40
+  codex_ocr_submit_interval_seconds: 5.0
   ocr_timeout_seconds: 480
   ocr_languages:
     - chi_sim

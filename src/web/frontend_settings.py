@@ -118,9 +118,12 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         default_ocr_backend = loaded_settings.settings.reference.ai_ocr_backend
         default_ocr_model = loaded_settings.settings.reference.codex_ocr_model
         default_ocr_reasoning_effort = loaded_settings.settings.reference.codex_ocr_reasoning_effort
+        default_ocr_max_concurrency = loaded_settings.settings.reference.codex_ocr_max_concurrency
+        default_ocr_submit_interval_seconds = loaded_settings.settings.reference.codex_ocr_submit_interval_seconds
         api_key_env = codex_lb.api_key_env
         has_env_api_key = bool(os.environ.get(api_key_env, "").strip())
     except ConfigLoadError:
+        # 前端设置接口沿用既有稳定响应结构；配置暂时不可读时使用产品明确指定的 OCR 调度默认值。
         default_base_url = ""
         default_profile = ""
         default_backend = ""
@@ -129,6 +132,8 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         default_ocr_backend = ""
         default_ocr_model = ""
         default_ocr_reasoning_effort = ""
+        default_ocr_max_concurrency = 40
+        default_ocr_submit_interval_seconds = 5.0
         api_key_env = "CODEX_LB_API_KEY"
         has_env_api_key = bool(os.environ.get(api_key_env, "").strip())
 
@@ -147,6 +152,8 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         "ocr_backend": settings.ocr_backend or default_ocr_backend,
         "ocr_model": settings.ocr_model or default_ocr_model,
         "ocr_reasoning_effort": settings.ocr_reasoning_effort or default_ocr_reasoning_effort,
+        "ocr_max_concurrency": default_ocr_max_concurrency,
+        "ocr_submit_interval_seconds": default_ocr_submit_interval_seconds,
         "api_key_env": api_key_env,
         "settings_path": str(frontend_settings_path(project_root)),
     }

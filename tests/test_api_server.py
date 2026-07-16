@@ -7,6 +7,7 @@ from pathlib import Path
 import zipfile
 
 import httpx
+import pytest
 
 from tests.helpers import write_minimal_settings
 
@@ -125,6 +126,8 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
     assert payload["model"] == "gpt-5.5"
     assert payload["ocr_backend"] == "codex_api"
     assert payload["ocr_model"] == "gpt-5.4-mini"
+    assert payload["ocr_max_concurrency"] == 40
+    assert payload["ocr_submit_interval_seconds"] == 5.0
 
     settings_path = tmp_path / "data/jobs/frontend-settings.json"
     persisted = json.loads(settings_path.read_text(encoding="utf-8"))
@@ -869,7 +872,14 @@ def test_pdf_book_ocr_api_creates_task_and_serves_task_result(tmp_path: Path) ->
     assert submit_response.status_code == 202
     task_id = submit_response.json()["task_id"]
     assert seen["task_id"] == task_id
-    assert seen["payload"] == {"input_path": str(input_path), "config": None, "ocr_model": None, "ocr_reasoning_effort": None}
+    assert seen["payload"] == {
+        "input_path": str(input_path),
+        "config": None,
+        "ocr_model": None,
+        "ocr_reasoning_effort": None,
+        "ocr_max_concurrency": None,
+        "ocr_submit_interval_seconds": None,
+    }
 
     status_response = request_json(app, "GET", f"/api/pdf-book-ocr/{task_id}")
     assert status_response.status_code == 200
@@ -903,6 +913,35 @@ def test_pdf_book_ocr_api_rejects_input_outside_uploaded_pdf_area(tmp_path: Path
     assert "本页面上传" in response.text
 
 
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("ocr_max_concurrency", 0),
+        ("ocr_submit_interval_seconds", -0.1),
+    ],
+)
+def test_pdf_book_ocr_api_rejects_invalid_scheduling_values(
+    tmp_path: Path,
+    field_name: str,
+    value: float,
+) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    input_path = tmp_path / "data/uploads/pdf-ocr/20260713/group-001/book.pdf"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_bytes(b"pdf")
+
+    response = request_json(
+        create_app(project_root=tmp_path),
+        "POST",
+        "/api/pdf-book-ocr",
+        json_body={"input_path": str(input_path), field_name: value},
+    )
+
+    assert response.status_code == 422
+
+
 def test_pdf_book_ocr_retry_reuses_task_and_request_payload(tmp_path: Path) -> None:
     from api_server import create_app
     from src.web.pdf_book_ocr import build_pdf_book_ocr_task_paths, create_pdf_book_ocr_task_id
@@ -925,6 +964,8 @@ def test_pdf_book_ocr_retry_reuses_task_and_request_payload(tmp_path: Path) -> N
                 "config": None,
                 "ocr_model": "gpt-5.4-mini",
                 "ocr_reasoning_effort": "high",
+                "ocr_max_concurrency": 12,
+                "ocr_submit_interval_seconds": 2.5,
             },
         }
     )
@@ -949,6 +990,8 @@ def test_pdf_book_ocr_retry_reuses_task_and_request_payload(tmp_path: Path) -> N
             "config": None,
             "ocr_model": "gpt-5.4-mini",
             "ocr_reasoning_effort": "high",
+            "ocr_max_concurrency": 12,
+            "ocr_submit_interval_seconds": 2.5,
         },
     }
     updated_state = read_json_file(task_paths.state_path)

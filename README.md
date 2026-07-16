@@ -194,7 +194,8 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 默认输出目录是 `output/pdf/ocr/`，每本 PDF 对应一个同名 `.txt`。该命令不读取
 `data/input/reference/`，也不会生成录屏整理流水线的中间 JSON。它沿用当前的 Codex API
 逐页 OCR：每页单独识别、按页码重排，单页失败不会中止其余页面；只有全部页面齐全后才写出
-该书的新 TXT。独立 Web 工具还会持久化成功页，并可反复“重试缺失页”。使用前仍需按上文设置
+该书的新 TXT。独立 Web 工具还会持久化成功页，并可反复“重试缺失页”；页面可为每个任务单独
+设置图片投递间隔和最大并发数，补页时沿用原任务设置。使用前仍需按上文设置
 `CODEX_LB_BASE_URL` 和 `CODEX_LB_API_KEY`，并安装 `pdftoppm`。
 
 可临时覆盖书籍 OCR 模型：
@@ -256,8 +257,8 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 - PDF OCR：`reference.ai_ocr_backend = codex_api`
 - PDF OCR 模型：`reference.codex_ocr_model = gpt-5.6-terra`（GPT-5.6 Terra）
 - PDF OCR reasoning：`reference.codex_ocr_reasoning_effort = high`
-- PDF OCR 最大并发：`reference.codex_ocr_max_concurrency = 20`；只限制同时在途请求，必须为正整数，可按机器内存和 API 容量调整
-- PDF OCR 投递间隔：`reference.codex_ocr_submit_interval_seconds = 10.0` 秒；每次只新增一张图片，不等待前一页完成，页面可同时执行和乱序完成，最终仍按原始页码拼接
+- PDF OCR 最大并发：`reference.codex_ocr_max_concurrency = 40`；只限制同时在途请求，必须为正整数，可在独立 PDF OCR 页面按任务调整
+- PDF OCR 投递间隔：`reference.codex_ocr_submit_interval_seconds = 5.0` 秒；每次只新增一张图片，不等待前一页完成，可在独立 PDF OCR 页面按任务调整，最终仍按原始页码拼接
 - PDF OCR 等待时间：`reference.ocr_timeout_seconds = 480`
 - `--backend both` 保持旧语义，只同时运行 `codex_cli` 和 `agy`
 

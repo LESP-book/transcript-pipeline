@@ -10,6 +10,7 @@ import {
   NGrid,
   NGridItem,
   NInput,
+  NInputNumber,
   NRadioButton,
   NRadioGroup,
   NSelect,
@@ -54,6 +55,8 @@ const form = reactive({
   input_path: "",
   ocr_model: "",
   ocr_reasoning_effort: "",
+  ocr_max_concurrency: 40 as number | null,
+  ocr_submit_interval_seconds: 5 as number | null,
 });
 
 const isTaskRunning = computed(() => {
@@ -184,6 +187,12 @@ async function loadDefaults() {
     if (!form.ocr_reasoning_effort) {
       form.ocr_reasoning_effort = settings.ocr_reasoning_effort;
     }
+    if (Number.isFinite(settings.ocr_max_concurrency)) {
+      form.ocr_max_concurrency = settings.ocr_max_concurrency;
+    }
+    if (Number.isFinite(settings.ocr_submit_interval_seconds)) {
+      form.ocr_submit_interval_seconds = settings.ocr_submit_interval_seconds;
+    }
   } catch (caught) {
     message.error(caught instanceof Error ? caught.message : "读取 OCR 默认设置失败");
   }
@@ -224,6 +233,10 @@ async function submit() {
     message.warning("请先选择并上传 PDF 书籍或 PDF 目录。");
     return;
   }
+  if (form.ocr_submit_interval_seconds === null || form.ocr_max_concurrency === null) {
+    message.warning("请填写投递间隔和最大并发数。");
+    return;
+  }
 
   submitting.value = true;
   try {
@@ -231,6 +244,8 @@ async function submit() {
       input_path: form.input_path,
       ocr_model: form.ocr_model || null,
       ocr_reasoning_effort: form.ocr_reasoning_effort || null,
+      ocr_max_concurrency: form.ocr_max_concurrency,
+      ocr_submit_interval_seconds: form.ocr_submit_interval_seconds,
     });
     activeTaskId.value = response.task_id;
     await refreshTask();
@@ -343,11 +358,37 @@ onBeforeUnmount(stopPolling);
               <n-input v-model:value="form.ocr_model" placeholder="留空则沿用运行设置" clearable />
             </n-form-item>
 
+            <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
+              <n-grid-item span="2 s:1">
+                <n-form-item label="图片投递间隔（秒）" required>
+                  <n-input-number
+                    v-model:value="form.ocr_submit_interval_seconds"
+                    :min="0"
+                    :step="1"
+                    class="w-full"
+                    placeholder="默认 5 秒"
+                  />
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item span="2 s:1">
+                <n-form-item label="最大并发请求数" required>
+                  <n-input-number
+                    v-model:value="form.ocr_max_concurrency"
+                    :min="1"
+                    :precision="0"
+                    :step="1"
+                    class="w-full"
+                    placeholder="默认 40"
+                  />
+                </n-form-item>
+              </n-grid-item>
+            </n-grid>
+
             <div class="pdf-book-ocr-panel__action">
               <n-button type="primary" size="large" :loading="submitting" :disabled="!form.input_path" @click="submit">
                 开始识别
               </n-button>
-              <span>模型与 API 密钥沿用“运行设置”中的配置。</span>
+              <span>模型与 API 密钥沿用“运行设置”；投递设置仅作用于本次任务及其缺页重试。</span>
             </div>
           </n-form>
         </n-card>

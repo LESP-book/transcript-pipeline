@@ -812,6 +812,8 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
                     request.ocr_reasoning_effort,
                     frontend_settings.ocr_reasoning_effort,
                 ),
+                ocr_max_concurrency=request.ocr_max_concurrency,
+                ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
             ),
         )
         input_path = resolve_uploaded_pdf_ocr_input(root, request.input_path)

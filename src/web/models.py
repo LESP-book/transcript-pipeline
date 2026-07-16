@@ -62,6 +62,8 @@ class PDFBookOCRRequest(BaseModel):
     config: str | None = None
     ocr_model: str | None = None
     ocr_reasoning_effort: str | None = None
+    ocr_max_concurrency: int | None = Field(default=None, ge=1)
+    ocr_submit_interval_seconds: float | None = Field(default=None, ge=0)
 
 
 class StageFileRunRequest(StageRunRequest):

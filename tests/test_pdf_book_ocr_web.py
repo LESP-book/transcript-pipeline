@@ -58,13 +58,15 @@ def test_execute_pdf_book_ocr_writes_isolated_task_state_and_results(
     def fake_ocr_pdf_book_batch(
         source: Path,
         output_dir: Path,
-        _loaded_settings,
+        loaded_settings,
         *,
         checkpoint_root: Path,
         progress_callback,
     ) -> PDFBookOCRSummary:
         assert source == input_path.resolve()
         assert checkpoint_root == task_paths.checkpoint_dir
+        assert loaded_settings.settings.reference.codex_ocr_max_concurrency == 12
+        assert loaded_settings.settings.reference.codex_ocr_submit_interval_seconds == 2.5
         _ = progress_callback
         output_path = output_dir / "哲学史.txt"
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,7 +90,11 @@ def test_execute_pdf_book_ocr_writes_isolated_task_state_and_results(
     execute_pdf_book_ocr(
         app=app,
         task_id=task_id,
-        payload={"input_path": str(input_path)},
+        payload={
+            "input_path": str(input_path),
+            "ocr_max_concurrency": 12,
+            "ocr_submit_interval_seconds": 2.5,
+        },
     )
 
     state = read_json_file(task_paths.state_path)

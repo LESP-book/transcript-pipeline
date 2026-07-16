@@ -27,6 +27,8 @@ export interface FrontendSettings {
   ocr_backend: string;
   ocr_model: string;
   ocr_reasoning_effort: string;
+  ocr_max_concurrency: number;
+  ocr_submit_interval_seconds: number;
   api_key_env: string;
   settings_path: string;
 }
@@ -241,6 +243,8 @@ export interface PDFBookOCRPayload {
   config?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
+  ocr_max_concurrency?: number | null;
+  ocr_submit_interval_seconds?: number | null;
 }
 
 export interface PDFBookOCRItem {
