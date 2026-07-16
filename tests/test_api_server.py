@@ -9,6 +9,7 @@ import zipfile
 import httpx
 import pytest
 
+from src.web.state_store import create_initial_state, read_json_file, write_json_file
 from tests.helpers import write_minimal_settings
 
 
@@ -1160,8 +1161,14 @@ def test_stage_file_run_uses_isolated_workspace_and_downloads_result(tmp_path: P
 
     write_minimal_settings(tmp_path)
 
-    def fake_run_stage(stage_name, loaded_settings, logger, backend_override=None) -> int:
-        _ = logger, backend_override
+    def fake_run_stage(
+        stage_name,
+        loaded_settings,
+        logger,
+        backend_override=None,
+        prepare_reference_progress_callback=None,
+    ) -> int:
+        _ = logger, backend_override, prepare_reference_progress_callback
         assert stage_name == "transcribe"
         assert (loaded_settings.path_for("audio_dir") / "source.wav").read_bytes() == b"audio-bytes"
         output_path = loaded_settings.path_for("asr_dir") / "source.txt"
@@ -1365,8 +1372,14 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
     reference_path.write_text("参考", encoding="utf-8")
     seen: dict[str, str] = {}
 
-    def fake_run_stage(stage_name, job_loaded_settings, logger, backend_override=None) -> int:
-        _ = logger
+    def fake_run_stage(
+        stage_name,
+        job_loaded_settings,
+        logger,
+        backend_override=None,
+        prepare_reference_progress_callback=None,
+    ) -> int:
+        _ = logger, prepare_reference_progress_callback
         if stage_name == "refine":
             seen["backend_override"] = backend_override or ""
             seen["model"] = job_loaded_settings.settings.llm.model
@@ -1566,8 +1579,14 @@ def test_post_job_rerun_executes_selected_stage_suffix(tmp_path: Path, monkeypat
     )
     called_stages: list[str] = []
 
-    def fake_run_stage(stage_name, job_loaded_settings, logger, backend_override=None) -> int:
-        _ = logger, backend_override
+    def fake_run_stage(
+        stage_name,
+        job_loaded_settings,
+        logger,
+        backend_override=None,
+        prepare_reference_progress_callback=None,
+    ) -> int:
+        _ = logger, backend_override, prepare_reference_progress_callback
         called_stages.append(stage_name)
         if stage_name == "export-markdown":
             final_dir = job_loaded_settings.path_for("final_dir")
@@ -1666,8 +1685,14 @@ def test_post_batch_item_rerun_executes_suffix_and_updates_batch_state(tmp_path:
     )
     called_stages: list[str] = []
 
-    def fake_run_stage(stage_name, job_loaded_settings, logger, backend_override=None) -> int:
-        _ = logger, backend_override
+    def fake_run_stage(
+        stage_name,
+        job_loaded_settings,
+        logger,
+        backend_override=None,
+        prepare_reference_progress_callback=None,
+    ) -> int:
+        _ = logger, backend_override, prepare_reference_progress_callback
         called_stages.append(stage_name)
         if stage_name == "export-markdown":
             final_dir = job_loaded_settings.path_for("final_dir")
@@ -1737,7 +1762,7 @@ def test_post_batch_item_rerun_rejects_active_or_non_terminal_item(tmp_path: Pat
     )
 
     assert response.status_code == 400
-    assert "只能重跑已成功或已失败的批量子任务" in response.text
+    assert "只能重跑已结束或等待补页的批量子任务" in response.text
 
     app.state.active_jobs.add(batch_id)
     response = request_json(
@@ -1750,6 +1775,135 @@ def test_post_batch_item_rerun_rejects_active_or_non_terminal_item(tmp_path: Pat
     assert response.status_code == 400
     assert "不能在批量任务运行中重跑子任务" in response.text
 
+
+def test_single_job_stops_after_partial_reference_ocr_and_keeps_task_resumable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    video_path = tmp_path / "lesson.mp4"
+    reference_path = tmp_path / "book.pdf"
+    output_dir = tmp_path / "deliverables"
+    video_path.write_bytes(b"video")
+    reference_path.write_bytes(b"%PDF-1.4 fake")
+    called_stages: list[str] = []
+
+    def fake_run_stage(
+        stage_name,
+        loaded_settings,
+        logger,
+        backend_override=None,
+        prepare_reference_progress_callback=None,
+    ) -> int:
+        _ = logger, backend_override, prepare_reference_progress_callback
+        called_stages.append(stage_name)
+        if stage_name == "prepare-reference":
+            assert loaded_settings.settings.reference.codex_ocr_max_concurrency == 12
+            assert loaded_settings.settings.reference.codex_ocr_submit_interval_seconds == 2.5
+            return 2
+        return 0
+
+    monkeypatch.setattr("src.web.tasks.run_stage", fake_run_stage)
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+
+    response = request_json(
+        app,
+        "POST",
+        "/api/jobs",
+        json_body={
+            "video": str(video_path),
+            "reference": str(reference_path),
+            "output_dir": str(output_dir),
+            "ocr_max_concurrency": 12,
+            "ocr_submit_interval_seconds": 2.5,
+        },
+    )
+
+    assert response.status_code == 202
+    state = request_json(app, "GET", f"/api/jobs/{response.json()['job_id']}").json()
+    assert state["status"] == "partial"
+    assert state["current_stage"] == "prepare-reference"
+    assert state["resumable"] is True
+    assert called_stages == ["extract-audio", "transcribe", "prepare-reference"]
+
+
+def test_stage_run_retry_reuses_same_run_and_effective_ocr_payload(
+    tmp_path: Path,
+) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    run_id = "stage-run-retry"
+    state_path = tmp_path / "data/jobs/stage-runs" / run_id / "state.json"
+    write_json_file(
+        state_path,
+        {
+            **create_initial_state(run_id, "stage-run"),
+            "status": "partial",
+            "current_stage": "prepare-reference",
+            "run_mode": "directory",
+            "resumable": True,
+            "request_payload": {
+                "ocr_backend": "codex_api",
+                "ocr_model": "gpt-5.4-mini",
+                "ocr_reasoning_effort": "high",
+                "ocr_max_concurrency": 12,
+                "ocr_submit_interval_seconds": 2.5,
+            },
+        },
+    )
+    captured: dict[str, object] = {}
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+
+    def fake_execute_stage_run(*, app, run_id: str, stage_name: str, payload: dict) -> None:
+        _ = app
+        captured.update({"run_id": run_id, "stage_name": stage_name, "payload": payload})
+
+    app.state.execute_stage_run = fake_execute_stage_run
+
+    response = request_json(app, "POST", f"/api/stage-runs/{run_id}/retry")
+
+    assert response.status_code == 202
+    assert response.json() == {"run_id": run_id}
+    assert captured["run_id"] == run_id
+    assert captured["stage_name"] == "prepare-reference"
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["ocr_max_concurrency"] == 12
+    assert payload["ocr_submit_interval_seconds"] == 2.5
+    state = read_json_file(state_path)
+    assert state["resume_count"] == 1
+
+
+def test_reconcile_running_prepare_reference_job_as_partial_after_restart(
+    tmp_path: Path,
+) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    job_id = "job-restart-ocr"
+    state_path = tmp_path / "data/jobs" / job_id / "state.json"
+    write_json_file(
+        state_path,
+        {
+            **create_initial_state(job_id, "job"),
+            "status": "running",
+            "current_stage": "prepare-reference",
+            "pages_total": 603,
+            "pages_completed": 194,
+        },
+    )
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+
+    response = request_json(app, "GET", f"/api/jobs/{job_id}")
+
+    assert response.status_code == 200
+    state = response.json()
+    assert state["status"] == "partial"
+    assert state["resumable"] is True
+    assert "已完成页面仍保留" in state["error_message"]
 
 def test_post_batch_jobs_returns_batch_id_and_persists_state(tmp_path: Path) -> None:
     from api_server import create_app

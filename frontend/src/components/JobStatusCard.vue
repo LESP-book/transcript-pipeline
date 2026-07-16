@@ -23,8 +23,10 @@ import {
   jobResultUrl,
   rerunBatchItem,
   rerunJob,
+  retryStageRun,
   type BatchItemState,
   type JobInputSummary,
+  type OCRProgressItem,
   type ResultDownloadFormat,
 } from "../api/client";
 import JobArtifactsViewer from "./JobArtifactsViewer.vue";
@@ -51,6 +53,7 @@ const dialog = useDialog();
 
 const isDeleting = ref(false);
 const isRerunning = ref(false);
+const isRetryingStageRun = ref(false);
 const rerunStage = ref("refine");
 const batchItemRerunStages = ref<Record<string, string>>({});
 const rerunningBatchItemIds = ref<string[]>([]);
@@ -73,6 +76,10 @@ const hasBatchItems = computed(() => batchItems.value.length > 0);
 const hasBatchOutputs = computed(() => {
   return batchItems.value.some((item) => item.status === "success" && Boolean(item.copied_output_path));
 });
+const ocrItems = computed<OCRProgressItem[]>(() => {
+  return Array.isArray(props.state.ocr_items) ? (props.state.ocr_items as OCRProgressItem[]) : [];
+});
+const hasOcrProgress = computed(() => ocrItems.value.length > 0 || props.state.pages_total !== undefined);
 
 watch(
   () => stateId.value,
@@ -87,6 +94,13 @@ const canDelete = computed(() => {
 
 const canRerun = computed(() => {
   return kind.value === "job" && status.value !== "running" && status.value !== "pending";
+});
+const canRetryStageRun = computed(() => {
+  return (
+    kind.value === "stage-run"
+    && String(props.state.current_stage ?? "") === "prepare-reference"
+    && (status.value === "partial" || status.value === "failed")
+  );
 });
 
 const canViewArtifacts = computed(() => kind.value === "job");
@@ -428,7 +442,7 @@ function canRerunBatchItem(item: BatchItemState) {
     status.value !== "running" &&
     status.value !== "pending" &&
     Boolean(batchItemKey(item)) &&
-    (itemStatus === "success" || itemStatus === "failed")
+    (itemStatus === "success" || itemStatus === "partial" || itemStatus === "failed")
   );
 }
 
@@ -463,6 +477,28 @@ async function handleRerun() {
   } finally {
     isRerunning.value = false;
   }
+}
+
+async function handleStageRunRetry() {
+  const id = stateId.value;
+  if (!id) {
+    message.error("缺少阶段任务 ID，无法补页。");
+    return;
+  }
+  isRetryingStageRun.value = true;
+  try {
+    await retryStageRun(id);
+    message.success("已在原阶段任务中重试缺失页。");
+    emit("rerun", id);
+  } catch (caught) {
+    message.error(caught instanceof Error ? caught.message : "重试缺失页失败");
+  } finally {
+    isRetryingStageRun.value = false;
+  }
+}
+
+function pageErrorEntries(item: OCRProgressItem): Array<[string, string]> {
+  return Object.entries(item.page_errors ?? {}).sort(([left], [right]) => Number(left) - Number(right));
 }
 
 async function handleBatchItemRerun(item: BatchItemState) {
@@ -515,6 +551,15 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
       return stageIndex < currentStageIndex ? "completed" : "pending";
     }
     return stageIndex === 0 ? "active" : "pending";
+  }
+  if (status.value === "partial") {
+    if (currentStage === stageKey) {
+      return "active";
+    }
+    if (currentStageIndex !== -1 && stageIndex < currentStageIndex) {
+      return "completed";
+    }
+    return "pending";
   }
   
   return "pending";
@@ -617,6 +662,9 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
           <n-flex :size="8" align="center" wrap>
             <n-tag size="small" type="info" :bordered="false">总数 {{ String(state.total ?? 0) }}</n-tag>
             <n-tag size="small" type="success" :bordered="false">成功 {{ String(state.success ?? 0) }}</n-tag>
+            <n-tag v-if="state.partial !== undefined" size="small" type="warning" :bordered="false">
+              待补页 {{ String(state.partial ?? 0) }}
+            </n-tag>
             <n-tag size="small" type="error" :bordered="false">失败 {{ String(state.failed ?? 0) }}</n-tag>
           </n-flex>
         </div>
@@ -681,9 +729,54 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
                 :loading="isRerunning"
                 @click="handleRerun"
               >
-                从该阶段重跑
+                {{ status === "partial" && rerunStage === "prepare-reference" ? "重试缺失页并继续" : "从该阶段重跑" }}
               </n-button>
             </n-flex>
+          </div>
+
+          <div v-if="canRetryStageRun" class="rerun-section">
+            <div>
+              <h4 class="rerun-title">重试准备参考缺失页</h4>
+              <p class="rerun-copy">沿用当前阶段任务的输入、OCR 参数和页检查点，只请求尚未成功的页面。</p>
+            </div>
+            <n-button
+              type="warning"
+              secondary
+              :loading="isRetryingStageRun"
+              @click="handleStageRunRetry"
+            >
+              重试缺失页
+            </n-button>
+          </div>
+
+          <div v-if="hasOcrProgress" class="ocr-progress-section">
+            <div class="batch-items-section__head">
+              <h4 class="batch-items-title">PDF OCR 页进度</h4>
+              <span class="batch-items-count">
+                {{ String(state.pages_completed ?? 0) }}/{{ String(state.pages_total ?? 0) }} 页完成
+              </span>
+            </div>
+            <div class="batch-items-list">
+              <div v-for="item in ocrItems" :key="item.source_file" class="batch-item-row">
+                <div class="batch-item-main">
+                  <strong>{{ item.source_file }}</strong>
+                  <span>已完成 {{ item.completed_pages }}/{{ item.page_count }} 页</span>
+                  <span v-if="item.failed_page_numbers.length" class="batch-item-error">
+                    待补页：{{ item.failed_page_numbers.join("、") }}
+                  </span>
+                  <p
+                    v-for="[pageNumber, pageError] in pageErrorEntries(item)"
+                    :key="`${item.source_file}-${pageNumber}`"
+                    class="batch-item-error"
+                  >
+                    第 {{ pageNumber }} 页：{{ pageError }}
+                  </p>
+                </div>
+                <n-tag :type="item.resumable ? 'warning' : 'success'" :bordered="false" size="small">
+                  {{ item.resumable ? "待补页" : "完成" }}
+                </n-tag>
+              </div>
+            </div>
           </div>
 
           <JobArtifactsViewer
@@ -709,6 +802,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
                   <span v-else-if="item.reference_source">参考源：{{ displaySourceName(item.reference_source) }}</span>
                   <span v-if="item.output_dir">输出目录：{{ item.output_dir }}</span>
                   <span v-if="item.failed_stage" class="batch-item-muted">失败阶段：{{ item.failed_stage }}</span>
+                  <span v-if="item.pages_total">OCR 页进度：{{ item.pages_completed ?? 0 }}/{{ item.pages_total }}</span>
                   <p v-if="item.error_message" class="batch-item-error">{{ item.error_message }}</p>
                 </div>
                 <n-flex align="center" :size="8" wrap class="batch-item-actions">
@@ -800,6 +894,9 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
               <n-descriptions-item label="状态统计">
                 <n-flex :size="8">
                   <n-tag size="small" type="success" :bordered="false">成功 {{ String(state.success ?? 0) }}</n-tag>
+                  <n-tag v-if="state.partial !== undefined" size="small" type="warning" :bordered="false">
+                    待补页 {{ String(state.partial ?? 0) }}
+                  </n-tag>
                   <n-tag size="small" type="error" :bordered="false">失败 {{ String(state.failed ?? 0) }}</n-tag>
                 </n-flex>
               </n-descriptions-item>
@@ -809,7 +906,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
           <n-alert
             v-if="String(state.error_message ?? '')"
             class="status-card__error"
-            type="error"
+            :type="status === 'partial' ? 'warning' : 'error'"
             :title="`流水线执行错误报告`"
             :bordered="false"
           >
@@ -973,6 +1070,13 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
   border: 1px solid rgba(226, 232, 240, 0.8);
   border-radius: 12px;
   background: #ffffff;
+}
+
+.ocr-progress-section {
+  padding: 16px;
+  border: 1px solid rgba(245, 158, 11, 0.24);
+  border-radius: 12px;
+  background: rgba(255, 251, 235, 0.72);
 }
 
 .batch-items-section__head {

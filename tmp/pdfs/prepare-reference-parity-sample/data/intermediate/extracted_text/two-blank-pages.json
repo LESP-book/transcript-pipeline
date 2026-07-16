@@ -1,0 +1,17 @@
+{
+  "source_file": "tmp/pdfs/prepare-reference-parity-sample/data/input/reference/two-blank-pages.pdf",
+  "source_type": "pdf",
+  "output_text_file": "two-blank-pages.txt",
+  "extraction_method": "codex_api_pdf_ocr",
+  "success": true,
+  "text_length": 11,
+  "warnings": [
+    "已使用 Codex API OCR。model=gpt-5.6-terra；已完成 2/2 页。"
+  ],
+  "error": "",
+  "page_count": 2,
+  "completed_pages": 2,
+  "failed_page_numbers": [],
+  "page_errors": {},
+  "resumable": false
+}

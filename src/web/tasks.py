@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 
-from scripts.run_pipeline import run_stage
+from scripts.run_pipeline import STAGE_EXIT_PARTIAL, run_stage
 from src.config_loader import ConfigLoadError, load_settings
 from src.pdf_book_ocr import PDFBookOCRError, PDFBookOCRProgress, ocr_pdf_book_batch
+from src.reference_utils import ReferenceFileProgress
 from src.job_runner import (
     BatchJobRuntime,
     BatchJobSpec,
@@ -64,6 +66,21 @@ def first_text(*values: str | None) -> str | None:
     return None
 
 
+def request_payload_with_effective_ocr_settings(request, loaded_settings) -> dict[str, object]:
+    payload = request.model_dump()
+    reference_settings = loaded_settings.settings.reference
+    payload.update(
+        {
+            "ocr_backend": reference_settings.ai_ocr_backend,
+            "ocr_model": reference_settings.codex_ocr_model,
+            "ocr_reasoning_effort": reference_settings.codex_ocr_reasoning_effort,
+            "ocr_max_concurrency": reference_settings.codex_ocr_max_concurrency,
+            "ocr_submit_interval_seconds": reference_settings.codex_ocr_submit_interval_seconds,
+        }
+    )
+    return payload
+
+
 def stage_output_path(loaded_settings, stage_name: str) -> str:
     field_map = {
         "extract-audio": "audio_dir",
@@ -78,6 +95,40 @@ def stage_output_path(loaded_settings, stage_name: str) -> str:
     if field_name is None:
         return ""
     return str(loaded_settings.path_for(field_name))
+
+
+def serialize_reference_file_progress(progress: ReferenceFileProgress) -> dict[str, object]:
+    return {
+        "source_file": progress.source_path.name,
+        "output_file": progress.output_text_path.name if not progress.resumable else "",
+        "success": not progress.resumable,
+        "page_count": progress.page_count,
+        "completed_pages": progress.completed_pages,
+        "failed_pages": len(progress.failed_page_numbers),
+        "failed_page_numbers": list(progress.failed_page_numbers),
+        "page_errors": {str(page_number): error for page_number, error in progress.page_errors.items()},
+        "resumable": progress.resumable,
+    }
+
+
+def update_reference_progress_state(
+    *,
+    app: FastAPI,
+    state_path: Path,
+    progress_items: dict[str, dict[str, object]],
+    progress: ReferenceFileProgress,
+) -> None:
+    item = serialize_reference_file_progress(progress)
+    progress_items[str(item["source_file"])] = item
+    items = [progress_items[key] for key in sorted(progress_items)]
+    app.state.update_state(
+        state_path,
+        ocr_items=items,
+        pages_total=sum(int(entry["page_count"]) for entry in items),
+        pages_completed=sum(int(entry["completed_pages"]) for entry in items),
+        pages_failed=sum(int(entry["failed_pages"]) for entry in items),
+        resumable=any(bool(entry["resumable"]) for entry in items),
+    )
 
 
 def submit_task(fastapi_app: FastAPI, func, **kwargs) -> None:
@@ -135,6 +186,11 @@ def batch_runtime_from_state_item(project_root: Path, item: dict[str, Any]) -> B
         failed_stage=str(item.get("failed_stage") or "") or None,
         error_message=str(item.get("error_message") or "") or None,
         copied_output_path=Path(copied_output_path) if copied_output_path else None,
+        ocr_items={
+            str(ocr_item.get("source_file") or index): dict(ocr_item)
+            for index, ocr_item in enumerate(item.get("ocr_items") or [])
+            if isinstance(ocr_item, dict)
+        },
     )
 
 
@@ -152,6 +208,7 @@ def rewrite_batch_summary_from_state(*, project_root: Path, batch_id: str, state
             total=len(items),
             success=sum(1 for item in items if item.status == "success"),
             failed=sum(1 for item in items if item.status == "failed"),
+            partial=sum(1 for item in items if item.status == "partial"),
             items=items,
         ),
     )
@@ -190,14 +247,23 @@ def update_batch_item_state(
 
     success_count = sum(1 for item in updated_items if isinstance(item, dict) and item.get("status") == "success")
     failed_count = sum(1 for item in updated_items if isinstance(item, dict) and item.get("status") == "failed")
+    partial_count = sum(1 for item in updated_items if isinstance(item, dict) and item.get("status") == "partial")
     requested_status = str(batch_changes.pop("status", "") or "")
-    next_status = "running" if requested_status == "running" else "success" if failed_count == 0 else "failed"
+    if requested_status == "running":
+        next_status = "running"
+    elif partial_count:
+        next_status = "partial"
+    elif failed_count:
+        next_status = "failed"
+    else:
+        next_status = "success"
     updated_state = app.state.update_state(
         state_path,
         status=next_status,
         total=len(updated_items),
         success=success_count,
         failed=failed_count,
+        partial=partial_count,
         items=updated_items,
         **batch_changes,
     )
@@ -231,14 +297,31 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
             ModelOverrides(
                 llm_model=request.model or frontend_settings.model or None,
                 llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
-                ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
-                ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
-                ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
+                # job 的生成配置已经固化首次运行的 OCR 身份；重跑未显式覆盖时必须沿用原值。
+                ocr_backend=request.ocr_backend,
+                ocr_model=request.ocr_model,
+                ocr_reasoning_effort=request.ocr_reasoning_effort,
+                ocr_max_concurrency=request.ocr_max_concurrency,
+                ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
             ),
         )
         raw_stages = loaded_settings.settings.pipeline.stages if loaded_settings.settings.pipeline else []
         stages = resolve_rerun_stages(raw_stages, request.start_stage)
         logger = setup_logging(loaded_settings.settings.runtime.log_level)
+        current_state = read_json_file(state_path)
+        progress_items = {
+            str(item.get("source_file") or index): dict(item)
+            for index, item in enumerate(current_state.get("ocr_items") or [])
+            if isinstance(item, dict)
+        }
+
+        def reference_progress(progress: ReferenceFileProgress) -> None:
+            update_reference_progress_state(
+                app=app,
+                state_path=state_path,
+                progress_items=progress_items,
+                progress=progress,
+            )
 
         app.state.update_state(
             state_path,
@@ -255,7 +338,24 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
                     current_stage=stage_name,
                 )
                 current_backend = effective_backend if stage_name == "refine" else None
-                exit_code = run_stage(stage_name, loaded_settings, logger, backend_override=current_backend)
+                exit_code = run_stage(
+                    stage_name,
+                    loaded_settings,
+                    logger,
+                    backend_override=current_backend,
+                    prepare_reference_progress_callback=(
+                        reference_progress if stage_name == "prepare-reference" else None
+                    ),
+                )
+                if exit_code == STAGE_EXIT_PARTIAL:
+                    app.state.update_state(
+                        state_path,
+                        status="partial",
+                        current_stage=stage_name,
+                        error_message="准备参考 OCR 尚有缺页，请重试缺失页。",
+                        resumable=True,
+                    )
+                    return read_json_file(state_path)
                 if exit_code != 0:
                     raise JobRunnerError(f"job 重跑失败: stage={stage_name} exit_code={exit_code}")
 
@@ -281,6 +381,8 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
             status="success",
             current_stage="done",
             output_path=output_path,
+            error_message="",
+            resumable=False,
         )
     except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
         app.state.update_state(
@@ -311,6 +413,8 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
             ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
             ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
+            ocr_max_concurrency=request.ocr_max_concurrency,
+            ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
         )
         base_loaded_settings = load_settings(
             settings_path=request.config,
@@ -361,6 +465,15 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
         )
         logger = setup_logging(job_loaded_settings.settings.runtime.log_level)
         stages = [normalize_stage_name(stage_name) for stage_name in job_loaded_settings.settings.pipeline.stages]
+        progress_items: dict[str, dict[str, object]] = {}
+
+        def reference_progress(progress: ReferenceFileProgress) -> None:
+            update_reference_progress_state(
+                app=app,
+                state_path=state_path,
+                progress_items=progress_items,
+                progress=progress,
+            )
 
         with codex_lb_environment(frontend_settings):
             for stage_name in stages:
@@ -370,7 +483,24 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
                     current_stage=stage_name,
                 )
                 current_backend = effective_backend if stage_name == "refine" else None
-                exit_code = run_stage(stage_name, job_loaded_settings, logger, backend_override=current_backend)
+                exit_code = run_stage(
+                    stage_name,
+                    job_loaded_settings,
+                    logger,
+                    backend_override=current_backend,
+                    prepare_reference_progress_callback=(
+                        reference_progress if stage_name == "prepare-reference" else None
+                    ),
+                )
+                if exit_code == STAGE_EXIT_PARTIAL:
+                    app.state.update_state(
+                        state_path,
+                        status="partial",
+                        current_stage=stage_name,
+                        error_message="准备参考 OCR 尚有缺页，请重试缺失页。",
+                        resumable=True,
+                    )
+                    return
                 if exit_code != 0:
                     raise JobRunnerError(f"job 主链失败: stage={stage_name} exit_code={exit_code}")
 
@@ -388,6 +518,8 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             status="success",
             current_stage="done",
             output_path=str(copied_output_path),
+            error_message="",
+            resumable=False,
         )
     except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
         app.state.update_state(
@@ -459,6 +591,32 @@ def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, p
                 },
             )
             return
+        if final_status == "partial":
+            update_batch_item_state(
+                app=app,
+                batch_id=batch_id,
+                item_job_id=item_job_id,
+                item_changes={
+                    "status": "partial",
+                    "failed_stage": "prepare-reference",
+                    "error_message": str(
+                        final_state.get("error_message")
+                        or "准备参考 OCR 尚有缺页，请重试缺失页。"
+                    ),
+                    "copied_output_path": "",
+                    "ocr_items": list(final_state.get("ocr_items") or []),
+                    "pages_total": int(final_state.get("pages_total") or 0),
+                    "pages_completed": int(final_state.get("pages_completed") or 0),
+                    "pages_failed": int(final_state.get("pages_failed") or 0),
+                    "resumable": True,
+                },
+                batch_changes={
+                    "status": "partial",
+                    "current_stage": "prepare-reference",
+                    "error_message": "",
+                },
+            )
+            return
 
         update_batch_item_state(
             app=app,
@@ -517,6 +675,8 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
             ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
             ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
             ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
+            ocr_max_concurrency=request.ocr_max_concurrency,
+            ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
         )
         base_loaded_settings = load_settings(
             settings_path=request.config,
@@ -556,6 +716,22 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
 
         logger = setup_logging(base_loaded_settings.settings.runtime.log_level)
         stage_sequence = batch_stage_sequence_for_runtimes(runtimes, root)
+        progress_lock = threading.Lock()
+
+        def batch_reference_progress(
+            runtime: BatchJobRuntime,
+            progress: ReferenceFileProgress,
+        ) -> None:
+            item = serialize_reference_file_progress(progress)
+            with progress_lock:
+                runtime.ocr_items[str(item["source_file"])] = item
+                app.state.update_state(
+                    state_path,
+                    status="running",
+                    current_stage="prepare-reference",
+                    items=[serialize_batch_runtime(entry) for entry in runtimes],
+                )
+
         with codex_lb_environment(frontend_settings):
             for stage_name in stage_sequence:
                 app.state.update_state(
@@ -573,27 +749,31 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
                     logger=logger,
                     remote_concurrency=effective_remote_concurrency,
                     backend_override=effective_backend,
+                    progress_callback=batch_reference_progress,
                 )
 
         success_count = sum(1 for item in runtimes if item.status == "success")
         failed_count = sum(1 for item in runtimes if item.status == "failed")
+        partial_count = sum(1 for item in runtimes if item.status == "partial")
         summary = BatchRunSummary(
             batch_id=batch_id,
             total=len(runtimes),
             success=success_count,
             failed=failed_count,
+            partial=partial_count,
             items=runtimes,
         )
         write_batch_summary(project_root=root, summary=summary)
 
         app.state.update_state(
             state_path,
-            status="success" if failed_count == 0 else "failed",
+            status="partial" if partial_count else "success" if failed_count == 0 else "failed",
             current_stage="done",
             output_path=str(build_batch_root(root, batch_id) / "summary.json"),
             total=summary.total,
             success=summary.success,
             failed=summary.failed,
+            partial=summary.partial,
             items=[serialize_batch_runtime(item) for item in runtimes],
         )
     except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
@@ -630,13 +810,26 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
                 ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
                 ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
                 ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
+                ocr_max_concurrency=request.ocr_max_concurrency,
+                ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
             ),
         )
         logger = setup_logging(loaded_settings.settings.runtime.log_level)
+        progress_items: dict[str, dict[str, object]] = {}
+
+        def reference_progress(progress: ReferenceFileProgress) -> None:
+            update_reference_progress_state(
+                app=app,
+                state_path=state_path,
+                progress_items=progress_items,
+                progress=progress,
+            )
+
         app.state.update_state(
             state_path,
             status="running",
             current_stage=normalized_stage_name,
+            request_payload=request_payload_with_effective_ocr_settings(request, loaded_settings),
         )
         with codex_lb_environment(frontend_settings):
             exit_code = run_stage(
@@ -644,7 +837,19 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
                 loaded_settings,
                 logger,
                 backend_override=effective_backend,
+                prepare_reference_progress_callback=(
+                    reference_progress if normalized_stage_name == "prepare-reference" else None
+                ),
             )
+        if exit_code == STAGE_EXIT_PARTIAL:
+            app.state.update_state(
+                state_path,
+                status="partial",
+                current_stage=normalized_stage_name,
+                error_message="准备参考 OCR 尚有缺页，请重试缺失页。",
+                resumable=True,
+            )
+            return
         if exit_code != 0:
             raise JobRunnerError(f"stage 运行失败: stage={normalized_stage_name} exit_code={exit_code}")
 
@@ -653,6 +858,8 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
             status="success",
             current_stage=normalized_stage_name,
             output_path=stage_output_path(loaded_settings, normalized_stage_name),
+            error_message="",
+            resumable=False,
         )
     except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
         app.state.update_state(
@@ -699,6 +906,8 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
                 ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
                 ocr_model=request.ocr_model or frontend_settings.ocr_model or None,
                 ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
+                ocr_max_concurrency=request.ocr_max_concurrency,
+                ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
             ),
         )
         workspace_loaded_settings = load_settings(
@@ -706,10 +915,24 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
             project_root=root,
         )
         logger = setup_logging(workspace_loaded_settings.settings.runtime.log_level)
+        progress_items: dict[str, dict[str, object]] = {}
+
+        def reference_progress(progress: ReferenceFileProgress) -> None:
+            update_reference_progress_state(
+                app=app,
+                state_path=state_path,
+                progress_items=progress_items,
+                progress=progress,
+            )
+
         app.state.update_state(
             state_path,
             status="running",
             current_stage=normalized_stage_name,
+            request_payload=request_payload_with_effective_ocr_settings(
+                request,
+                workspace_loaded_settings,
+            ),
         )
         with codex_lb_environment(frontend_settings):
             exit_code = run_stage(
@@ -717,7 +940,19 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
                 workspace_loaded_settings,
                 logger,
                 backend_override=effective_backend,
+                prepare_reference_progress_callback=(
+                    reference_progress if normalized_stage_name == "prepare-reference" else None
+                ),
             )
+        if exit_code == STAGE_EXIT_PARTIAL:
+            app.state.update_state(
+                state_path,
+                status="partial",
+                current_stage=normalized_stage_name,
+                error_message="准备参考 OCR 尚有缺页，请重试缺失页。",
+                resumable=True,
+            )
+            return
         if exit_code != 0:
             raise JobRunnerError(f"文件模式 stage 运行失败: stage={normalized_stage_name} exit_code={exit_code}")
 
@@ -732,6 +967,8 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
             current_stage=normalized_stage_name,
             output_path=str(archive_path),
             download_name=archive_path.name,
+            error_message="",
+            resumable=False,
         )
     except (ConfigLoadError, JobRunnerError, StageFileRunError, ValueError, OSError) as exc:
         app.state.update_state(
@@ -821,7 +1058,7 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
             state_path,
             status="running",
             current_stage="ocr",
-            request_payload=request.model_dump(),
+            request_payload=request_payload_with_effective_ocr_settings(request, loaded_settings),
             error_message="",
         )
 

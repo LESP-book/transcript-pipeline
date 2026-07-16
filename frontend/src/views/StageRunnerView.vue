@@ -10,6 +10,7 @@ import {
   NGrid,
   NGridItem,
   NInput,
+  NInputNumber,
   NRadioButton,
   NRadioGroup,
   NSelect,
@@ -37,7 +38,17 @@ import StageFileUpload from "../components/StageFileUpload.vue";
 import { useConfigOptions } from "../composables/useConfigOptions";
 
 const message = useMessage();
-const { backends, error: configError, loading: configLoading, profiles } = useConfigOptions();
+const {
+  backends,
+  error: configError,
+  loading: configLoading,
+  profiles,
+  defaultOcrBackend,
+  defaultOcrMaxConcurrency,
+  defaultOcrModel,
+  defaultOcrReasoningEffort,
+  defaultOcrSubmitIntervalSeconds,
+} = useConfigOptions();
 const stageState = ref<JobState | null>(null);
 const submitting = ref(false);
 const historyLoading = ref(false);
@@ -58,6 +69,8 @@ const form = reactive({
   ocr_backend: "",
   ocr_model: "",
   ocr_reasoning_effort: "",
+  ocr_max_concurrency: 40 as number | null,
+  ocr_submit_interval_seconds: 5 as number | null,
 });
 
 interface StageGuide {
@@ -183,7 +196,7 @@ async function loadStageRuns() {
 async function refreshStage(runId: string) {
   const state = await getStageRun(runId);
   stageState.value = state;
-  if (state.status === "success" || state.status === "failed") {
+  if (state.status === "success" || state.status === "partial" || state.status === "failed") {
     stopPolling();
     void loadStageRuns();
   }
@@ -222,6 +235,8 @@ function buildStageRunPayload(): StageRunPayload {
     payload.ocr_backend = optionalValue(form.ocr_backend);
     payload.ocr_model = optionalValue(form.ocr_model);
     payload.ocr_reasoning_effort = optionalValue(form.ocr_reasoning_effort);
+    payload.ocr_max_concurrency = form.ocr_max_concurrency;
+    payload.ocr_submit_interval_seconds = form.ocr_submit_interval_seconds;
   }
   if (usesRefineOverrides.value) {
     payload.backend = optionalValue(form.backend);
@@ -261,6 +276,13 @@ function downloadStageFileResult() {
 }
 
 async function submit() {
+  if (
+    usesOcrOverrides.value
+    && (form.ocr_max_concurrency === null || form.ocr_submit_interval_seconds === null)
+  ) {
+    message.warning("请填写 PDF OCR 投递间隔和最大并发数。");
+    return;
+  }
   if (isFileMode.value) {
     if (!fileContract.value) {
       message.warning("阶段文件输入要求尚未加载完成。");
@@ -310,6 +332,37 @@ watch(
     }
   },
 );
+
+watch(defaultOcrBackend, (value) => {
+  if (!form.ocr_backend && value) {
+    form.ocr_backend = value;
+  }
+});
+watch(defaultOcrModel, (value) => {
+  if (!form.ocr_model && value) {
+    form.ocr_model = value;
+  }
+});
+watch(defaultOcrReasoningEffort, (value) => {
+  if (!form.ocr_reasoning_effort && value) {
+    form.ocr_reasoning_effort = value;
+  }
+});
+watch(defaultOcrMaxConcurrency, (value) => {
+  if (Number.isFinite(value)) {
+    form.ocr_max_concurrency = value;
+  }
+});
+watch(defaultOcrSubmitIntervalSeconds, (value) => {
+  if (Number.isFinite(value)) {
+    form.ocr_submit_interval_seconds = value;
+  }
+});
+
+async function handleStageRunRetry(runId: string) {
+  await refreshStage(runId);
+  startPolling(runId);
+}
 
 watch(runMode, (mode) => {
   if (mode === "file") {
@@ -483,6 +536,26 @@ onBeforeUnmount(stopPolling);
                     />
                   </n-form-item>
                 </n-grid-item>
+                <n-grid-item span="2 m:1">
+                  <n-form-item label="页面投递间隔（秒）" required>
+                    <n-input-number
+                      v-model:value="form.ocr_submit_interval_seconds"
+                      :min="0"
+                      :step="0.5"
+                      class="w-full"
+                    />
+                  </n-form-item>
+                </n-grid-item>
+                <n-grid-item span="2 m:1">
+                  <n-form-item label="最大在途请求数" required>
+                    <n-input-number
+                      v-model:value="form.ocr_max_concurrency"
+                      :min="1"
+                      :precision="0"
+                      class="w-full"
+                    />
+                  </n-form-item>
+                </n-grid-item>
               </template>
 
               <template v-else-if="usesRefineOverrides">
@@ -576,7 +649,13 @@ onBeforeUnmount(stopPolling);
     </n-card>
 
     <!-- Visual status card for run progress -->
-    <JobStatusCard v-if="stageState" title="阶段任务执行状态报告" :state="stageState" default-expanded />
+    <JobStatusCard
+      v-if="stageState"
+      title="阶段任务执行状态报告"
+      :state="stageState"
+      default-expanded
+      @rerun="handleStageRunRetry"
+    />
   </n-space>
 </template>
 

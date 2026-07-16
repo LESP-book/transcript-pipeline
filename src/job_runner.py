@@ -11,17 +11,18 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import yaml
 
-from scripts.run_pipeline import run_stage
+from scripts.run_pipeline import STAGE_EXIT_PARTIAL, run_stage
 from src.config_loader import ConfigLoadError, load_settings
 from src.glossary_utils import build_initial_prompt, load_glossary_terms, merge_glossary_terms
 from src.runtime_utils import ensure_directory, normalize_stage_name, relativize_path, setup_logging
 from src.schemas import LoadedSettings
+from src.reference_utils import ReferenceFileProgress
 from src.settings_overrides import ModelOverrides, SettingsOverrideError, apply_model_overrides_to_raw_settings
 
 CANONICAL_INPUT_BASENAME = "source"
@@ -89,6 +90,7 @@ class BatchJobRuntime:
     failed_stage: str | None = None
     error_message: str | None = None
     copied_output_path: Path | None = None
+    ocr_items: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,7 @@ class BatchRunSummary:
     total: int
     success: int
     failed: int
+    partial: int = 0
     items: list[BatchJobRuntime] = field(default_factory=list)
 
 
@@ -971,8 +974,9 @@ def execute_batch_stage_for_runtime(
     project_root: Path,
     logger: logging.Logger,
     backend_override: str | None = None,
+    progress_callback: Callable[[BatchJobRuntime, ReferenceFileProgress], None] | None = None,
 ) -> None:
-    if runtime.status == "failed":
+    if runtime.status in {"failed", "partial"}:
         return
 
     try:
@@ -981,7 +985,23 @@ def execute_batch_stage_for_runtime(
             project_root=project_root,
         )
         current_backend_override = backend_override if stage_name == "refine" else None
-        exit_code = run_stage(stage_name, job_loaded_settings, logger, backend_override=current_backend_override)
+        reference_progress_callback = (
+            (lambda progress: progress_callback(runtime, progress))
+            if stage_name == "prepare-reference" and progress_callback is not None
+            else None
+        )
+        exit_code = run_stage(
+            stage_name,
+            job_loaded_settings,
+            logger,
+            backend_override=current_backend_override,
+            prepare_reference_progress_callback=reference_progress_callback,
+        )
+        if exit_code == STAGE_EXIT_PARTIAL:
+            runtime.status = "partial"
+            runtime.failed_stage = stage_name
+            runtime.error_message = "准备参考 OCR 尚有缺页，请重试缺失页。"
+            return
         if exit_code != 0:
             raise JobRunnerError(f"job 主链失败: stage={stage_name} exit_code={exit_code}")
 
@@ -1012,6 +1032,7 @@ def run_jobs_with_limited_concurrency(
     logger: logging.Logger,
     remote_concurrency: int,
     backend_override: str | None = None,
+    progress_callback: Callable[[BatchJobRuntime, ReferenceFileProgress], None] | None = None,
 ) -> None:
     if not runtimes:
         return
@@ -1026,6 +1047,7 @@ def run_jobs_with_limited_concurrency(
                 project_root=project_root,
                 logger=logger,
                 backend_override=backend_override,
+                progress_callback=progress_callback,
             )
             for runtime in runtimes
         ]
@@ -1048,7 +1070,7 @@ def execute_remote_pipeline_for_runtime(
             logger=logger,
             backend_override=backend_override,
         )
-        if runtime.status == "failed":
+        if runtime.status in {"failed", "partial"}:
             return
 
 
@@ -1060,11 +1082,12 @@ def run_batch_stage(
     logger: logging.Logger,
     remote_concurrency: int,
     backend_override: str | None = None,
+    progress_callback: Callable[[BatchJobRuntime, ReferenceFileProgress], None] | None = None,
 ) -> None:
     active_runtimes = [
         runtime
         for runtime in runtimes
-        if runtime.status != "failed" and stage_name in runtime_stage_names(runtime, project_root)
+        if runtime.status not in {"failed", "partial"} and stage_name in runtime_stage_names(runtime, project_root)
     ]
     if not active_runtimes:
         return
@@ -1077,6 +1100,7 @@ def run_batch_stage(
             logger=logger,
             remote_concurrency=remote_concurrency,
             backend_override=backend_override,
+            progress_callback=progress_callback,
         )
         return
 
@@ -1087,6 +1111,7 @@ def run_batch_stage(
             project_root=project_root,
             logger=logger,
             backend_override=backend_override,
+            progress_callback=progress_callback,
         )
 
 
@@ -1105,6 +1130,11 @@ def serialize_batch_runtime(runtime: BatchJobRuntime) -> dict[str, Any]:
         "failed_stage": runtime.failed_stage or "",
         "error_message": runtime.error_message or "",
         "copied_output_path": str(runtime.copied_output_path) if runtime.copied_output_path else "",
+        "ocr_items": [runtime.ocr_items[key] for key in sorted(runtime.ocr_items)],
+        "pages_total": sum(int(item.get("page_count") or 0) for item in runtime.ocr_items.values()),
+        "pages_completed": sum(int(item.get("completed_pages") or 0) for item in runtime.ocr_items.values()),
+        "pages_failed": sum(len(item.get("failed_page_numbers") or []) for item in runtime.ocr_items.values()),
+        "resumable": runtime.status == "partial",
     }
 
 
@@ -1139,6 +1169,7 @@ def write_batch_summary(
         "total": summary.total,
         "success": summary.success,
         "failed": summary.failed,
+        "partial": summary.partial,
         "items": [serialize_batch_runtime(item) for item in summary.items],
     }
     (batch_root / "summary.json").write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1149,6 +1180,7 @@ def write_batch_summary(
         f"- total: {summary.total}",
         f"- success: {summary.success}",
         f"- failed: {summary.failed}",
+        f"- partial: {summary.partial}",
         "",
     ]
     for item in summary.items:
@@ -1188,7 +1220,7 @@ def run_batch_jobs(
         )
     )
 
-    active_runtimes = [runtime for runtime in runtimes if runtime.status != "failed"]
+    active_runtimes = [runtime for runtime in runtimes if runtime.status not in {"failed", "partial"}]
     max_workers = max(1, remote_concurrency)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         remote_futures = []
@@ -1201,10 +1233,10 @@ def run_batch_jobs(
                     logger=logger,
                     backend_override=backend_override,
                 )
-                if runtime.status == "failed":
+                if runtime.status in {"failed", "partial"}:
                     break
 
-            if runtime.status == "failed":
+            if runtime.status in {"failed", "partial"}:
                 continue
 
             remote_futures.append(
@@ -1222,11 +1254,13 @@ def run_batch_jobs(
 
     success_count = sum(1 for item in runtimes if item.status == "success")
     failed_count = sum(1 for item in runtimes if item.status == "failed")
+    partial_count = sum(1 for item in runtimes if item.status == "partial")
     summary = BatchRunSummary(
         batch_id=current_batch_id,
         total=len(runtimes),
         success=success_count,
         failed=failed_count,
+        partial=partial_count,
         items=runtimes,
     )
     write_batch_summary(project_root=project_root, summary=summary)
@@ -1236,7 +1270,7 @@ def run_batch_jobs(
 def get_batch_exit_code(summary: BatchRunSummary) -> int:
     if summary.success == summary.total and summary.total > 0:
         return 0
-    if summary.success > 0:
+    if summary.partial > 0 or summary.success > 0:
         return 2
     return 1
 
@@ -1274,6 +1308,8 @@ def run_single_job(
     reasoning_effort: str | None = None,
     ocr_model: str | None = None,
     ocr_reasoning_effort: str | None = None,
+    ocr_max_concurrency: int | None = None,
+    ocr_submit_interval_seconds: float | None = None,
     book_name: str | None = None,
     chapter: str | None = None,
     glossary_file: str | None = None,
@@ -1306,6 +1342,8 @@ def run_single_job(
             llm_reasoning_effort=reasoning_effort,
             ocr_model=ocr_model,
             ocr_reasoning_effort=ocr_reasoning_effort,
+            ocr_max_concurrency=ocr_max_concurrency,
+            ocr_submit_interval_seconds=ocr_submit_interval_seconds,
         ),
         refine_prompt=refine_prompt,
     )

@@ -11,12 +11,17 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.run_pipeline import run_stage
 from src.config_loader import ConfigLoadError, load_settings
 from src.runtime_utils import normalize_stage_name, setup_logging
+from src.settings_overrides import ModelOverrides, SettingsOverrideError, apply_model_overrides
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="按当前推荐主链顺序运行完整流水线。")
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
+    parser.add_argument("--ocr-model", help="覆盖 Codex API OCR 使用的模型")
+    parser.add_argument("--ocr-reasoning-effort", help="覆盖 Codex API OCR reasoning effort")
+    parser.add_argument("--ocr-max-concurrency", type=int, help="覆盖 PDF OCR 最大在途请求数")
+    parser.add_argument("--ocr-submit-interval-seconds", type=float, help="覆盖 PDF OCR 页面投递间隔秒数")
     return parser
 
 
@@ -30,6 +35,19 @@ def main() -> int:
             project_root=PROJECT_ROOT,
         )
     except ConfigLoadError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    try:
+        apply_model_overrides(
+            loaded_settings,
+            ModelOverrides(
+                ocr_model=args.ocr_model,
+                ocr_reasoning_effort=args.ocr_reasoning_effort,
+                ocr_max_concurrency=args.ocr_max_concurrency,
+                ocr_submit_interval_seconds=args.ocr_submit_interval_seconds,
+            ),
+        )
+    except SettingsOverrideError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
 

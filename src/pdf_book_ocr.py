@@ -10,6 +10,10 @@ from src.reference_utils import (
     CodexOCRPagesIncompleteError,
     run_codex_api_pdf_ocr,
 )
+from src.pdf_ocr_workflow import (
+    build_pdf_ocr_checkpoint_namespace,
+    build_pdf_ocr_run_identity,
+)
 from src.schemas import LoadedSettings
 
 
@@ -195,7 +199,10 @@ def ocr_pdf_book_batch(
     items: list[PDFBookOCRItem] = []
     for source_pdf in source_pdfs:
         checkpoint_dir = (
-            build_pdf_book_checkpoint_dir(input_path, source_pdf, checkpoint_root)
+            build_pdf_ocr_checkpoint_namespace(
+                build_pdf_book_checkpoint_dir(input_path, source_pdf, checkpoint_root),
+                build_pdf_ocr_run_identity(source_pdf, loaded_settings),
+            )
             if checkpoint_root is not None
             else None
         )

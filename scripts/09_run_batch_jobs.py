@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reasoning-effort", help="覆盖阶段 6 reasoning effort，例如 low / medium / high")
     parser.add_argument("--ocr-model", help="覆盖 Codex API OCR 使用的模型，例如 gpt-5.4-mini")
     parser.add_argument("--ocr-reasoning-effort", help="覆盖 Codex API OCR reasoning effort，例如 low / medium / high")
+    parser.add_argument("--ocr-max-concurrency", type=int, help="覆盖 PDF OCR 最大在途请求数")
+    parser.add_argument("--ocr-submit-interval-seconds", type=float, help="覆盖 PDF OCR 页面投递间隔秒数")
     parser.add_argument("--glossary-file", help="批量默认术语词表文件，一行一个词条")
     parser.add_argument("--remote-concurrency", type=int, default=2, help="远程阶段并发度，默认 2")
     parser.add_argument("--book-name", help="批量默认书名，用于输出文件命名")
@@ -81,6 +83,8 @@ def main() -> int:
                 llm_reasoning_effort=args.reasoning_effort,
                 ocr_model=args.ocr_model,
                 ocr_reasoning_effort=args.ocr_reasoning_effort,
+                ocr_max_concurrency=args.ocr_max_concurrency,
+                ocr_submit_interval_seconds=args.ocr_submit_interval_seconds,
             ),
         )
     except JobRunnerError as exc:

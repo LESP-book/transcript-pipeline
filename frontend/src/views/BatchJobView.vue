@@ -42,6 +42,10 @@ const {
   backends,
   defaultBackend,
   defaultOcrBackend,
+  defaultOcrMaxConcurrency,
+  defaultOcrModel,
+  defaultOcrReasoningEffort,
+  defaultOcrSubmitIntervalSeconds,
   defaultOutputDir,
   error,
   loading,
@@ -69,6 +73,10 @@ const form = reactive<{
   profile: string;
   backend: string;
   ocr_backend: string;
+  ocr_model: string;
+  ocr_reasoning_effort: string;
+  ocr_max_concurrency: number | null;
+  ocr_submit_interval_seconds: number | null;
   remote_concurrency: number | null;
   book_name: string;
   chapter: string;
@@ -85,6 +93,10 @@ const form = reactive<{
   profile: "",
   backend: "",
   ocr_backend: "",
+  ocr_model: "",
+  ocr_reasoning_effort: "",
+  ocr_max_concurrency: 40,
+  ocr_submit_interval_seconds: 5,
   remote_concurrency: 2,
   book_name: "",
   chapter: "",
@@ -97,6 +109,7 @@ const ocrBackendOptions = [
   { label: "agy（Gemini）", value: "agy" },
   { label: "Codex CLI", value: "codex_cli" },
 ];
+const ocrReasoningOptions = ["low", "medium", "high", "xhigh"].map((value) => ({ label: value, value }));
 const contentTypeOptions = [
   { label: "读书会整理", value: "book_club" },
   { label: "对谈转录", value: "conversation" },
@@ -133,6 +146,9 @@ const requiredWarning = computed(() => {
   }
   if (!form.remote_concurrency || form.remote_concurrency < 1) {
     return "流水线远程并发度必须是大于等于 1 的整数。";
+  }
+  if (form.ocr_max_concurrency === null || form.ocr_submit_interval_seconds === null) {
+    return "请填写 PDF OCR 投递间隔和最大并发数。";
   }
   return "";
 });
@@ -183,6 +199,26 @@ watch(defaultOcrBackend, (value) => {
     form.ocr_backend = value;
   }
 });
+watch(defaultOcrModel, (value) => {
+  if (!form.ocr_model && value) {
+    form.ocr_model = value;
+  }
+});
+watch(defaultOcrReasoningEffort, (value) => {
+  if (!form.ocr_reasoning_effort && value) {
+    form.ocr_reasoning_effort = value;
+  }
+});
+watch(defaultOcrMaxConcurrency, (value) => {
+  if (Number.isFinite(value)) {
+    form.ocr_max_concurrency = value;
+  }
+});
+watch(defaultOcrSubmitIntervalSeconds, (value) => {
+  if (Number.isFinite(value)) {
+    form.ocr_submit_interval_seconds = value;
+  }
+});
 
 watch(
   () => [form.mode, form.videos_dir, form.reference_dir, form.shared_reference, form.output_dir],
@@ -220,7 +256,7 @@ function stopPolling() {
 async function refreshBatch(batchId: string) {
   const state = await getBatch(batchId);
   batchState.value = state;
-  if (state.status === "success" || state.status === "failed") {
+  if (state.status === "success" || state.status === "partial" || state.status === "failed") {
     stopPolling();
   }
 }
@@ -370,6 +406,10 @@ function buildPayload() {
     profile: form.profile || null,
     backend: form.backend || null,
     ocr_backend: form.ocr_backend || null,
+    ocr_model: form.ocr_model || null,
+    ocr_reasoning_effort: form.ocr_reasoning_effort || null,
+    ocr_max_concurrency: form.ocr_max_concurrency,
+    ocr_submit_interval_seconds: form.ocr_submit_interval_seconds,
     remote_concurrency: form.remote_concurrency,
     book_name: form.book_name || null,
     chapter: form.chapter || null,
@@ -601,6 +641,36 @@ onBeforeUnmount(stopPolling);
                   <n-grid-item span="2 m:1">
                     <n-form-item label="批量远程并发度" required>
                       <n-input-number v-model:value="form.remote_concurrency" :min="1" :precision="0" class="w-full" />
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2 m:1">
+                    <n-form-item label="PDF OCR 模型">
+                      <n-input v-model:value="form.ocr_model" placeholder="例如 gpt-5.4-mini" />
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2 m:1">
+                    <n-form-item label="PDF OCR 推理强度">
+                      <n-select v-model:value="form.ocr_reasoning_effort" :options="ocrReasoningOptions" />
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2 m:1">
+                    <n-form-item label="页面投递间隔（秒）" required>
+                      <n-input-number
+                        v-model:value="form.ocr_submit_interval_seconds"
+                        :min="0"
+                        :step="0.5"
+                        class="w-full"
+                      />
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2 m:1">
+                    <n-form-item label="最大在途请求数" required>
+                      <n-input-number
+                        v-model:value="form.ocr_max_concurrency"
+                        :min="1"
+                        :precision="0"
+                        class="w-full"
+                      />
                     </n-form-item>
                   </n-grid-item>
                   <n-grid-item span="2 m:1">

@@ -26,6 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
     parser.add_argument("--ocr-model", help="覆盖 Codex API OCR 使用的模型，例如 gpt-5.6-terra")
     parser.add_argument("--ocr-reasoning-effort", help="覆盖 Codex API OCR reasoning effort，例如 low / medium / high")
+    parser.add_argument("--ocr-max-concurrency", type=int, help="覆盖 PDF OCR 最大在途请求数")
+    parser.add_argument("--ocr-submit-interval-seconds", type=float, help="覆盖 PDF OCR 页面投递间隔秒数")
     return parser
 
 
@@ -40,7 +42,12 @@ def main() -> int:
         )
         apply_model_overrides(
             loaded_settings,
-            ModelOverrides(ocr_model=args.ocr_model, ocr_reasoning_effort=args.ocr_reasoning_effort),
+            ModelOverrides(
+                ocr_model=args.ocr_model,
+                ocr_reasoning_effort=args.ocr_reasoning_effort,
+                ocr_max_concurrency=args.ocr_max_concurrency,
+                ocr_submit_interval_seconds=args.ocr_submit_interval_seconds,
+            ),
         )
     except (ConfigLoadError, SettingsOverrideError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)

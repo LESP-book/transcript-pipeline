@@ -30,6 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reasoning-effort", help="覆盖阶段 6 reasoning effort，例如 low / medium / high")
     parser.add_argument("--ocr-model", help="覆盖 Codex API OCR 使用的模型，例如 gpt-5.4-mini")
     parser.add_argument("--ocr-reasoning-effort", help="覆盖 Codex API OCR reasoning effort，例如 low / medium / high")
+    parser.add_argument("--ocr-max-concurrency", type=int, help="覆盖 PDF OCR 最大在途请求数")
+    parser.add_argument("--ocr-submit-interval-seconds", type=float, help="覆盖 PDF OCR 页面投递间隔秒数")
     parser.add_argument("--book-name", help="可选书名，用于输出文件命名")
     parser.add_argument("--chapter", help="可选章节名，用于输出文件命名")
     parser.add_argument("--glossary-file", help="可选附加术语词表文件，一行一个词条")
@@ -69,6 +71,8 @@ def main() -> int:
             reasoning_effort=args.reasoning_effort,
             ocr_model=args.ocr_model,
             ocr_reasoning_effort=args.ocr_reasoning_effort,
+            ocr_max_concurrency=args.ocr_max_concurrency,
+            ocr_submit_interval_seconds=args.ocr_submit_interval_seconds,
             book_name=args.book_name,
             chapter=args.chapter,
             glossary_file=args.glossary_file,

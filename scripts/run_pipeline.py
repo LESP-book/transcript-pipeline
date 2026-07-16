@@ -24,6 +24,10 @@ from src.reference_utils import (
 from src.runtime_utils import normalize_stage_name, setup_logging
 from src.settings_overrides import ModelOverrides, SettingsOverrideError, apply_model_overrides
 
+STAGE_EXIT_SUCCESS = 0
+STAGE_EXIT_FAILED = 1
+STAGE_EXIT_PARTIAL = 2
+
 
 def log_stage_completion(logger, stage_name: str, summary: str, started_at: float) -> None:
     logger.info(
@@ -48,10 +52,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reasoning-effort", help="覆盖 refine 阶段 reasoning effort，例如 low / medium / high")
     parser.add_argument("--ocr-model", help="覆盖 prepare-reference 阶段 Codex API OCR 使用的模型，例如 gpt-5.4-mini")
     parser.add_argument("--ocr-reasoning-effort", help="覆盖 prepare-reference 阶段 Codex API OCR reasoning effort，例如 low / medium / high")
+    parser.add_argument("--ocr-max-concurrency", type=int, help="覆盖 prepare-reference 阶段 PDF OCR 最大在途请求数")
+    parser.add_argument("--ocr-submit-interval-seconds", type=float, help="覆盖 prepare-reference 阶段 PDF OCR 页面投递间隔秒数")
     return parser
 
 
-def run_stage(stage_name: str, loaded_settings, logger, backend_override: str | None = None) -> int:
+def run_stage(
+    stage_name: str,
+    loaded_settings,
+    logger,
+    backend_override: str | None = None,
+    prepare_reference_progress_callback=None,
+) -> int:
     started_at = time.perf_counter()
 
     if stage_name == "extract-audio":
@@ -76,13 +88,21 @@ def run_stage(stage_name: str, loaded_settings, logger, backend_override: str | 
 
     if stage_name == "prepare-reference":
         try:
-            summary = prepare_reference_batch(loaded_settings, logger=logger)
+            summary = prepare_reference_batch(
+                loaded_settings,
+                logger=logger,
+                progress_callback=prepare_reference_progress_callback,
+            )
         except ReferencePreparationError as exc:
             logger.error("%s", exc)
-            return 1
+            return STAGE_EXIT_FAILED
 
         log_stage_completion(logger, stage_name, summarize_reference_results(summary), started_at)
-        return 0
+        if summary.partial:
+            return STAGE_EXIT_PARTIAL
+        if summary.failed:
+            return STAGE_EXIT_FAILED
+        return STAGE_EXIT_SUCCESS
 
     if stage_name == "align":
         try:
@@ -155,6 +175,8 @@ def main() -> int:
                 llm_reasoning_effort=args.reasoning_effort,
                 ocr_model=args.ocr_model,
                 ocr_reasoning_effort=args.ocr_reasoning_effort,
+                ocr_max_concurrency=args.ocr_max_concurrency,
+                ocr_submit_interval_seconds=args.ocr_submit_interval_seconds,
             ),
         )
     except SettingsOverrideError as exc:

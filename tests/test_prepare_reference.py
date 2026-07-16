@@ -9,12 +9,14 @@ from src.config_loader import load_settings
 from src.codex_lb_client import CodexLBClientError
 from src.reference_utils import (
     CodexOCRError,
+    CodexOCRPageProgress,
     CodexOCRPagesIncompleteError,
     AgyOCRError,
     ReferenceInputEmptyError,
     build_reference_output_paths,
     is_effectively_empty_text,
     iter_reference_files,
+    prepare_reference_batch,
     prepare_reference_file,
     read_text_file,
     render_pdf_page_as_png_data_url,
@@ -88,33 +90,49 @@ def test_is_effectively_empty_text_uses_content_length_threshold() -> None:
     assert not is_effectively_empty_text("这是足够长的可提取文字内容")
 
 
-def test_prepare_reference_file_uses_ocr_fallback_when_pdf_text_layer_empty(
+def test_prepare_reference_file_uses_codex_page_ocr_with_identity_checkpoint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True})
+    write_minimal_settings(tmp_path)
     reference_dir = tmp_path / "data/input/reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
     source = reference_dir / "scan.pdf"
     source.write_bytes(b"%PDF-1.4 fake")
-
     loaded_settings = load_settings(project_root=tmp_path)
+    seen: dict[str, object] = {}
 
-    monkeypatch.setattr(
-        "src.reference_utils.extract_pdf_text",
-        lambda _path: ("", ["PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。"]),
-    )
-    monkeypatch.setattr(
-        "src.reference_utils.run_codex_api_pdf_ocr",
-        lambda _path, _settings: ("这是 Codex API OCR 提取出来的中文文本内容。", ["已使用 Codex API OCR。model=gpt-5.4-mini"]),
-    )
+    def fake_codex_ocr(
+        _path: Path,
+        _settings,
+        *,
+        sidecar_path: Path,
+        checkpoint_dir: Path,
+        progress_callback,
+    ) -> tuple[str, list[str]]:
+        seen["sidecar_path"] = sidecar_path
+        seen["checkpoint_dir"] = checkpoint_dir
+        progress_callback(
+            CodexOCRPageProgress(
+                page_count=2,
+                completed_page_numbers=(1, 2),
+                page_errors={},
+            )
+        )
+        return "这是 Codex API OCR 提取出来的中文文本内容。", ["已使用 Codex API OCR。"]
+
+    monkeypatch.setattr("src.reference_utils.run_codex_api_pdf_ocr", fake_codex_ocr)
 
     result = prepare_reference_file(source, loaded_settings)
 
     assert result.success is True
     assert result.extraction_method == "codex_api_pdf_ocr"
-    assert "Codex API OCR" in " ".join(result.warnings)
-    assert "Codex API OCR 提取出来的中文文本内容" in result.extracted_text
+    assert result.page_count == 2
+    assert result.completed_pages == 2
+    assert seen["sidecar_path"] == loaded_settings.path_for("extracted_text_dir") / "scan.txt"
+    checkpoint_dir = seen["checkpoint_dir"]
+    assert isinstance(checkpoint_dir, Path)
+    assert checkpoint_dir.parent == (loaded_settings.path_for("ocr_dir") / "pdf-pages").resolve()
 
 
 def test_prepare_reference_file_prefers_agy_ocr_even_when_pdf_has_text_layer(
@@ -146,7 +164,7 @@ def test_prepare_reference_file_prefers_agy_ocr_even_when_pdf_has_text_layer(
     assert "优先使用 agy OCR" in " ".join(result.warnings)
 
 
-def test_prepare_reference_file_falls_back_to_text_layer_when_agy_ocr_fails_and_pdf_has_text(
+def test_prepare_reference_file_does_not_fallback_when_selected_agy_ocr_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -162,132 +180,55 @@ def test_prepare_reference_file_falls_back_to_text_layer_when_agy_ocr_fails_and_
         raise AgyOCRError("capacity exhausted")
 
     monkeypatch.setattr("src.reference_utils.run_agy_pdf_ocr", fake_agy_ocr)
-    monkeypatch.setattr(
-        "src.reference_utils.extract_pdf_text",
-        lambda _path: ("这是 PDF 文字层内容。", []),
-    )
-
-    result = prepare_reference_file(source, loaded_settings)
-
-    assert result.success is True
-    assert result.extraction_method == "pypdf_text_extract"
-    assert "agy OCR 失败，已回退到 PDF 文字层提取" in " ".join(result.warnings)
-    assert result.extracted_text == "这是 PDF 文字层内容。"
-
-
-def test_prepare_reference_file_falls_back_to_codex_ocr_when_agy_ocr_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True, "ai_ocr_backend": "agy"})
-    reference_dir = tmp_path / "data/input/reference"
-    reference_dir.mkdir(parents=True, exist_ok=True)
-    source = reference_dir / "scan.pdf"
-    source.write_bytes(b"%PDF-1.4 fake")
-
-    loaded_settings = load_settings(project_root=tmp_path)
-
-    monkeypatch.setattr(
-        "src.reference_utils.extract_pdf_text",
-        lambda _path: ("", ["PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。"]),
-    )
-
-    def fake_agy_ocr(_path: Path, _settings) -> tuple[str, list[str]]:
-        raise AgyOCRError("network close")
-
-    monkeypatch.setattr("src.reference_utils.run_agy_pdf_ocr", fake_agy_ocr)
+    monkeypatch.setattr("src.reference_utils.extract_pdf_text", lambda _path: pytest.fail("不应回退文字层"))
     monkeypatch.setattr(
         "src.reference_utils.run_codex_api_pdf_ocr",
-        lambda _path, _settings: (_ for _ in ()).throw(CodexOCRError("codex api unavailable")),
-    )
-    monkeypatch.setattr(
-        "src.reference_utils.run_codex_pdf_ocr",
-        lambda _path, _settings: ("这是 Codex OCR 提取出来的中文文本内容。", ["PDF 文字层为空，已使用 Codex OCR fallback。model=gpt-5.4-mini"]),
+        lambda *_args, **_kwargs: pytest.fail("不应回退 Codex API"),
     )
     monkeypatch.setattr(
         "src.reference_utils.run_tesseract_pdf_ocr",
-        lambda _path, _settings: pytest.fail("不应直接退回 ocrmypdf"),
-    )
-
-    result = prepare_reference_file(source, loaded_settings)
-
-    assert result.success is True
-    assert result.extraction_method == "codex_cli_pdf_ocr"
-    assert "agy OCR 失败，已回退到 Codex CLI OCR" in " ".join(result.warnings)
-    assert "Codex OCR 提取出来的中文文本内容" in result.extracted_text
-
-
-def test_prepare_reference_file_falls_back_to_ocrmypdf_when_codex_ocr_also_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": True})
-    reference_dir = tmp_path / "data/input/reference"
-    reference_dir.mkdir(parents=True, exist_ok=True)
-    source = reference_dir / "scan.pdf"
-    source.write_bytes(b"%PDF-1.4 fake")
-
-    loaded_settings = load_settings(project_root=tmp_path)
-
-    monkeypatch.setattr(
-        "src.reference_utils.extract_pdf_text",
-        lambda _path: ("", ["PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。"]),
-    )
-
-    def fake_agy_ocr(_path: Path, _settings) -> tuple[str, list[str]]:
-        raise AgyOCRError("network close")
-
-    def fake_codex_ocr(_path: Path, _settings) -> tuple[str, list[str]]:
-        raise CodexOCRError("codex cli timeout")
-
-    monkeypatch.setattr(
-        "src.reference_utils.run_codex_api_pdf_ocr",
-        lambda _path, _settings: (_ for _ in ()).throw(CodexOCRError("codex api timeout")),
-    )
-    monkeypatch.setattr("src.reference_utils.run_agy_pdf_ocr", fake_agy_ocr)
-    monkeypatch.setattr("src.reference_utils.run_codex_pdf_ocr", fake_codex_ocr)
-    monkeypatch.setattr(
-        "src.reference_utils.run_tesseract_pdf_ocr",
-        lambda _path, _settings: ("这是 ocrmypdf OCR 提取出来的中文文本内容。", ["PDF 文字层为空，已使用 OCR fallback。backend=ocrmypdf_tesseract"]),
-    )
-
-    result = prepare_reference_file(source, loaded_settings)
-
-    assert result.success is True
-    assert result.extraction_method == "ocrmypdf_tesseract"
-    assert "已回退到 ocrmypdf" in " ".join(result.warnings)
-    assert "ocrmypdf OCR 提取出来的中文文本内容" in result.extracted_text
-
-
-def test_prepare_reference_file_keeps_pdf_failure_when_ocr_disabled(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    write_minimal_settings(tmp_path, reference_overrides={"run_ocr_when_needed": False})
-    reference_dir = tmp_path / "data/input/reference"
-    reference_dir.mkdir(parents=True, exist_ok=True)
-    source = reference_dir / "scan.pdf"
-    source.write_bytes(b"%PDF-1.4 fake")
-
-    loaded_settings = load_settings(project_root=tmp_path)
-
-    monkeypatch.setattr(
-        "src.reference_utils.extract_pdf_text",
-        lambda _path: ("", ["PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。"]),
-    )
-    monkeypatch.setattr(
-        "src.reference_utils.run_codex_api_pdf_ocr",
-        lambda _path, _settings: (_ for _ in ()).throw(CodexOCRError("disabled in test")),
+        lambda *_args, **_kwargs: pytest.fail("不应回退 ocrmypdf"),
     )
 
     result = prepare_reference_file(source, loaded_settings)
 
     assert result.success is False
-    assert result.extraction_method == "pypdf_text_extract"
-    assert result.warnings == [
-        "Codex API OCR 失败，且当前未启用 OCR fallback。reason=disabled in test",
-        "PDF 提取结果为空或接近空，可能是扫描版 PDF；当前阶段未启用 OCR。",
-    ]
+    assert result.extraction_method == "agy_pdf_ocr"
+    assert result.error == "capacity exhausted"
+    assert result.resumable is False
+
+
+def test_prepare_reference_file_returns_partial_page_state_without_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    reference_dir = tmp_path / "data/input/reference"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    source = reference_dir / "scan.pdf"
+    source.write_bytes(b"%PDF-1.4 fake")
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    def fake_codex_ocr(_path: Path, _settings, **_kwargs) -> tuple[str, list[str]]:
+        raise CodexOCRPagesIncompleteError(
+            source,
+            page_count=3,
+            completed_page_numbers=[1, 3],
+            page_errors={2: "upstream_unavailable"},
+        )
+
+    monkeypatch.setattr("src.reference_utils.run_codex_api_pdf_ocr", fake_codex_ocr)
+
+    result = prepare_reference_file(source, loaded_settings)
+
+    assert result.success is False
+    assert result.extraction_method == "codex_api_pdf_ocr"
+    assert result.page_count == 3
+    assert result.completed_pages == 2
+    assert result.failed_page_numbers == (2,)
+    assert result.page_errors == {2: "upstream_unavailable"}
+    assert result.resumable is True
+    assert "页码 2" in str(result.error)
 
 
 def test_run_agy_pdf_ocr_stages_pdf_into_isolated_workspace(
@@ -695,6 +636,99 @@ def test_run_codex_api_pdf_ocr_resumes_only_missing_checkpoint_pages(
         "第3页 OCR 识别出的完整正文内容。"
     )
     assert sidecar_path.read_text(encoding="utf-8") == text
+
+
+def test_prepare_reference_batch_retries_only_missing_pages_and_writes_text_after_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(
+        tmp_path,
+        reference_overrides={"codex_ocr_max_concurrency": 1, "codex_ocr_submit_interval_seconds": 0},
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+    reference_dir = loaded_settings.path_for("reference_dir")
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    source = reference_dir / "book.pdf"
+    source.write_bytes(b"%PDF-1.4 fake")
+    rendered_pages: list[int] = []
+    fail_page_two = True
+
+    def fake_render(_path: Path, page_number: int, _page_count: int) -> str:
+        rendered_pages.append(page_number)
+        return f"data:image/png;base64,page-{page_number}"
+
+    def fake_stream(_client, _payload: dict[str, object]) -> str:
+        page_number = rendered_pages[-1]
+        if page_number == 2 and fail_page_two:
+            raise CodexLBClientError("upstream_unavailable")
+        return f"第{page_number}页识别正文。"
+
+    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 3)
+    monkeypatch.setattr("src.reference_utils.render_pdf_page_as_png_data_url", fake_render)
+    monkeypatch.setattr("src.reference_utils.CodexLBClient.responses_stream_text", fake_stream)
+
+    first_summary = prepare_reference_batch(loaded_settings)
+
+    output_path = loaded_settings.path_for("extracted_text_dir") / "book.txt"
+    metadata_path = loaded_settings.path_for("extracted_text_dir") / "book.json"
+    assert first_summary.partial == 1
+    assert rendered_pages == [1, 2, 3]
+    assert not output_path.exists()
+    first_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert first_metadata["resumable"] is True
+    assert first_metadata["failed_page_numbers"] == [2]
+
+    fail_page_two = False
+    rendered_pages.clear()
+    second_summary = prepare_reference_batch(loaded_settings)
+
+    assert second_summary.success == 1
+    assert second_summary.partial == 0
+    assert rendered_pages == [2]
+    assert output_path.read_text(encoding="utf-8") == (
+        "第1页识别正文。"
+        "第2页识别正文。"
+        "第3页识别正文。"
+    )
+
+
+def test_run_codex_api_pdf_ocr_accepts_blank_page_as_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(
+        tmp_path,
+        reference_overrides={"codex_ocr_max_concurrency": 1, "codex_ocr_submit_interval_seconds": 0},
+    )
+    loaded_settings = load_settings(project_root=tmp_path)
+    source = tmp_path / "blank.pdf"
+    source.write_bytes(b"%PDF-1.4 blank")
+    checkpoint_dir = tmp_path / "pages"
+    sidecar_path = tmp_path / "blank.txt"
+
+    monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 1)
+    monkeypatch.setattr(
+        "src.reference_utils.render_pdf_page_as_png_data_url",
+        lambda _path, _page_number, _page_count: "data:image/png;base64,blank",
+    )
+    monkeypatch.setattr(
+        "src.reference_utils.CodexLBClient.responses_stream_text",
+        lambda _client, _payload: "",
+    )
+
+    text, _warnings = run_codex_api_pdf_ocr(
+        source,
+        loaded_settings,
+        sidecar_path=sidecar_path,
+        checkpoint_dir=checkpoint_dir,
+    )
+
+    assert text == ""
+    assert (checkpoint_dir / "page-000001.txt").is_file()
+    assert (checkpoint_dir / "page-000001.txt").read_text(encoding="utf-8") == ""
+    assert sidecar_path.is_file()
+    assert sidecar_path.read_text(encoding="utf-8") == ""
 
 
 def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_responses(

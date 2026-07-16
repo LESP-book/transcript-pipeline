@@ -10,6 +10,10 @@ export function useConfigOptions() {
   const activeProfile = ref("");
   const defaultBackend = ref("");
   const defaultOcrBackend = ref("");
+  const defaultOcrModel = ref("");
+  const defaultOcrReasoningEffort = ref("");
+  const defaultOcrMaxConcurrency = ref(40);
+  const defaultOcrSubmitIntervalSeconds = ref(5);
   const defaultOutputDir = ref("");
   const uploadDir = ref("");
   const loading = ref(false);
@@ -29,12 +33,12 @@ export function useConfigOptions() {
       defaultOutputDir.value = config.default_output_dir;
       uploadDir.value = config.upload_dir;
 
-      if (config.default_ocr_backend) {
-        defaultOcrBackend.value = config.default_ocr_backend;
-      } else {
-        const settings = await getFrontendSettings();
-        defaultOcrBackend.value = settings.ocr_backend;
-      }
+      const settings = await getFrontendSettings();
+      defaultOcrBackend.value = config.default_ocr_backend || settings.ocr_backend;
+      defaultOcrModel.value = settings.ocr_model;
+      defaultOcrReasoningEffort.value = settings.ocr_reasoning_effort;
+      defaultOcrMaxConcurrency.value = settings.ocr_max_concurrency;
+      defaultOcrSubmitIntervalSeconds.value = settings.ocr_submit_interval_seconds;
     } catch (caught) {
       error.value = caught instanceof Error ? caught.message : "加载配置失败";
     } finally {
@@ -52,6 +56,10 @@ export function useConfigOptions() {
     activeProfile,
     defaultBackend,
     defaultOcrBackend,
+    defaultOcrModel,
+    defaultOcrReasoningEffort,
+    defaultOcrMaxConcurrency,
+    defaultOcrSubmitIntervalSeconds,
     defaultOutputDir,
     uploadDir,
     loading,

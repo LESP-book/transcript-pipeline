@@ -1,0 +1,120 @@
+feature: 2026-07-16-prepare-reference-pdf-ocr-parity
+created: 2026-07-16
+
+steps:
+  - action: "名词与身份契约：建立公共 PDF OCR 运行身份、页级结果和可恢复状态契约"
+    exit_signal: "相同输入与 OCR 配置得到相同检查点命名空间，源内容、模型、推理强度或协议版本变化时得到不同命名空间"
+    status: done
+  - action: "准备参考编排：接入统一缺页调度、页检查点和 partial 结果，并阻断不完整参考文本"
+    exit_signal: "中间页失败后其余页继续执行，成功页持久化，准备参考不生成缺页 TXT"
+    status: done
+  - action: "任务恢复：让单阶段、单任务和批量子任务沿用原运行与工作区补页并在补齐后继续下游"
+    exit_signal: "同一运行重试只请求缺失页，服务恢复后不重复成功页，完整任务只在补齐后进入后续阶段"
+    status: done
+  - action: "请求与命令行契约：统一所有准备参考入口的模型、推理强度、投递间隔和最大并发参数"
+    exit_signal: "Web API 与 CLI 均默认使用 5 秒和 40 并发，也能保存并执行本次自定义值"
+    status: done
+  - action: "Web 交互：同步独立 OCR 的调度设置、页进度、逐页错误和重试缺失页操作"
+    exit_signal: "浏览器可配置参数、查看 partial 任务并在原运行上补页，非法输入不会创建任务"
+    status: done
+  - action: "验证与兼容：补齐自动化测试、真实 PDF 恢复运行、前端构建和浏览器回归"
+    exit_signal: "全量 pytest、前端构建、关键验收场景和至少一个真实 PDF 缺页补跑均有通过证据"
+    status: done
+
+checks:
+  - item: "公共 OCR 运行身份绑定 source_digest、model、reasoning_effort 和 protocol_version"
+    source: 名词契约
+    status: pending
+  - item: "准备参考结果可表达 page_count、completed_pages、failed_page_numbers、page_errors 和 resumable"
+    source: 名词契约
+    status: pending
+  - item: "所有准备参考请求接受 OCR 模型、推理强度、投递间隔和最大并发"
+    source: 名词契约
+    status: pending
+  - item: "stage-run 和 job 可表达 partial 及页级 OCR 进度，非 OCR 阶段不产生这些字段"
+    source: 名词契约
+    status: pending
+  - item: "所有入口进入统一 OCR 身份、检查点、缺页调度和完整文本合并流程"
+    source: 编排骨架
+    status: pending
+  - item: "页面失败继续本轮其余页面，错误原文按页保留"
+    source: 跨层纪律
+    status: pending
+  - item: "空文件检查点代表合法空白页，页面成功与否不按文本长度判断"
+    source: 跨层纪律
+    status: pending
+  - item: "重复补页只请求缺失页，页面齐全后重复运行不创建远程 OCR 请求"
+    source: 跨层纪律
+    status: pending
+  - item: "最终文本始终按 PDF 原页码拼接"
+    source: 跨层纪律
+    status: pending
+  - item: "准备参考未完整成功时 refine 和 export 不得启动"
+    source: 跨层纪律
+    status: pending
+  - item: "OCR 配置默认值与所有准备参考入口覆盖字段已挂载"
+    source: 挂载点
+    status: pending
+  - item: "stage-run、single job、batch job 和 job rerun 请求契约已挂载"
+    source: 挂载点
+    status: pending
+  - item: "stage-run、job 和 batch item 状态卡的 partial 进度及重试操作已挂载"
+    source: 挂载点
+    status: pending
+  - item: "准备参考与流水线 CLI 的 OCR 调度参数已挂载"
+    source: 挂载点
+    status: pending
+  - item: "准备参考页检查点命名空间已挂载到持久化工作区"
+    source: 挂载点
+    status: pending
+  - item: "不生成缺页参考 TXT，也不让下游消费不完整文本"
+    source: 范围守护
+    status: pending
+  - item: "不新增固定自动重试次数、静默跳页、文本截断或页数上限"
+    source: 范围守护
+    status: pending
+  - item: "不把图片说明或版面结构写入最终参考文本"
+    source: 范围守护
+    status: pending
+  - item: "不清理历史检查点"
+    source: 范围守护
+    status: pending
+  - item: "不破坏独立 PDF OCR 的下载目录结构和历史任务语义"
+    source: 范围守护
+    status: pending
+  - item: "三页 PDF 中第 2 页失败时第 3 页继续且运行进入 partial"
+    source: 验收场景
+    status: pending
+  - item: "同一运行重试只请求第 2 页并在补齐后生成有序完整文本"
+    source: 验收场景
+    status: pending
+  - item: "服务重启后恢复可补页状态且不请求已有成功页"
+    source: 验收场景
+    status: pending
+  - item: "文件模式自定义 2.5 秒和 12 并发后实际执行与历史恢复均沿用该参数"
+    source: 验收场景
+    status: pending
+  - item: "单任务和批量子任务缺页时阻断 refine，补齐后继续原下游阶段"
+    source: 验收场景
+    status: pending
+  - item: "同名 PDF 内容、模型或推理强度变化时不复用旧检查点"
+    source: 验收场景
+    status: pending
+  - item: "全部页面已完成时再次运行不创建远程页请求"
+    source: 验收场景
+    status: pending
+  - item: "TXT 和 Markdown 仍直接处理且不创建 OCR 检查点"
+    source: 验收场景
+    status: pending
+  - item: "并发为 0 或间隔为负值时 Web、API 和 CLI 明确拒绝"
+    source: 验收场景
+    status: pending
+  - item: "旧 stage-run 和 job 仍可查看且首次补页不伪造完成页"
+    source: 验收场景
+    status: pending
+  - item: "空白页返回空 output_text 时写入空页检查点并计为成功"
+    source: 验收场景
+    status: pending
+  - item: "多本 PDF 中一本缺页时逐本展示进度且不重复其他成功书页"
+    source: 验收场景
+    status: pending

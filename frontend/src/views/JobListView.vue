@@ -102,7 +102,13 @@ onUnmounted(stopPolling);
       <n-tab-pane :name="'stage-runs'" :tab="`单阶段 ${stageRuns.length}`">
         <n-space vertical :size="16">
           <n-empty v-if="stageRuns.length === 0" description="暂无单阶段记录。" />
-          <JobStatusCard v-for="item in stageRuns" :key="item.id" :state="item" @deleted="load" />
+          <JobStatusCard
+            v-for="item in stageRuns"
+            :key="item.id"
+            :state="item"
+            @deleted="load"
+            @rerun="handleRerun"
+          />
         </n-space>
       </n-tab-pane>
     </n-tabs>

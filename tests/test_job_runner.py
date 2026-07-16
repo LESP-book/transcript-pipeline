@@ -653,8 +653,14 @@ def test_run_batch_jobs_marks_failed_stage_skips_later_stages_and_records_output
 
     stage_calls: list[tuple[str, str, str | None]] = []
 
-    def fake_run_stage(stage_name, job_loaded_settings, logger, backend_override=None) -> int:
-        _ = logger
+    def fake_run_stage(
+        stage_name,
+        job_loaded_settings,
+        logger,
+        backend_override=None,
+        prepare_reference_progress_callback=None,
+    ) -> int:
+        _ = logger, prepare_reference_progress_callback
         job_id = job_loaded_settings.path_for("videos_dir").parents[1].name
         stage_calls.append((stage_name, job_id, backend_override))
         if stage_name == "prepare-reference" and job_id == "job-b":
@@ -741,8 +747,14 @@ def test_run_batch_jobs_starts_remote_pipeline_before_later_jobs_finish_transcri
     prepare_started = threading.Event()
     stage_calls: list[tuple[str, str, str | None]] = []
 
-    def fake_run_stage(stage_name, job_loaded_settings, logger, backend_override=None) -> int:
-        _ = logger
+    def fake_run_stage(
+        stage_name,
+        job_loaded_settings,
+        logger,
+        backend_override=None,
+        prepare_reference_progress_callback=None,
+    ) -> int:
+        _ = logger, prepare_reference_progress_callback
         job_id = job_loaded_settings.path_for("videos_dir").parents[1].name
         stage_calls.append((stage_name, job_id, backend_override))
 
@@ -854,3 +866,62 @@ def test_get_batch_exit_code_returns_expected_values(tmp_path: Path) -> None:
             ],
         )
     ) == 1
+
+
+def test_batch_runtime_partial_reference_ocr_blocks_later_stages(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    job_paths = build_job_paths(tmp_path, "job-partial-ocr")
+    write_job_settings(
+        project_root=tmp_path,
+        loaded_settings=loaded_settings,
+        job_paths=job_paths,
+        profile_name="local_cpu",
+    )
+    runtime = BatchJobRuntime(
+        job_id="job-partial-ocr",
+        job_root=job_paths.job_root,
+        spec=BatchJobSpec(
+            video=str(tmp_path / "lesson.mp4"),
+            reference=str(tmp_path / "book.pdf"),
+            output_dir=str(tmp_path / "deliverables"),
+            mode="manifest",
+        ),
+    )
+    calls: list[str] = []
+
+    def fake_run_stage(
+        stage_name,
+        _loaded_settings,
+        _logger,
+        backend_override=None,
+        prepare_reference_progress_callback=None,
+    ) -> int:
+        _ = backend_override, prepare_reference_progress_callback
+        calls.append(stage_name)
+        return 2 if stage_name == "prepare-reference" else 0
+
+    monkeypatch.setattr("src.job_runner.run_stage", fake_run_stage)
+    logger = logging.getLogger("test")
+
+    run_batch_stage(
+        stage_name="prepare-reference",
+        runtimes=[runtime],
+        project_root=tmp_path,
+        logger=logger,
+        remote_concurrency=1,
+    )
+    run_batch_stage(
+        stage_name="refine",
+        runtimes=[runtime],
+        project_root=tmp_path,
+        logger=logger,
+        remote_concurrency=1,
+    )
+
+    assert runtime.status == "partial"
+    assert runtime.failed_stage == "prepare-reference"
+    assert calls == ["prepare-reference"]

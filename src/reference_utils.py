@@ -8,12 +8,17 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
 from src.codex_lb_client import CodexLBClient
 from src.ocr_scheduler import OCRPageTask, run_staggered_page_ocr_tasks
+from src.pdf_ocr_workflow import (
+    PDFOCRPageState,
+    build_pdf_ocr_checkpoint_namespace,
+    build_pdf_ocr_run_identity,
+)
 from src.runtime_utils import ensure_directory
 from src.schemas import LoadedSettings
 
@@ -83,11 +88,7 @@ class CodexOCRPagesIncompleteError(CodexOCRError):
         )
 
 
-@dataclass(frozen=True)
-class CodexOCRPageProgress:
-    page_count: int
-    completed_page_numbers: tuple[int, ...]
-    page_errors: dict[int, str]
+CodexOCRPageProgress = PDFOCRPageState
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,23 @@ class ReferenceFileResult:
     text_length: int
     warnings: list[str]
     extracted_text: str
+    page_count: int = 0
+    completed_pages: int = 0
+    failed_page_numbers: tuple[int, ...] = ()
+    page_errors: dict[int, str] = field(default_factory=dict)
+    resumable: bool = False
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class ReferenceFileProgress:
+    source_path: Path
+    output_text_path: Path
+    page_count: int
+    completed_pages: int
+    failed_page_numbers: tuple[int, ...]
+    page_errors: dict[int, str]
+    resumable: bool
 
 
 @dataclass(frozen=True)
@@ -114,6 +132,12 @@ class ReferenceBatchItem:
     output_paths: ReferenceOutputPaths
     success: bool
     warnings: list[str]
+    error: str | None = None
+    page_count: int = 0
+    completed_pages: int = 0
+    failed_page_numbers: tuple[int, ...] = ()
+    page_errors: dict[int, str] = field(default_factory=dict)
+    resumable: bool = False
 
 
 @dataclass(frozen=True)
@@ -123,6 +147,10 @@ class ReferenceBatchSummary:
     skipped: int
     failed: int
     items: list[ReferenceBatchItem]
+
+    @property
+    def partial(self) -> int:
+        return sum(item.resumable for item in self.items)
 
 
 def normalize_extension(extension: str) -> str:
@@ -754,8 +782,6 @@ def run_codex_api_pdf_ocr(
 
     page_texts = [completed_page_texts[page_number] for page_number in range(1, page_count + 1)]
     text = "".join(page_texts)
-    if is_effectively_empty_text(text):
-        raise CodexOCRError(f"Codex API OCR 未返回有效文本: {reference_path.name}")
 
     if sidecar_path is None:
         ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
@@ -953,80 +979,144 @@ def read_md_reference(reference_path: Path) -> tuple[str, str, list[str]]:
     return read_text_file(reference_path), "direct_markdown_read", []
 
 
-def read_pdf_reference(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, str, list[str]]:
+def read_pdf_reference(
+    reference_path: Path,
+    loaded_settings: LoadedSettings,
+    *,
+    sidecar_path: Path | None = None,
+    checkpoint_dir: Path | None = None,
+    progress_callback: Callable[[CodexOCRPageProgress], None] | None = None,
+) -> tuple[str, str, list[str]]:
     primary_backend = loaded_settings.settings.reference.ai_ocr_backend.strip() or AI_OCR_BACKEND_CODEX_API
     if primary_backend not in VALID_AI_OCR_BACKENDS:
         raise ReferencePreparationError(f"未知 PDF AI OCR 后端: {primary_backend}")
-    primary_label = describe_ai_ocr_backend(primary_backend)
-
-    try:
-        return run_pdf_ai_ocr_backend(reference_path, loaded_settings, primary_backend)
-    except (AgyOCRError, CodexOCRError) as exc:
-        extracted_text, warnings = extract_pdf_text(reference_path)
-        if not is_effectively_empty_text(extracted_text):
-            return (
-                extracted_text,
-                "pypdf_text_extract",
-                [f"{primary_label} OCR 失败，已回退到 PDF 文字层提取。reason={exc}"] + warnings,
-            )
-
-        if not loaded_settings.settings.reference.run_ocr_when_needed:
-            return (
-                extracted_text,
-                "pypdf_text_extract",
-                [f"{primary_label} OCR 失败，且当前未启用 OCR fallback。reason={exc}"] + warnings,
-            )
-
-        failure_reasons = [f"{primary_label}_reason={exc}"]
-        for fallback_backend in build_ai_ocr_fallback_backends(primary_backend):
-            fallback_label = describe_ai_ocr_backend(fallback_backend)
-            try:
-                ocr_text, method, ocr_warnings = run_pdf_ai_ocr_backend(reference_path, loaded_settings, fallback_backend)
-                return (
-                    ocr_text,
-                    method,
-                    [f"{primary_label} OCR 失败，已回退到 {fallback_label} OCR。reason={exc}"] + warnings + ocr_warnings,
-                )
-            except (AgyOCRError, CodexOCRError) as fallback_exc:
-                failure_reasons.append(f"{fallback_label}_reason={fallback_exc}")
-
-        ocr_text, ocr_warnings = run_tesseract_pdf_ocr(reference_path, loaded_settings)
-        return (
-            ocr_text,
-            "ocrmypdf_tesseract",
-            [f"{'；'.join(failure_reasons)}，已回退到 ocrmypdf。"] + warnings + ocr_warnings,
+    if primary_backend == AI_OCR_BACKEND_CODEX_API:
+        text, warnings = run_codex_api_pdf_ocr(
+            reference_path,
+            loaded_settings,
+            sidecar_path=sidecar_path,
+            checkpoint_dir=checkpoint_dir,
+            progress_callback=progress_callback,
         )
+        return text, ai_ocr_method_name(primary_backend), warnings
+    return run_pdf_ai_ocr_backend(reference_path, loaded_settings, primary_backend)
 
 
 def prepare_reference_file(
     reference_path: Path,
     loaded_settings: LoadedSettings,
     logger: logging.Logger | None = None,
+    *,
+    checkpoint_root: Path | None = None,
+    progress_callback: Callable[[ReferenceFileProgress], None] | None = None,
 ) -> ReferenceFileResult:
     source_type = reference_path.suffix.lower().lstrip(".")
+    output_paths = build_reference_output_paths(
+        reference_path,
+        loaded_settings.path_for("extracted_text_dir"),
+    )
     handlers: dict[str, Callable[[Path], tuple[str, str, list[str]]]] = {
         "txt": read_txt_reference,
         "md": read_md_reference,
     }
     handler = handlers.get(source_type)
     if source_type == "pdf":
-        extracted_text, extraction_method, warnings = read_pdf_reference(reference_path, loaded_settings)
+        primary_backend = loaded_settings.settings.reference.ai_ocr_backend.strip() or AI_OCR_BACKEND_CODEX_API
+        extraction_method = ai_ocr_method_name(primary_backend)
+        last_progress: CodexOCRPageProgress | None = None
+
+        def pdf_progress(progress: CodexOCRPageProgress) -> None:
+            nonlocal last_progress
+            last_progress = progress
+            if progress_callback:
+                progress_callback(
+                    ReferenceFileProgress(
+                        source_path=reference_path,
+                        output_text_path=output_paths.txt_path,
+                        page_count=progress.page_count,
+                        completed_pages=progress.completed_pages,
+                        failed_page_numbers=progress.failed_page_numbers,
+                        page_errors=progress.page_errors,
+                        resumable=progress.resumable,
+                    )
+                )
+
+        checkpoint_dir: Path | None = None
+        if primary_backend == AI_OCR_BACKEND_CODEX_API:
+            identity = build_pdf_ocr_run_identity(reference_path, loaded_settings)
+            effective_checkpoint_root = checkpoint_root or (
+                loaded_settings.path_for("ocr_dir") / "pdf-pages"
+            )
+            checkpoint_dir = build_pdf_ocr_checkpoint_namespace(
+                effective_checkpoint_root,
+                identity,
+            )
+        try:
+            extracted_text, extraction_method, warnings = read_pdf_reference(
+                reference_path,
+                loaded_settings,
+                sidecar_path=output_paths.txt_path,
+                checkpoint_dir=checkpoint_dir,
+                progress_callback=pdf_progress,
+            )
+        except CodexOCRPagesIncompleteError as exc:
+            result = ReferenceFileResult(
+                source_file=build_source_file_label(reference_path, loaded_settings),
+                source_type=source_type,
+                output_text_file=output_paths.txt_path.name,
+                extraction_method=extraction_method,
+                success=False,
+                text_length=0,
+                warnings=[],
+                extracted_text="",
+                page_count=exc.page_count,
+                completed_pages=len(exc.completed_page_numbers),
+                failed_page_numbers=tuple(exc.page_errors),
+                page_errors=exc.page_errors,
+                resumable=True,
+                error=str(exc),
+            )
+            if logger:
+                logger.warning(
+                    "参考 PDF OCR 部分完成 | %s | pages=%s/%s | failed=%s",
+                    reference_path.name,
+                    result.completed_pages,
+                    result.page_count,
+                    ",".join(str(page) for page in result.failed_page_numbers),
+                )
+            return result
+        except ReferencePreparationError as exc:
+            progress = last_progress or CodexOCRPageProgress(page_count=0)
+            result = ReferenceFileResult(
+                source_file=build_source_file_label(reference_path, loaded_settings),
+                source_type=source_type,
+                output_text_file=output_paths.txt_path.name,
+                extraction_method=extraction_method,
+                success=False,
+                text_length=0,
+                warnings=[],
+                extracted_text="",
+                page_count=progress.page_count,
+                completed_pages=progress.completed_pages,
+                failed_page_numbers=progress.failed_page_numbers,
+                page_errors=progress.page_errors,
+                resumable=progress.resumable and progress.page_count > 0,
+                error=str(exc),
+            )
+            if logger:
+                logger.error("参考 PDF OCR 失败 | %s | %s", reference_path.name, exc)
+            return result
     elif handler is None:
         raise ReferencePreparationError(f"不支持的参考文件类型: {reference_path.name}")
     else:
         extracted_text, extraction_method, warnings = handler(reference_path)
 
     success = True
-    if source_type == "pdf" and is_effectively_empty_text(extracted_text):
-        success = False
 
     if logger:
         logger.info("参考文件处理完成 | %s | success=%s", reference_path.name, success)
-
-    output_paths = build_reference_output_paths(
-        reference_path,
-        loaded_settings.path_for("extracted_text_dir"),
-    )
+    completed_page_count = last_progress.completed_pages if source_type == "pdf" and last_progress else 0
+    page_count = last_progress.page_count if source_type == "pdf" and last_progress else 0
 
     return ReferenceFileResult(
         source_file=build_source_file_label(reference_path, loaded_settings),
@@ -1037,6 +1127,8 @@ def prepare_reference_file(
         text_length=len(extracted_text),
         warnings=warnings,
         extracted_text=extracted_text,
+        page_count=page_count,
+        completed_pages=completed_page_count,
     )
 
 
@@ -1046,6 +1138,8 @@ def write_reference_result(result: ReferenceFileResult, output_paths: ReferenceO
     if result.success:
         with output_paths.txt_path.open("w", encoding="utf-8") as file:
             file.write(result.extracted_text)
+    elif output_paths.txt_path.exists():
+        output_paths.txt_path.unlink()
 
     payload = {
         "source_file": result.source_file,
@@ -1055,6 +1149,12 @@ def write_reference_result(result: ReferenceFileResult, output_paths: ReferenceO
         "success": result.success,
         "text_length": result.text_length,
         "warnings": result.warnings,
+        "error": result.error or "",
+        "page_count": result.page_count,
+        "completed_pages": result.completed_pages,
+        "failed_page_numbers": list(result.failed_page_numbers),
+        "page_errors": {str(page_number): error for page_number, error in result.page_errors.items()},
+        "resumable": result.resumable,
     }
     with output_paths.json_path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False, indent=2)
@@ -1063,6 +1163,9 @@ def write_reference_result(result: ReferenceFileResult, output_paths: ReferenceO
 def prepare_reference_batch(
     loaded_settings: LoadedSettings,
     logger: logging.Logger | None = None,
+    *,
+    checkpoint_root: Path | None = None,
+    progress_callback: Callable[[ReferenceFileProgress], None] | None = None,
 ) -> ReferenceBatchSummary:
     reference_dir = loaded_settings.path_for("reference_dir")
     output_dir = ensure_directory(loaded_settings.path_for("extracted_text_dir"))
@@ -1082,12 +1185,18 @@ def prepare_reference_batch(
 
     for reference_path in reference_files:
         output_paths = build_reference_output_paths(reference_path, output_dir)
-        result = prepare_reference_file(reference_path, loaded_settings, logger=logger)
+        result = prepare_reference_file(
+            reference_path,
+            loaded_settings,
+            logger=logger,
+            checkpoint_root=checkpoint_root,
+            progress_callback=progress_callback,
+        )
         write_reference_result(result, output_paths)
 
         if result.success:
             success_count += 1
-        elif result.source_type == "pdf":
+        elif result.resumable:
             skipped_count += 1
         else:
             failed_count += 1
@@ -1098,6 +1207,12 @@ def prepare_reference_batch(
                 output_paths=output_paths,
                 success=result.success,
                 warnings=result.warnings,
+                error=result.error,
+                page_count=result.page_count,
+                completed_pages=result.completed_pages,
+                failed_page_numbers=result.failed_page_numbers,
+                page_errors=result.page_errors,
+                resumable=result.resumable,
             )
         )
 
@@ -1113,5 +1228,5 @@ def prepare_reference_batch(
 def summarize_reference_results(summary: ReferenceBatchSummary) -> str:
     return (
         f"total={summary.total}, success={summary.success}, "
-        f"skipped={summary.skipped}, failed={summary.failed}"
+        f"partial={summary.partial}, skipped={summary.skipped}, failed={summary.failed}"
     )

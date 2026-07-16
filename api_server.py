@@ -196,15 +196,53 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             job_id = state.get("id")
             kind = state.get("kind", "job")
             if job_id not in app.state.active_jobs:
-                state["status"] = "failed"
-                state["error_message"] = "任务已意外中断或服务重启"
+                raw_current_stage = str(state.get("current_stage") or "").strip()
+                try:
+                    current_stage = normalize_stage_name(raw_current_stage) if raw_current_stage else ""
+                except ValueError:
+                    current_stage = raw_current_stage
+                is_resumable_reference_ocr = current_stage == "prepare-reference"
+                next_status = "partial" if is_resumable_reference_ocr else "failed"
+                error_message = (
+                    "准备参考 OCR 已中断；已完成页面仍保留，可重试缺失页。"
+                    if is_resumable_reference_ocr
+                    else "任务已意外中断或服务重启"
+                )
+                state["status"] = next_status
+                state["error_message"] = error_message
+                if is_resumable_reference_ocr:
+                    state["resumable"] = True
                 if kind == "job":
                     path = app.state.job_state_path(job_id)
                 elif kind == "batch":
                     path = app.state.batch_state_path(job_id)
+                    updated_items: list[Any] = []
+                    for raw_item in state.get("items") or []:
+                        if not isinstance(raw_item, dict):
+                            updated_items.append(raw_item)
+                            continue
+                        item = dict(raw_item)
+                        if is_resumable_reference_ocr and item.get("status") in {"pending", "running"}:
+                            item.update(
+                                {
+                                    "status": "partial",
+                                    "failed_stage": "prepare-reference",
+                                    "error_message": error_message,
+                                    "resumable": True,
+                                }
+                            )
+                        updated_items.append(item)
+                    state["items"] = updated_items
                 else:  # stage-run
                     path = app.state.stage_run_state_path(job_id)
-                app.state.update_state(path, status="failed", error_message="任务已意外中断或服务重启")
+                changes: dict[str, Any] = {
+                    "status": next_status,
+                    "error_message": error_message,
+                    "resumable": is_resumable_reference_ocr,
+                }
+                if kind == "batch":
+                    changes["items"] = state.get("items")
+                app.state.update_state(path, **changes)
         return enrich_state_input_summary(root, state)
 
     def reconcile_pdf_book_ocr_state(task_id: str, state: dict) -> dict:
@@ -607,8 +645,8 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             raise HTTPException(status_code=400, detail="该批量子任务缺少 job_id，无法重跑")
 
         item_status = str(item.get("status") or "")
-        if item_status not in {"success", "failed"}:
-            raise HTTPException(status_code=400, detail="只能重跑已成功或已失败的批量子任务")
+        if item_status not in {"success", "partial", "failed"}:
+            raise HTTPException(status_code=400, detail="只能重跑已结束或等待补页的批量子任务")
 
         app.state.active_jobs.add(batch_id)
         app.state.active_jobs.add(item_job_id)
@@ -716,6 +754,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         state = create_initial_state(run_id, "stage-run")
         state["current_stage"] = normalized_stage_name
         state["run_mode"] = "file"
+        state["request_payload"] = request.model_dump()
         state["download_name"] = f"{result_name}.zip"
         state["input_summary"] = {slot_key: path.name for slot_key, path in staged_inputs.items()}
         write_json_file(app.state.stage_run_state_path(run_id), state)
@@ -735,10 +774,58 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         app.state.active_jobs.add(run_id)
         state = create_initial_state(run_id, "stage-run")
         state["current_stage"] = normalize_stage_name(stage_name)
+        state["run_mode"] = "directory"
+        state["request_payload"] = request.model_dump()
         write_json_file(app.state.stage_run_state_path(run_id), state)
         submit_task(
             app,
             app.state.execute_stage_run,
+            app=app,
+            run_id=run_id,
+            stage_name=stage_name,
+            payload=request.model_dump(),
+        )
+        return {"run_id": run_id}
+
+    @app.post("/api/stage-runs/{run_id}/retry", status_code=202)
+    async def retry_stage_run(run_id: str) -> dict[str, str]:
+        state_path = app.state.stage_run_state_path(run_id)
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail=f"stage run 不存在: {run_id}")
+        if run_id in app.state.active_jobs:
+            raise HTTPException(status_code=409, detail="阶段任务正在运行，不能重复启动。")
+
+        state = read_json_file(state_path)
+        if state.get("status") == "success":
+            raise HTTPException(status_code=409, detail="阶段任务已经成功，无需重试。")
+        stage_name = normalize_stage_name(str(state.get("current_stage") or ""))
+        if stage_name != "prepare-reference":
+            raise HTTPException(status_code=400, detail="当前仅准备参考阶段支持原运行补页。")
+        payload = state.get("request_payload")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="历史阶段任务缺少原始请求参数，无法补页。")
+
+        run_mode = str(state.get("run_mode") or "directory")
+        request_type = StageFileRunRequest if run_mode == "file" else StageRunRequest
+        try:
+            request = request_type.model_validate(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        app.state.update_state(
+            state_path,
+            status="pending",
+            current_stage=stage_name,
+            error_message="",
+            resumable=True,
+            resume_count=int(state.get("resume_count") or 0) + 1,
+            request_payload=request.model_dump(),
+        )
+        app.state.active_jobs.add(run_id)
+        executor = app.state.execute_stage_file_run if run_mode == "file" else app.state.execute_stage_run
+        submit_task(
+            app,
+            executor,
             app=app,
             run_id=run_id,
             stage_name=stage_name,

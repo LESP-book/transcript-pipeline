@@ -87,6 +87,23 @@ export interface BatchItemState {
   failed_stage?: string;
   error_message?: string;
   copied_output_path?: string;
+  ocr_items?: OCRProgressItem[];
+  pages_total?: number;
+  pages_completed?: number;
+  pages_failed?: number;
+  resumable?: boolean;
+}
+
+export interface OCRProgressItem {
+  source_file: string;
+  output_file?: string;
+  success?: boolean;
+  page_count: number;
+  completed_pages: number;
+  failed_pages: number;
+  failed_page_numbers: number[];
+  page_errors: Record<string, string>;
+  resumable: boolean;
 }
 
 export interface JobInputSummary {
@@ -116,10 +133,17 @@ export interface JobState {
   total?: number;
   success?: number;
   failed?: number;
+  partial?: number;
   items?: BatchItemState[];
   input_summary?: JobInputSummary;
   run_mode?: string;
   download_name?: string;
+  ocr_items?: OCRProgressItem[];
+  pages_total?: number;
+  pages_completed?: number;
+  pages_failed?: number;
+  resumable?: boolean;
+  resume_count?: number;
 }
 
 export interface JobListResponse {
@@ -159,6 +183,8 @@ export interface SingleJobPayload {
   ocr_backend?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
+  ocr_max_concurrency?: number | null;
+  ocr_submit_interval_seconds?: number | null;
   book_name?: string | null;
   chapter?: string | null;
   glossary_file?: string | null;
@@ -180,6 +206,8 @@ export interface BatchJobPayload {
   ocr_backend?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
+  ocr_max_concurrency?: number | null;
+  ocr_submit_interval_seconds?: number | null;
   remote_concurrency?: number | null;
   book_name?: string | null;
   chapter?: string | null;
@@ -200,6 +228,8 @@ export interface StageRunPayload {
   ocr_backend?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
+  ocr_max_concurrency?: number | null;
+  ocr_submit_interval_seconds?: number | null;
 }
 
 export interface StageFileRunPayload extends StageRunPayload {
@@ -236,6 +266,8 @@ export interface JobRerunPayload {
   ocr_backend?: string | null;
   ocr_model?: string | null;
   ocr_reasoning_effort?: string | null;
+  ocr_max_concurrency?: number | null;
+  ocr_submit_interval_seconds?: number | null;
 }
 
 export interface PDFBookOCRPayload {
@@ -532,6 +564,12 @@ export function stageFileResultUrl(runId: string): string {
 
 export function getStageRun(runId: string): Promise<JobState> {
   return requestJson<JobState>(`/api/stage-runs/${runId}`);
+}
+
+export function retryStageRun(runId: string): Promise<{ run_id: string }> {
+  return requestJson<{ run_id: string }>(`/api/stage-runs/${encodeURIComponent(runId)}/retry`, {
+    method: "POST",
+  });
 }
 
 export function listStageRuns(): Promise<JobListResponse> {
