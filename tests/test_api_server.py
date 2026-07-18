@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import threading
 from pathlib import Path
 import zipfile
 
@@ -676,8 +677,8 @@ def test_download_batch_result_packs_summary_and_successful_outputs(tmp_path: Pa
         names = set(archive.namelist())
         assert "summary.md" in names
         assert "summary.json" in names
-        assert "results/001-job-a-lesson-a.md" in names
-        assert archive.read("results/001-job-a-lesson-a.md").decode("utf-8") == "# 子任务结果\n"
+        assert "results/lesson-a.md" in names
+        assert archive.read("results/lesson-a.md").decode("utf-8") == "# 子任务结果\n"
 
 
 def test_download_batch_result_packs_txt_outputs(tmp_path: Path) -> None:
@@ -724,8 +725,8 @@ def test_download_batch_result_packs_txt_outputs(tmp_path: Path) -> None:
         names = set(archive.namelist())
         assert "summary.md" in names
         assert "summary.json" in names
-        assert "results/001-job-a-lesson-a.txt" in names
-        assert archive.read("results/001-job-a-lesson-a.txt").decode("utf-8") == "子任务结果\n"
+        assert "results/lesson-a.txt" in names
+        assert archive.read("results/lesson-a.txt").decode("utf-8") == "子任务结果\n"
 
 
 def test_get_stage_runs_lists_persisted_stage_states(tmp_path: Path) -> None:
@@ -1968,6 +1969,66 @@ def test_execute_batch_job_passes_custom_refine_prompt_to_prepared_jobs(tmp_path
 
     assert response.status_code == 202
     assert seen["refine_prompt"] == "# 批量自定义阶段六指令\n\n所有子任务统一使用。"
+
+
+def test_web_batch_staggers_remote_pipeline_and_persists_per_item_progress(tmp_path: Path, monkeypatch) -> None:
+    from api_server import create_app
+    from src.job_runner import CANONICAL_INPUT_BASENAME
+
+    write_minimal_settings(tmp_path)
+    output_dir = tmp_path / "deliverables"
+    videos_dir = tmp_path / "videos"
+    references_dir = tmp_path / "references"
+    videos_dir.mkdir()
+    references_dir.mkdir()
+    for name in ("lesson-a", "lesson-b"):
+        (videos_dir / f"{name}.mp4").write_bytes(b"video")
+        (references_dir / f"{name}.txt").write_text("参考原文", encoding="utf-8")
+
+    created_job_ids = iter(["job-a", "job-b"])
+    monkeypatch.setattr("src.job_runner.create_job_id", lambda: next(created_job_ids))
+    prepare_started = threading.Event()
+
+    def fake_run_stage(
+        stage_name,
+        job_loaded_settings,
+        logger,
+        backend_override=None,
+        prepare_reference_progress_callback=None,
+    ) -> int:
+        _ = logger, backend_override, prepare_reference_progress_callback
+        job_id = job_loaded_settings.path_for("videos_dir").parents[1].name
+        if stage_name == "transcribe" and job_id == "job-b":
+            assert prepare_started.wait(timeout=1.0), "job-a 转写后没有立即启动远程子流水"
+        if stage_name == "prepare-reference" and job_id == "job-a":
+            prepare_started.set()
+        if stage_name == "export-markdown":
+            final_dir = job_loaded_settings.path_for("final_dir")
+            final_dir.mkdir(parents=True, exist_ok=True)
+            (final_dir / f"{CANONICAL_INPUT_BASENAME}.md").write_text("# 整理稿\n\n正文\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("src.job_runner.run_stage", fake_run_stage)
+    app = create_app(project_root=tmp_path, run_tasks_inline=True)
+
+    response = request_json(
+        app,
+        "POST",
+        "/api/batch-jobs",
+        json_body={
+            "videos_dir": str(videos_dir),
+            "reference_dir": str(references_dir),
+            "output_dir": str(output_dir),
+            "remote_concurrency": 2,
+        },
+    )
+
+    assert response.status_code == 202
+    state = read_json_file(tmp_path / "data/jobs/batches" / response.json()["batch_id"] / "state.json")
+    assert state["status"] == "success"
+    assert state["current_stage"] == "done"
+    assert {item["current_stage"] for item in state["items"]} == {"done"}
+    assert all(item["completed_stages"] == ["extract-audio", "transcribe", "prepare-reference", "refine", "export-markdown"] for item in state["items"])
 
 
 def test_post_stage_run_returns_run_id(tmp_path: Path) -> None:

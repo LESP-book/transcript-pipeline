@@ -87,6 +87,8 @@ class BatchJobRuntime:
     job_root: Path
     spec: BatchJobSpec
     status: str = "pending"
+    current_stage: str = "pending"
+    completed_stages: list[str] = field(default_factory=list)
     failed_stage: str | None = None
     error_message: str | None = None
     copied_output_path: Path | None = None
@@ -221,6 +223,7 @@ def build_failed_batch_runtime(
         job_root=job_root or Path(),
         spec=spec,
         status="failed",
+        current_stage=failed_stage,
         failed_stage=failed_stage,
         error_message=error_message,
     )
@@ -873,13 +876,10 @@ def write_job_manifest(
 
 
 def build_final_output_filename(video_source: Path, *, book_name: str | None, chapter: str | None) -> str:
-    if book_name and chapter:
-        return f"《{sanitize_filename_stem(book_name)}》{sanitize_filename_stem(chapter)}.md"
-    if book_name:
-        return f"《{sanitize_filename_stem(book_name)}》.md"
-    if chapter:
-        return f"{sanitize_filename_stem(chapter)}.md"
-    return f"{sanitize_filename_stem(video_source.stem)}.md"
+    # 批量上传文件常带有“序号-哈希-”的存储前缀；交付文件必须与视频章节题名一致。
+    _ = book_name, chapter
+    video_title = re.sub(r"^\d+-[0-9a-fA-F]{8,64}-", "", video_source.stem)
+    return f"{sanitize_filename_stem(video_title)}.md"
 
 
 def copy_final_output(job_paths: JobPaths, output_dir: Path, final_filename: str) -> tuple[Path, Path]:
@@ -975,9 +975,15 @@ def execute_batch_stage_for_runtime(
     logger: logging.Logger,
     backend_override: str | None = None,
     progress_callback: Callable[[BatchJobRuntime, ReferenceFileProgress], None] | None = None,
+    stage_callback: Callable[[BatchJobRuntime], None] | None = None,
 ) -> None:
     if runtime.status in {"failed", "partial"}:
         return
+
+    runtime.status = "running"
+    runtime.current_stage = stage_name
+    if stage_callback is not None:
+        stage_callback(runtime)
 
     try:
         job_loaded_settings = load_settings(
@@ -1005,6 +1011,8 @@ def execute_batch_stage_for_runtime(
         if exit_code != 0:
             raise JobRunnerError(f"job 主链失败: stage={stage_name} exit_code={exit_code}")
 
+        if stage_name not in runtime.completed_stages:
+            runtime.completed_stages.append(stage_name)
         if stage_name == "export-markdown":
             job_paths = build_job_paths(project_root, runtime.job_id)
             _, copied_output_path = copy_final_output(
@@ -1018,10 +1026,14 @@ def execute_batch_stage_for_runtime(
             )
             runtime.copied_output_path = copied_output_path
             runtime.status = "success"
+            runtime.current_stage = "done"
     except (ConfigLoadError, JobRunnerError) as exc:
         runtime.status = "failed"
         runtime.failed_stage = stage_name
         runtime.error_message = str(exc)
+    finally:
+        if stage_callback is not None:
+            stage_callback(runtime)
 
 
 def run_jobs_with_limited_concurrency(
@@ -1061,6 +1073,8 @@ def execute_remote_pipeline_for_runtime(
     project_root: Path,
     logger: logging.Logger,
     backend_override: str | None = None,
+    progress_callback: Callable[[BatchJobRuntime, ReferenceFileProgress], None] | None = None,
+    stage_callback: Callable[[BatchJobRuntime], None] | None = None,
 ) -> None:
     for stage_name in remote_pipeline_stages_for_runtime(runtime, project_root):
         execute_batch_stage_for_runtime(
@@ -1069,6 +1083,8 @@ def execute_remote_pipeline_for_runtime(
             project_root=project_root,
             logger=logger,
             backend_override=backend_override,
+            progress_callback=progress_callback,
+            stage_callback=stage_callback,
         )
         if runtime.status in {"failed", "partial"}:
             return
@@ -1127,6 +1143,8 @@ def serialize_batch_runtime(runtime: BatchJobRuntime) -> dict[str, Any]:
         "chapter": runtime.spec.chapter or "",
         "glossary_file": runtime.spec.glossary_file or "",
         "status": runtime.status,
+        "current_stage": runtime.current_stage,
+        "completed_stages": list(runtime.completed_stages),
         "failed_stage": runtime.failed_stage or "",
         "error_message": runtime.error_message or "",
         "copied_output_path": str(runtime.copied_output_path) if runtime.copied_output_path else "",

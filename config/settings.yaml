@@ -189,6 +189,8 @@ llm:
   temperature: 0.1
   max_output_tokens: 4000
   timeout_seconds: 1800
+  # 检测到占位标题、替换字符或缺少 Markdown 正文时，自动重新润色一次；可设为 0 关闭。
+  refinement_validation_retry_count: 1
   safe_replace_min_score: 88.0
   safe_replace_min_margin: 6.0
   safe_replace_length_ratio_min: 0.8

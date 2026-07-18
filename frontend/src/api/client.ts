@@ -84,6 +84,8 @@ export interface BatchItemState {
   chapter?: string;
   glossary_file?: string;
   status: string;
+  current_stage?: string;
+  completed_stages?: string[];
   failed_stage?: string;
   error_message?: string;
   copied_output_path?: string;

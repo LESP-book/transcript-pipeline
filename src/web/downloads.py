@@ -155,7 +155,8 @@ def build_batch_result_archive(
             if result_path is None:
                 continue
             archive_filename = result_path.name if normalized_format == "markdown" else _text_result_path(result_path).name
-            archive_name = f"results/{index:03d}-{job_id}-{archive_filename}"
+            # 子任务输出在生成时已做重名校验，压缩包内直接保留与视频同步的章节文件名。
+            archive_name = f"results/{archive_filename}"
             _write_result_to_archive(archive, archive_name, result_path, normalized_format)
             file_count += 1
 

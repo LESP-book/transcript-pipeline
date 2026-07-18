@@ -142,6 +142,7 @@ def write_minimal_settings(
             "temperature": 0.1,
             "max_output_tokens": 4000,
             "timeout_seconds": 1800,
+            "refinement_validation_retry_count": 1,
             "safe_replace_min_score": 88.0,
             "safe_replace_min_margin": 6.0,
             "safe_replace_length_ratio_min": 0.8,

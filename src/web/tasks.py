@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -16,14 +17,16 @@ from src.job_runner import (
     BatchJobSpec,
     BatchRunSummary,
     JobRunnerError,
-    batch_stage_sequence_for_runtimes,
     build_batch_root,
     build_final_output_filename,
     build_job_paths,
     copy_final_output,
+    execute_batch_stage_for_runtime,
+    execute_remote_pipeline_for_runtime,
     load_batch_job_specs,
     prepare_batch_jobs,
     prepare_job_inputs,
+    runtime_stage_names,
     serialize_batch_runtime,
     write_batch_summary,
     write_job_manifest,
@@ -173,6 +176,7 @@ def batch_runtime_from_state_item(project_root: Path, item: dict[str, Any]) -> B
         reference=str(item.get("reference_source") or ""),
         output_dir=str(item.get("output_dir") or ""),
         mode=str(item.get("mode") or ""),
+        content_type=str(item.get("content_type") or "book_club"),
         book_name=str(item.get("book_name") or "") or None,
         chapter=str(item.get("chapter") or "") or None,
         glossary_file=str(item.get("glossary_file") or "") or None,
@@ -183,6 +187,8 @@ def batch_runtime_from_state_item(project_root: Path, item: dict[str, Any]) -> B
         job_root=build_job_paths(project_root, job_id).job_root,
         spec=spec,
         status=str(item.get("status") or "pending"),
+        current_stage=str(item.get("current_stage") or "pending"),
+        completed_stages=[str(stage) for stage in item.get("completed_stages") or [] if str(stage)],
         failed_stage=str(item.get("failed_stage") or "") or None,
         error_message=str(item.get("error_message") or "") or None,
         copied_output_path=Path(copied_output_path) if copied_output_path else None,
@@ -556,6 +562,7 @@ def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, p
             item_job_id=item_job_id,
             item_changes={
                 "status": "running",
+                "current_stage": request.start_stage,
                 "failed_stage": "",
                 "error_message": "",
                 "copied_output_path": "",
@@ -580,6 +587,7 @@ def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, p
                 item_job_id=item_job_id,
                 item_changes={
                     "status": "success",
+                    "current_stage": "done",
                     "failed_stage": "",
                     "error_message": "",
                     "copied_output_path": str(final_state.get("output_path") or ""),
@@ -598,6 +606,7 @@ def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, p
                 item_job_id=item_job_id,
                 item_changes={
                     "status": "partial",
+                    "current_stage": "prepare-reference",
                     "failed_stage": "prepare-reference",
                     "error_message": str(
                         final_state.get("error_message")
@@ -624,6 +633,7 @@ def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, p
             item_job_id=item_job_id,
             item_changes={
                 "status": "failed",
+                "current_stage": str(final_state.get("current_stage") or request.start_stage),
                 "failed_stage": str(final_state.get("current_stage") or request.start_stage),
                 "error_message": str(final_state.get("error_message") or "子任务重跑失败"),
                 "copied_output_path": "",
@@ -640,6 +650,7 @@ def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, p
             item_job_id=item_job_id,
             item_changes={
                 "status": "failed",
+                "current_stage": request.start_stage,
                 "failed_stage": request.start_stage,
                 "error_message": str(exc),
                 "copied_output_path": "",
@@ -715,8 +726,21 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
         )
 
         logger = setup_logging(base_loaded_settings.settings.runtime.log_level)
-        stage_sequence = batch_stage_sequence_for_runtimes(runtimes, root)
         progress_lock = threading.Lock()
+
+        def sync_batch_progress() -> None:
+            """把并发子任务的最新状态一次性持久化到批量状态文件。"""
+            with progress_lock:
+                app.state.update_state(
+                    state_path,
+                    status="running",
+                    current_stage="staggered-pipeline",
+                    total=len(runtimes),
+                    success=sum(1 for item in runtimes if item.status == "success"),
+                    failed=sum(1 for item in runtimes if item.status == "failed"),
+                    partial=sum(1 for item in runtimes if item.status == "partial"),
+                    items=[serialize_batch_runtime(item) for item in runtimes],
+                )
 
         def batch_reference_progress(
             runtime: BatchJobRuntime,
@@ -725,32 +749,47 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
             item = serialize_reference_file_progress(progress)
             with progress_lock:
                 runtime.ocr_items[str(item["source_file"])] = item
-                app.state.update_state(
-                    state_path,
-                    status="running",
-                    current_stage="prepare-reference",
-                    items=[serialize_batch_runtime(entry) for entry in runtimes],
-                )
+            sync_batch_progress()
 
+        # 本地阶段保持顺序执行；每个子任务完成转写后立即进入远程后续链路，
+        # 因而不会再等待整批视频都完成 ASR 才开始参考提取与校对。
         with codex_lb_environment(frontend_settings):
-            for stage_name in stage_sequence:
-                app.state.update_state(
-                    state_path,
-                    status="running",
-                    current_stage=stage_name,
-                    items=[serialize_batch_runtime(item) for item in runtimes],
-                )
-                from src.job_runner import run_batch_stage  # local import keeps surface small
+            with ThreadPoolExecutor(max_workers=effective_remote_concurrency) as executor:
+                remote_futures = []
+                for runtime in runtimes:
+                    if runtime.status in {"failed", "partial"}:
+                        continue
+                    runtime_stages = runtime_stage_names(runtime, root)
+                    for stage_name in ("extract-audio", "transcribe"):
+                        if stage_name not in runtime_stages:
+                            continue
+                        execute_batch_stage_for_runtime(
+                            stage_name=stage_name,
+                            runtime=runtime,
+                            project_root=root,
+                            logger=logger,
+                            backend_override=effective_backend,
+                            stage_callback=lambda _runtime: sync_batch_progress(),
+                        )
+                        if runtime.status in {"failed", "partial"}:
+                            break
 
-                run_batch_stage(
-                    stage_name=stage_name,
-                    runtimes=runtimes,
-                    project_root=root,
-                    logger=logger,
-                    remote_concurrency=effective_remote_concurrency,
-                    backend_override=effective_backend,
-                    progress_callback=batch_reference_progress,
-                )
+                    if runtime.status in {"failed", "partial"}:
+                        continue
+                    remote_futures.append(
+                        executor.submit(
+                            execute_remote_pipeline_for_runtime,
+                            runtime=runtime,
+                            project_root=root,
+                            logger=logger,
+                            backend_override=effective_backend,
+                            progress_callback=batch_reference_progress,
+                            stage_callback=lambda _runtime: sync_batch_progress(),
+                        )
+                    )
+
+                for future in as_completed(remote_futures):
+                    future.result()
 
         success_count = sum(1 for item in runtimes if item.status == "success")
         failed_count = sum(1 for item in runtimes if item.status == "failed")

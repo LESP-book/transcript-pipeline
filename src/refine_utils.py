@@ -7,7 +7,7 @@ import re
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,10 @@ class CLIBackendError(RefinementError):
 
 class CLIBackendRetryableError(CLIBackendError):
     """Raised when an AI backend fails in a retryable way."""
+
+
+class RefinementOutputValidationError(RefinementError):
+    """Raised when a refinement result still violates the final Markdown contract after retry."""
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,8 @@ class BackendDocumentRefinementResult:
     fidelity_report: dict[str, Any] = field(default_factory=dict)
     section_map: list[dict[str, Any]] = field(default_factory=list)
     backend_statuses: dict[str, str] = field(default_factory=dict)
+    validation_retry_count: int = 0
+    validation_failure_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1423,6 +1429,106 @@ def run_single_pass_backend_refinement(
     )
 
 
+def validate_final_markdown_contract(
+    result: BackendDocumentRefinementResult,
+) -> list[str]:
+    """验证最终稿是否仍是占位/损坏结果，而非要求模型判断文稿内容优劣。"""
+    final_markdown = result.final_markdown.strip()
+    reasons: list[str] = []
+    if result.refinement_strategy == "programmatic_markdown_fallback":
+        reasons.append("programmatic_markdown_fallback")
+    if "\ufffd" in final_markdown:
+        reasons.append("contains_unicode_replacement_character")
+
+    lines = final_markdown.splitlines()
+    first_line = next((line.strip() for line in lines if line.strip()), "")
+    heading_match = re.fullmatch(r"#\s+(.+)", first_line)
+    if heading_match is None:
+        reasons.append("missing_h1_title")
+    else:
+        title = normalize_inline_text(heading_match.group(1))
+        if title.casefold() == "source":
+            reasons.append("uses_canonical_source_placeholder_title")
+
+    body_start = final_markdown.find("\n\n")
+    if body_start < 0 or not final_markdown[body_start:].strip():
+        reasons.append("missing_separated_markdown_body")
+    return reasons
+
+
+def build_validation_retry_prompt(markdown_prompt_text: str, reasons: list[str]) -> str:
+    rendered_reasons = "、".join(reasons)
+    return "\n\n".join(
+        [
+            markdown_prompt_text.strip(),
+            "## 上一次校对结果未通过格式校验，必须重新完整润色",
+            f"检测原因：{rendered_reasons}。",
+            "这不是让你解释错误；请重新输出完整 JSON，且 final_markdown 必须是可直接交付的 Markdown。",
+            "final_markdown 必须以有意义的一级章节标题开头，不能使用 `# source` 等内部占位标题；标题后必须有空行和正文。",
+            "不得保留 Unicode 替换字符 `�`，应结合 ASR 和参考原文纠正明显损坏的文字。",
+            "除 JSON 外不要输出任何说明、道歉或分析。",
+        ]
+    )
+
+
+def run_validated_single_pass_backend_refinement(
+    *,
+    backend: str,
+    fallback_backend: str | None = None,
+    input_paths: RefinementInputPaths,
+    loaded_settings: LoadedSettings,
+    markdown_prompt_text: str,
+    asr_full_text: str,
+    reference_full_text: str,
+    logger: logging.Logger | None = None,
+) -> BackendDocumentRefinementResult:
+    """按配置重试不符合交付契约的精修结果，并保留可追踪的校验信息。"""
+    retry_limit = loaded_settings.settings.llm.refinement_validation_retry_count
+    retry_count = 0
+    validation_failures: list[str] = []
+    current_prompt = markdown_prompt_text
+
+    while True:
+        result = run_single_pass_backend_refinement(
+            backend=backend,
+            fallback_backend=fallback_backend,
+            input_paths=input_paths,
+            loaded_settings=loaded_settings,
+            markdown_prompt_text=current_prompt,
+            asr_full_text=asr_full_text,
+            reference_full_text=reference_full_text,
+            logger=logger,
+        )
+        reasons = validate_final_markdown_contract(result)
+        if not reasons:
+            if retry_count == 0:
+                return result
+            return replace(
+                result,
+                refinement_notes=[*result.refinement_notes, "validation_retry_succeeded"],
+                validation_retry_count=retry_count,
+                validation_failure_reasons=validation_failures,
+            )
+
+        validation_failures.extend(reasons)
+        if retry_count >= retry_limit:
+            detail = "、".join(reasons)
+            raise RefinementOutputValidationError(
+                f"阶段 6 输出未通过交付校验: file={input_paths.basename}; reasons={detail}"
+            )
+
+        retry_count += 1
+        current_prompt = build_validation_retry_prompt(markdown_prompt_text, reasons)
+        if logger is not None:
+            logger.warning(
+                "阶段 6 输出校验失败，准备自动重试 | file=%s | backend=%s | attempt=%s | reasons=%s",
+                input_paths.basename,
+                backend,
+                retry_count,
+                ",".join(reasons),
+            )
+
+
 def build_fallback_document_result(title: str, asr_full_text: str) -> BackendDocumentRefinementResult:
     review_sections = []
     paragraphs = [item.strip() for item in asr_full_text.splitlines() if item.strip()]
@@ -1504,6 +1610,8 @@ def serialize_backend_result(result: BackendDocumentRefinementResult) -> dict[st
         "fidelity_report": result.fidelity_report,
         "section_map": result.section_map,
         "backend_statuses": result.backend_statuses,
+        "validation_retry_count": result.validation_retry_count,
+        "validation_failure_reasons": result.validation_failure_reasons,
     }
 
 
@@ -1613,10 +1721,11 @@ def refine_batch(
         )
         backend_results: list[BackendDocumentRefinementResult] = []
         backend_status: dict[str, str] = {}
+        validation_errors: list[str] = []
         document_title = input_paths.basename
         for backend in active_backends:
             try:
-                result = run_single_pass_backend_refinement(
+                result = run_validated_single_pass_backend_refinement(
                     backend=backend,
                     fallback_backend=(
                         BACKEND_CODEX
@@ -1632,14 +1741,19 @@ def refine_batch(
                     reference_full_text=reference_full_text,
                     logger=logger,
                 )
-            except CLIBackendError as exc:
+            except (CLIBackendError, RefinementOutputValidationError) as exc:
                 backend_status[backend] = "failed_on_file"
+                if isinstance(exc, RefinementOutputValidationError):
+                    validation_errors.append(str(exc))
                 if logger:
                     logger.warning("阶段 6 后端失败 | backend=%s | file=%s | %s", backend, input_paths.basename, exc)
                 continue
 
             backend_results.append(result)
             backend_status.update(resolve_backend_statuses(result))
+
+        if not backend_results and validation_errors:
+            raise RefinementOutputValidationError("; ".join(validation_errors))
 
         if not backend_results and loaded_settings.settings.llm.enable_fallback:
             backend_results = [build_fallback_document_result(document_title, asr_full_text)]

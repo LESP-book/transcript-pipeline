@@ -19,6 +19,7 @@ from src.refine_utils import (
     PreReplacementSegment,
     CLIBackendError,
     CLIBackendRetryableError,
+    RefinementOutputValidationError,
     RefinementBlock,
     RefinementInputEmptyError,
     build_pre_replaced_document,
@@ -1100,7 +1101,7 @@ def test_refine_batch_supports_single_agy_backend_via_override(
     assert result["model_results"][BACKEND_AGY]["model_name"] == "Gemini 3.1 Pro (High)"
 
 
-def test_refine_batch_marks_programmatic_fallback_as_degraded_status(
+def test_refine_batch_retries_programmatic_fallback_and_persists_validation_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1108,16 +1109,31 @@ def test_refine_batch_marks_programmatic_fallback_as_degraded_status(
     asr_path = write_refine_inputs(tmp_path)
     loaded_settings = load_settings(project_root=tmp_path)
 
+    calls = 0
+
     def fake_run_single_pass_backend_refinement(**_kwargs) -> BackendDocumentRefinementResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return BackendDocumentRefinementResult(
+                backend=BACKEND_CODEX_API,
+                model_name=BACKEND_CODEX_API,
+                final_markdown="# demo\n\n降级稿",
+                refinement_strategy="programmatic_markdown_fallback",
+                refinement_reason="single_pass_backend_failed",
+                needs_review_sections=[],
+                refinement_notes=["single_pass_backend_failed_use_programmatic_fallback"],
+                edited_plain_text="降级稿",
+            )
         return BackendDocumentRefinementResult(
             backend=BACKEND_CODEX_API,
             model_name=BACKEND_CODEX_API,
-            final_markdown="# demo\n\n降级稿",
-            refinement_strategy="programmatic_markdown_fallback",
-            refinement_reason="single_pass_backend_failed",
+            final_markdown="# 可交付章节\n\n这是重新润色后的正文。",
+            refinement_strategy="single_pass_safe_replace",
+            refinement_reason="retry_succeeded",
             needs_review_sections=[],
-            refinement_notes=["single_pass_backend_failed_use_programmatic_fallback"],
-            edited_plain_text="降级稿",
+            refinement_notes=[],
+            edited_plain_text="这是重新润色后的正文。",
         )
 
     monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
@@ -1126,10 +1142,36 @@ def test_refine_batch_marks_programmatic_fallback_as_degraded_status(
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
     result = json.loads(output_path.json_path.read_text(encoding="utf-8"))
 
-    assert result["prompt_mode"] == "programmatic_markdown_fallback"
-    assert result["backend_status"]["codex_api"] == (
-        "degraded_to_programmatic_fallback:single_pass_backend_failed:model=codex_api"
-    )
+    assert calls == 2
+    assert result["prompt_mode"] == "single_pass_safe_replace"
+    assert result["final_markdown"] == "# 可交付章节\n\n这是重新润色后的正文。"
+    assert result["model_results"]["codex_api"]["validation_retry_count"] == 1
+    assert "programmatic_markdown_fallback" in result["model_results"]["codex_api"]["validation_failure_reasons"]
+
+
+def test_refine_batch_rejects_result_that_stays_invalid_after_configured_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path, llm_overrides={"refinement_validation_retry_count": 1})
+    write_refine_inputs(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+
+    def fake_run_single_pass_backend_refinement(**_kwargs) -> BackendDocumentRefinementResult:
+        return BackendDocumentRefinementResult(
+            backend=BACKEND_CODEX_API,
+            model_name=BACKEND_CODEX_API,
+            final_markdown="# source\n\n仍然包含损坏字符 �",
+            refinement_strategy="single_pass_safe_replace",
+            refinement_reason="invalid",
+            needs_review_sections=[],
+            refinement_notes=[],
+        )
+
+    monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
+
+    with pytest.raises(RefinementOutputValidationError, match="contains_unicode_replacement_character"):
+        refine_batch(loaded_settings)
 
 
 def test_refine_batch_falls_back_to_codex_when_single_agy_backend_fails(

@@ -14,6 +14,7 @@ from src.job_runner import (
     BatchJobSpec,
     BatchRunSummary,
     CANONICAL_INPUT_BASENAME,
+    build_final_output_filename,
     build_job_paths,
     build_job_initial_prompt,
     detect_reference_source_type,
@@ -45,6 +46,16 @@ class FakeHTTPResponse:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         _ = exc_type, exc, tb
+
+
+def test_build_final_output_filename_uses_video_title_without_upload_prefix(tmp_path: Path) -> None:
+    video_path = tmp_path / "001-998cef108c1a-《中国古代史》第三编第一章第一节第一部分.mp4"
+
+    assert build_final_output_filename(
+        video_path,
+        book_name="中国古代史",
+        chapter="第三编第一章第一节第一部分",
+    ) == "《中国古代史》第三编第一章第一节第一部分.md"
 
 
 def test_detect_reference_source_type_supports_local_and_url_sources() -> None:
@@ -454,7 +465,7 @@ def test_load_batch_job_specs_pairs_directory_inputs_and_ignores_non_video_files
     assert not any("不支持的视频扩展名" in message for message in error_messages)
 
 
-def test_load_batch_job_specs_marks_duplicate_targets_as_failed(tmp_path: Path) -> None:
+def test_load_batch_job_specs_uses_distinct_video_titles_even_with_shared_book_and_chapter(tmp_path: Path) -> None:
     write_minimal_settings(tmp_path)
     loaded_settings = load_settings(project_root=tmp_path)
 
@@ -478,9 +489,8 @@ def test_load_batch_job_specs_marks_duplicate_targets_as_failed(tmp_path: Path) 
         chapter="同一章",
     )
 
-    assert specs == []
-    assert len(failed_items) == 2
-    assert all(item.failed_stage == "input-validation" for item in failed_items)
+    assert {Path(spec.video).name for spec in specs} == {"lesson-a.mp4", "lesson-b.mp4"}
+    assert failed_items == []
     assert all("重复 target" in (item.error_message or "") for item in failed_items)
 
 

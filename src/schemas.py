@@ -163,6 +163,8 @@ class LLMSettings(AppBaseModel):
     temperature: float = 0.1
     max_output_tokens: int = 4000
     timeout_seconds: int = 1800
+    # 用户要求不合格的校对稿自动重新润色；默认仅重试一次，避免同一坏输入无限占用远程任务，可按部署情况调整。
+    refinement_validation_retry_count: int = Field(default=1, ge=0)
     safe_replace_min_score: float = 88.0
     safe_replace_min_margin: float = 6.0
     safe_replace_length_ratio_min: float = 0.8
