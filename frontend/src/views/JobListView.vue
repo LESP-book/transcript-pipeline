@@ -61,7 +61,12 @@ async function handleRerun() {
   }
 }
 
-onMounted(load);
+onMounted(async () => {
+  await load();
+  if (hasRunningRecords.value) {
+    startPolling();
+  }
+});
 onUnmounted(stopPolling);
 </script>
 

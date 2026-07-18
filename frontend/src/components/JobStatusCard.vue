@@ -8,6 +8,7 @@ import {
   NDescriptionsItem,
   NDropdown,
   NFlex,
+  NProgress,
   NSelect,
   NTag,
   useDialog,
@@ -57,6 +58,7 @@ const isRetryingStageRun = ref(false);
 const rerunStage = ref("refine");
 const batchItemRerunStages = ref<Record<string, string>>({});
 const rerunningBatchItemIds = ref<string[]>([]);
+const expandedBatchArtifactJobId = ref("");
 const expanded = ref(props.defaultExpanded ?? false);
 
 const kind = computed(() => String(props.state.kind ?? ""));
@@ -331,6 +333,89 @@ const hasInputSummary = computed(() => identityEntries.value.length > 0);
 
 function batchItemTitle(item: BatchItemState, index: number) {
   return displaySourceName(item.video_source) || item.job_id || `子任务 ${index + 1}`;
+}
+
+const BATCH_ITEM_STAGE_LABELS: Record<string, string> = {
+  pending: "等待开始",
+  "extract-audio": "音频提取",
+  transcribe: "语音转写",
+  "prepare-reference": "准备参考",
+  refine: "校对润色",
+  "export-markdown": "导出文档",
+  done: "已完成",
+};
+
+function batchItemPipelineStages(item: BatchItemState): string[] {
+  return item.content_type === "conversation"
+    ? ["extract-audio", "transcribe", "refine", "export-markdown"]
+    : ["extract-audio", "transcribe", "prepare-reference", "refine", "export-markdown"];
+}
+
+function batchItemStageLabel(stageName: string): string {
+  return BATCH_ITEM_STAGE_LABELS[stageName] ?? stageName;
+}
+
+function getBatchItemStageState(
+  item: BatchItemState,
+  stageName: string,
+): "completed" | "active" | "failed" | "pending" {
+  const completedStages = item.completed_stages ?? [];
+  if (item.status === "success" || completedStages.includes(stageName)) {
+    return "completed";
+  }
+
+  const currentStage = textValue(item.current_stage);
+  const failedStage = textValue(item.failed_stage);
+  if (failedStage === stageName || (item.status === "failed" && currentStage === stageName)) {
+    return "failed";
+  }
+  if (currentStage === stageName && item.status !== "pending") {
+    return "active";
+  }
+
+  // 兼容旧任务记录：旧记录尚未保存 completed_stages 时，已越过的阶段仍可正确显示完成。
+  const stages = batchItemPipelineStages(item);
+  const currentStageIndex = stages.indexOf(currentStage);
+  if (currentStageIndex > stages.indexOf(stageName)) {
+    return "completed";
+  }
+  return "pending";
+}
+
+function batchItemStageProgress(item: BatchItemState): number {
+  const stages = batchItemPipelineStages(item);
+  if (item.status === "success") {
+    return 100;
+  }
+  const completedCount = stages.filter((stageName) => {
+    return getBatchItemStageState(item, stageName) === "completed";
+  }).length;
+  return Math.round((completedCount / stages.length) * 100);
+}
+
+function batchItemProgressStatus(item: BatchItemState): "default" | "success" | "error" | "warning" {
+  if (item.status === "success") {
+    return "success";
+  }
+  if (item.status === "failed") {
+    return "error";
+  }
+  if (item.status === "partial") {
+    return "warning";
+  }
+  return "default";
+}
+
+function batchItemCurrentStageLabel(item: BatchItemState): string {
+  return batchItemStageLabel(textValue(item.current_stage) || textValue(item.failed_stage) || "pending");
+}
+
+function toggleBatchItemArtifacts(item: BatchItemState) {
+  const jobId = batchItemKey(item);
+  if (!jobId) {
+    return;
+  }
+  expandedBatchArtifactJobId.value = expandedBatchArtifactJobId.value === jobId ? "" : jobId;
 }
 
 function handleDelete() {
@@ -793,56 +878,94 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
               <div
                 v-for="(item, index) in batchItems"
                 :key="item.job_id || index"
-                class="batch-item-row"
+                class="batch-item-row batch-child-row"
               >
-                <div class="batch-item-main">
-                  <strong>{{ batchItemTitle(item, index) }}</strong>
-                  <span v-if="item.job_id" class="batch-item-id">任务 ID：{{ item.job_id }}</span>
-                  <span v-if="item.content_type === 'conversation' && !item.reference_source">参考源：无</span>
-                  <span v-else-if="item.reference_source">参考源：{{ displaySourceName(item.reference_source) }}</span>
-                  <span v-if="item.output_dir">输出目录：{{ item.output_dir }}</span>
-                  <span v-if="item.failed_stage" class="batch-item-muted">失败阶段：{{ item.failed_stage }}</span>
-                  <span v-if="item.pages_total">OCR 页进度：{{ item.pages_completed ?? 0 }}/{{ item.pages_total }}</span>
-                  <p v-if="item.error_message" class="batch-item-error">{{ item.error_message }}</p>
-                </div>
-                <n-flex align="center" :size="8" wrap class="batch-item-actions">
-                  <n-tag size="small" :type="itemStatusType(item.status)" :bordered="false">
-                    {{ item.status || "-" }}
-                  </n-tag>
-                  <n-dropdown
-                    trigger="click"
-                    :options="resultDownloadOptions"
-                    :disabled="item.status !== 'success' || !item.copied_output_path"
-                    @select="(key) => handleBatchItemResultDownload(item, toResultDownloadFormat(key))"
-                  >
+                <div class="batch-child-row__head">
+                  <div class="batch-item-main">
+                    <strong>{{ batchItemTitle(item, index) }}</strong>
+                    <span v-if="item.job_id" class="batch-item-id">任务 ID：{{ item.job_id }}</span>
+                    <span v-if="item.content_type === 'conversation' && !item.reference_source">参考源：无</span>
+                    <span v-else-if="item.reference_source">参考源：{{ displaySourceName(item.reference_source) }}</span>
+                    <span v-if="item.output_dir">输出目录：{{ item.output_dir }}</span>
+                    <span v-if="item.failed_stage" class="batch-item-muted">失败阶段：{{ batchItemStageLabel(item.failed_stage) }}</span>
+                    <span v-if="item.pages_total">OCR 页进度：{{ item.pages_completed ?? 0 }}/{{ item.pages_total }}</span>
+                    <p v-if="item.error_message" class="batch-item-error">{{ item.error_message }}</p>
+                  </div>
+                  <n-flex align="center" :size="8" wrap class="batch-item-actions">
+                    <n-tag size="small" :type="itemStatusType(item.status)" :bordered="false">
+                      {{ item.status || "-" }}
+                    </n-tag>
+                    <n-dropdown
+                      trigger="click"
+                      :options="resultDownloadOptions"
+                      :disabled="item.status !== 'success' || !item.copied_output_path"
+                      @select="(key) => handleBatchItemResultDownload(item, toResultDownloadFormat(key))"
+                    >
+                      <n-button
+                        size="small"
+                        type="primary"
+                        secondary
+                        :disabled="item.status !== 'success' || !item.copied_output_path"
+                      >
+                        下载结果
+                      </n-button>
+                    </n-dropdown>
+                    <n-select
+                      size="small"
+                      :value="batchItemRerunStageValue(item)"
+                      :options="rerunStageOptions"
+                      :disabled="!canRerunBatchItem(item) || isBatchItemRerunning(item)"
+                      class="batch-item-rerun-select"
+                      @update:value="(value) => setBatchItemRerunStage(item, value)"
+                    />
                     <n-button
                       size="small"
-                      type="primary"
+                      type="warning"
                       secondary
-                      :disabled="item.status !== 'success' || !item.copied_output_path"
+                      :disabled="!canRerunBatchItem(item)"
+                      :loading="isBatchItemRerunning(item)"
+                      @click="handleBatchItemRerun(item)"
                     >
-                      下载结果
+                      重跑
                     </n-button>
-                  </n-dropdown>
-                  <n-select
-                    size="small"
-                    :value="batchItemRerunStageValue(item)"
-                    :options="rerunStageOptions"
-                    :disabled="!canRerunBatchItem(item) || isBatchItemRerunning(item)"
-                    class="batch-item-rerun-select"
-                    @update:value="(value) => setBatchItemRerunStage(item, value)"
+                  </n-flex>
+                </div>
+
+                <div class="batch-child-progress" :class="`is-${String(item.status ?? 'pending')}`">
+                  <div class="batch-child-progress__summary">
+                    <span>当前阶段：{{ batchItemCurrentStageLabel(item) }}</span>
+                    <strong>{{ batchItemStageProgress(item) }}%</strong>
+                  </div>
+                  <n-progress
+                    type="line"
+                    :percentage="batchItemStageProgress(item)"
+                    :status="batchItemProgressStatus(item)"
+                    :show-indicator="false"
+                    :height="5"
                   />
-                  <n-button
-                    size="small"
-                    type="warning"
-                    secondary
-                    :disabled="!canRerunBatchItem(item)"
-                    :loading="isBatchItemRerunning(item)"
-                    @click="handleBatchItemRerun(item)"
-                  >
-                    重跑
+                  <ol class="batch-child-stage-track">
+                    <li
+                      v-for="stageName in batchItemPipelineStages(item)"
+                      :key="stageName"
+                      :class="`is-${getBatchItemStageState(item, stageName)}`"
+                    >
+                      <span class="batch-child-stage-dot"></span>
+                      <span>{{ batchItemStageLabel(stageName) }}</span>
+                    </li>
+                  </ol>
+                </div>
+
+                <div v-if="item.job_id" class="batch-child-artifact-action">
+                  <n-button size="small" secondary type="primary" @click="toggleBatchItemArtifacts(item)">
+                    {{ expandedBatchArtifactJobId === item.job_id ? "收起中间产物" : "查看中间产物" }}
                   </n-button>
-                </n-flex>
+                  <span>产物会随子任务推进陆续出现。</span>
+                </div>
+                <JobArtifactsViewer
+                  v-if="expandedBatchArtifactJobId === item.job_id"
+                  :job-id="item.job_id"
+                  class="batch-child-artifacts"
+                />
               </div>
             </div>
           </div>
@@ -1115,6 +1238,19 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
   background: #f8fafc;
 }
 
+.batch-child-row {
+  display: grid;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.batch-child-row__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .batch-item-main {
   min-width: 0;
   display: grid;
@@ -1154,6 +1290,94 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
 
 .batch-item-rerun-select {
   width: 170px;
+}
+
+.batch-child-progress {
+  display: grid;
+  gap: 9px;
+  padding: 11px 12px 10px;
+  border-top: 1px solid rgba(226, 232, 240, 0.9);
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.batch-child-progress__summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.batch-child-progress__summary strong {
+  color: var(--text-primary);
+}
+
+.batch-child-stage-track {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.batch-child-stage-track li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.batch-child-stage-dot {
+  width: 7px;
+  height: 7px;
+  border: 1px solid #cbd5e1;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+.batch-child-stage-track .is-completed {
+  color: #047857;
+}
+
+.batch-child-stage-track .is-completed .batch-child-stage-dot {
+  border-color: #10b981;
+  background: #10b981;
+}
+
+.batch-child-stage-track .is-active {
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.batch-child-stage-track .is-active .batch-child-stage-dot {
+  border-color: var(--primary);
+  background: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-alpha-10);
+}
+
+.batch-child-stage-track .is-failed {
+  color: #dc2626;
+  font-weight: 700;
+}
+
+.batch-child-stage-track .is-failed .batch-child-stage-dot {
+  border-color: #ef4444;
+  background: #ef4444;
+}
+
+.batch-child-artifact-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.batch-child-artifacts {
+  margin-top: 2px;
 }
 
 .status-grid {
@@ -1236,7 +1460,9 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
   }
 
   .batch-items-section__head,
-  .batch-item-row {
+  .batch-child-row__head,
+  .batch-child-artifact-action,
+  .batch-item-row:not(.batch-child-row) {
     align-items: stretch;
     flex-direction: column;
   }
