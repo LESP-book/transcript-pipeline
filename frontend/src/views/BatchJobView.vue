@@ -10,7 +10,6 @@ import {
   NGridItem,
   NInput,
   NInputNumber,
-  NProgress,
   NSelect,
   NRadioButton,
   NRadioGroup,
@@ -20,9 +19,8 @@ import {
 } from "naive-ui";
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
-import { getBatch, getRefineDefaultInstruction, listFs, submitBatchJob, type BatchItemState, type FileItem, type JobState } from "../api/client";
+import { getBatch, getRefineDefaultInstruction, listFs, submitBatchJob, type FileItem, type JobState } from "../api/client";
 import BackendSelector from "../components/BackendSelector.vue";
-import JobArtifactsViewer from "../components/JobArtifactsViewer.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
 import RemoteDirectoryUpload from "../components/RemoteDirectoryUpload.vue";
 import RemoteFileUpload from "../components/RemoteFileUpload.vue";
@@ -63,7 +61,6 @@ const sourcePreview = ref<SourcePreview | null>(null);
 const promptLoading = ref(false);
 const defaultRefinePrompt = ref("");
 const pollHandle = ref<number | null>(null);
-const expandedArtifactJobId = ref("");
 
 const form = reactive<{
   mode: BatchMode;
@@ -168,72 +165,6 @@ const previewHasBlockingIssue = computed(() => {
 });
 
 const batchItems = computed(() => batchState.value?.items ?? []);
-
-const stageLabels: Record<string, string> = {
-  pending: "等待开始",
-  "prepare-job": "准备任务",
-  "extract-audio": "音频提取",
-  transcribe: "语音转写",
-  "prepare-reference": "准备参考",
-  refine: "校对润色",
-  "export-markdown": "导出文档",
-  done: "已完成",
-};
-
-function pipelineStages(item: BatchItemState): string[] {
-  return item.content_type === "conversation"
-    ? ["extract-audio", "transcribe", "refine", "export-markdown"]
-    : ["extract-audio", "transcribe", "prepare-reference", "refine", "export-markdown"];
-}
-
-function itemStageState(item: BatchItemState, stageName: string): "complete" | "current" | "failed" | "pending" {
-  const completedStages = item.completed_stages ?? [];
-  if (completedStages.includes(stageName) || item.status === "success") {
-    return "complete";
-  }
-  if (item.failed_stage === stageName || (item.status === "failed" && item.current_stage === stageName)) {
-    return "failed";
-  }
-  if (item.current_stage === stageName && item.status !== "pending") {
-    return "current";
-  }
-  return "pending";
-}
-
-function itemStageProgress(item: BatchItemState): number {
-  const stages = pipelineStages(item);
-  if (item.status === "success") {
-    return 100;
-  }
-  return Math.round((stages.filter((stageName) => itemStageState(item, stageName) === "complete").length / stages.length) * 100);
-}
-
-function itemProgressStatus(item: BatchItemState): "default" | "success" | "error" | "warning" {
-  if (item.status === "success") {
-    return "success";
-  }
-  if (item.status === "failed") {
-    return "error";
-  }
-  if (item.status === "partial") {
-    return "warning";
-  }
-  return "default";
-}
-
-function stageLabel(stageName: string): string {
-  return stageLabels[stageName] ?? stageName;
-}
-
-function itemVideoTitle(item: BatchItemState): string {
-  const fileName = String(item.video_source ?? "").split("/").pop() ?? "未命名视频";
-  const stem = fileName.replace(/\.[^.]+$/, "");
-  return stem.replace(/^\d+-[0-9a-fA-F]{8,64}-/, "") || "未命名视频";
-}
-
-function toggleArtifacts(jobId: string) {
-  expandedArtifactJobId.value = expandedArtifactJobId.value === jobId ? "" : jobId;
-}
 
 const effectiveContentType = computed(() => {
   if (form.mode === "conversation-dir") {
@@ -880,13 +811,7 @@ onBeforeUnmount(stopPolling);
         
         <!-- Batch Sub-jobs List -->
         <div v-if="batchItems.length" class="sub-jobs-section">
-          <div class="sub-jobs-heading">
-            <div>
-              <h4 class="sub-jobs-title">子任务进度与中间产物</h4>
-              <p>每个视频独立推进；展开后可直接查看当前已生成的转写、参考、校对与导出产物。</p>
-            </div>
-            <span>{{ batchItems.length }} 个子任务</span>
-          </div>
+          <h4 class="sub-jobs-title">子视频流水线详情 (Sub-jobs List)</h4>
           <div class="batch-items">
             <div
               v-for="(item, index) in batchItems"
@@ -896,62 +821,23 @@ onBeforeUnmount(stopPolling);
               <div class="batch-item__head">
                 <div class="item-name-box">
                   <span class="sub-index">#{{ index + 1 }}</span>
-                  <div>
-                    <strong class="sub-video-title">{{ itemVideoTitle(item) }}</strong>
-                    <span class="sub-id">{{ String(item.job_id || `未分配ID`) }}</span>
-                  </div>
+                  <strong class="sub-id">{{ String(item.job_id || `未分配ID`) }}</strong>
                 </div>
                 <n-tag :type="itemStatusType(item)" size="small" :bordered="false" round class="sub-badge">
                   {{ String(item.status ?? "-") }}
                 </n-tag>
               </div>
-
-              <div class="item-progress" :class="`is-${String(item.status ?? 'pending')}`">
-                <div class="item-progress__summary">
-                  <span>当前阶段：{{ stageLabel(String(item.current_stage || "pending")) }}</span>
-                  <strong>{{ itemStageProgress(item) }}%</strong>
-                </div>
-                <n-progress
-                  type="line"
-                  :percentage="itemStageProgress(item)"
-                  :status="itemProgressStatus(item)"
-                  :show-indicator="false"
-                  :height="5"
-                />
-                <ol class="item-stage-track">
-                  <li
-                    v-for="stageName in pipelineStages(item)"
-                    :key="stageName"
-                    :class="`is-${itemStageState(item, stageName)}`"
-                  >
-                    <span class="stage-dot"></span>
-                    <span>{{ stageLabel(stageName) }}</span>
-                  </li>
-                </ol>
-              </div>
-
               <div class="batch-item-grid-modern">
                 <div class="grid-cell"><span class="cell-label">配置模式:</span> {{ String(item.mode ?? "-") }}</div>
                 <div class="grid-cell"><span class="cell-label">任务类型:</span> {{ String(item.content_type ?? "-") }}</div>
-                <div class="grid-cell"><span class="cell-label">失败阶段:</span> <span :class="{'text-error font-semibold': item.failed_stage}">{{ stageLabel(String(item.failed_stage || "-")) }}</span></div>
+                <div class="grid-cell"><span class="cell-label">失败阶段:</span> <span :class="{'text-error font-semibold': item.failed_stage}">{{ String(item.failed_stage || "-") }}</span></div>
+                <div class="grid-cell span-all"><span class="cell-label">视频路径:</span> <span class="mono-path">{{ String(item.video_source ?? "-") || "-" }}</span></div>
                 <div class="grid-cell span-all"><span class="cell-label">参考源:</span> <span class="mono-path">{{ String(item.reference_source ?? "") || "无" }}</span></div>
-                <div v-if="String(item.copied_output_path ?? '')" class="grid-cell span-all"><span class="cell-label">导出结果:</span> <span class="mono-path is-out">{{ String(item.copied_output_path) }}</span></div>
+                <div class="grid-cell span-all"><span class="cell-label">输出路径:</span> <span class="mono-path is-out">{{ String(item.copied_output_path ?? "-") || "-" }}</span></div>
                 <div v-if="String(item.error_message ?? '')" class="grid-cell span-all err-cell">
                   <span class="cell-label">错误详情:</span> {{ String(item.error_message) }}
                 </div>
               </div>
-
-              <div v-if="String(item.job_id || '')" class="item-artifact-action">
-                <n-button size="small" secondary type="primary" @click="toggleArtifacts(String(item.job_id))">
-                  {{ expandedArtifactJobId === String(item.job_id) ? "收起中间产物" : "查看中间产物" }}
-                </n-button>
-                <span>产物会随子任务推进陆续出现。</span>
-              </div>
-              <JobArtifactsViewer
-                v-if="expandedArtifactJobId === String(item.job_id)"
-                :job-id="String(item.job_id)"
-                class="batch-item-artifacts"
-              />
             </div>
           </div>
         </div>
@@ -1219,23 +1105,8 @@ onBeforeUnmount(stopPolling);
   margin-top: 18px;
 }
 
-.sub-jobs-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 12px;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.sub-jobs-heading p {
-  margin: 0;
-  line-height: 1.5;
-}
-
 .sub-jobs-title {
-  margin: 0 0 4px;
+  margin: 0 0 12px;
   font-size: 14px;
   font-weight: 700;
   color: var(--text-secondary);
@@ -1251,7 +1122,7 @@ onBeforeUnmount(stopPolling);
   transition: all 0.2s ease;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .batch-item-modern:hover {
@@ -1276,97 +1147,12 @@ onBeforeUnmount(stopPolling);
 }
 
 .sub-id {
-  display: block;
-  margin-top: 2px;
-  font-size: 11px;
-  font-family: monospace;
-  color: var(--text-muted);
-}
-
-.sub-video-title {
-  display: block;
-  color: var(--text-primary);
   font-size: 14px;
+  font-family: monospace;
 }
 
 .sub-badge {
   font-weight: 700;
-}
-
-.item-progress {
-  display: grid;
-  gap: 9px;
-  padding: 11px 12px 10px;
-  border-top: 1px solid rgba(226, 232, 240, 0.9);
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
-}
-
-.item-progress__summary {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.item-progress__summary strong {
-  color: var(--text-primary);
-}
-
-.item-stage-track {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.item-stage-track li {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.stage-dot {
-  width: 7px;
-  height: 7px;
-  border: 1px solid #cbd5e1;
-  border-radius: 50%;
-  background: #ffffff;
-}
-
-.item-stage-track .is-complete {
-  color: #047857;
-}
-
-.item-stage-track .is-complete .stage-dot {
-  border-color: #10b981;
-  background: #10b981;
-}
-
-.item-stage-track .is-current {
-  color: var(--primary);
-  font-weight: 700;
-}
-
-.item-stage-track .is-current .stage-dot {
-  border-color: var(--primary);
-  background: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-alpha-10);
-}
-
-.item-stage-track .is-failed {
-  color: #dc2626;
-  font-weight: 700;
-}
-
-.item-stage-track .is-failed .stage-dot {
-  border-color: #ef4444;
-  background: #ef4444;
 }
 
 .batch-item-grid-modern {
@@ -1410,18 +1196,6 @@ onBeforeUnmount(stopPolling);
   font-family: monospace;
 }
 
-.item-artifact-action {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.batch-item-artifacts {
-  margin-top: 2px;
-}
-
 .glass-alert {
   backdrop-filter: blur(8px);
   background: rgba(254, 242, 242, 0.6);
@@ -1431,13 +1205,5 @@ onBeforeUnmount(stopPolling);
 
 .w-full {
   width: 100%;
-}
-
-@media (max-width: 760px) {
-  .sub-jobs-heading,
-  .item-artifact-action {
-    align-items: flex-start;
-    flex-direction: column;
-  }
 }
 </style>

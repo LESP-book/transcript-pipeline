@@ -12,7 +12,9 @@ import {
 import { computed, ref, watch } from "vue";
 
 import {
+  getBatchItemArtifact,
   getJobArtifact,
+  listBatchItemArtifacts,
   listJobArtifacts,
   type JobArtifact,
   type JobArtifactContent,
@@ -20,6 +22,7 @@ import {
 
 const props = defineProps<{
   jobId: string;
+  batchId?: string;
 }>();
 
 const message = useMessage();
@@ -61,7 +64,9 @@ async function loadArtifacts() {
   errorText.value = "";
   selectedArtifact.value = null;
   try {
-    const response = await listJobArtifacts(props.jobId);
+    const response = props.batchId
+      ? await listBatchItemArtifacts(props.batchId, props.jobId)
+      : await listJobArtifacts(props.jobId);
     artifacts.value = response.items;
     const firstExisting = response.items.find((item) => item.exists);
     selectedArtifactId.value = firstExisting?.id ?? null;
@@ -80,7 +85,9 @@ async function loadSelectedArtifact() {
   loadingContent.value = true;
   errorText.value = "";
   try {
-    selectedArtifact.value = await getJobArtifact(props.jobId, selectedArtifactId.value);
+    selectedArtifact.value = props.batchId
+      ? await getBatchItemArtifact(props.batchId, props.jobId, selectedArtifactId.value)
+      : await getJobArtifact(props.jobId, selectedArtifactId.value);
   } catch (caught) {
     selectedArtifact.value = null;
     errorText.value = caught instanceof Error ? caught.message : "读取阶段产物失败";
@@ -99,7 +106,7 @@ async function copyContent() {
   message.success("已复制当前产物内容");
 }
 
-watch(() => props.jobId, loadArtifacts, { immediate: true });
+watch(() => [props.batchId, props.jobId], loadArtifacts, { immediate: true });
 watch(selectedArtifactId, loadSelectedArtifact);
 </script>
 

@@ -964,6 +964,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
                 <JobArtifactsViewer
                   v-if="expandedBatchArtifactJobId === item.job_id"
                   :job-id="item.job_id"
+                  :batch-id="stateId"
                   class="batch-child-artifacts"
                 />
               </div>

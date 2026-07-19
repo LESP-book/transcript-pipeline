@@ -542,6 +542,22 @@ export function batchItemResultUrl(batchId: string, itemJobId: string, format?: 
   );
 }
 
+export function listBatchItemArtifacts(batchId: string, itemJobId: string): Promise<JobArtifactListResponse> {
+  return requestJson<JobArtifactListResponse>(
+    `/api/batches/${encodeURIComponent(batchId)}/items/${encodeURIComponent(itemJobId)}/artifacts`,
+  );
+}
+
+export function getBatchItemArtifact(
+  batchId: string,
+  itemJobId: string,
+  artifactId: string,
+): Promise<JobArtifactContent> {
+  return requestJson<JobArtifactContent>(
+    `/api/batches/${encodeURIComponent(batchId)}/items/${encodeURIComponent(itemJobId)}/artifacts/${encodeURIComponent(artifactId)}`,
+  );
+}
+
 export function submitStageRun(stageName: string, payload: StageRunPayload): Promise<{ run_id: string }> {
   return requestJson<{ run_id: string }>(`/api/stages/${stageName}`, {
     method: "POST",

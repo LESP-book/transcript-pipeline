@@ -597,6 +597,32 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             headers=attachment_headers(archive_filename),
         )
 
+    @app.get("/api/batches/{batch_id}/items/{item_job_id}/artifacts")
+    async def get_batch_item_artifacts(batch_id: str, item_job_id: str) -> dict[str, list[dict[str, object]]]:
+        state_path = app.state.batch_state_path(batch_id)
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail=f"batch 不存在: {batch_id}")
+        state = reconcile_state(read_json_file(state_path))
+        if find_batch_state_item(state, item_job_id) is None:
+            raise HTTPException(status_code=404, detail=f"批量子任务不存在: {item_job_id}")
+        return {"items": collect_job_artifacts(root, item_job_id)}
+
+    @app.get("/api/batches/{batch_id}/items/{item_job_id}/artifacts/{artifact_id}")
+    async def get_batch_item_artifact(batch_id: str, item_job_id: str, artifact_id: str) -> dict[str, object]:
+        state_path = app.state.batch_state_path(batch_id)
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail=f"batch 不存在: {batch_id}")
+        state = reconcile_state(read_json_file(state_path))
+        if find_batch_state_item(state, item_job_id) is None:
+            raise HTTPException(status_code=404, detail=f"批量子任务不存在: {item_job_id}")
+        try:
+            artifact = read_job_artifact(root, item_job_id, artifact_id)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=500, detail=f"读取子任务产物失败: {exc}") from exc
+        if artifact is None:
+            raise HTTPException(status_code=404, detail=f"产物不存在: {artifact_id}")
+        return artifact
+
     @app.get("/api/batches/{batch_id}/items/{item_job_id}/result")
     async def download_batch_item_result(
         batch_id: str,

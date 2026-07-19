@@ -261,6 +261,60 @@ def test_get_job_artifact_rejects_unknown_artifact_id(tmp_path: Path) -> None:
     assert response.status_code == 404
 
 
+def test_get_batch_item_artifacts_uses_batch_membership_without_child_state_file(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    write_minimal_settings(tmp_path)
+    batch_id = "batch-test-001"
+    item_job_id = "batch-child-001"
+    job_dir = tmp_path / "data/jobs" / item_job_id
+    (job_dir / "intermediate/asr").mkdir(parents=True, exist_ok=True)
+    (job_dir / "intermediate/asr/source.txt").write_text("批量子任务转写文本", encoding="utf-8")
+
+    batch_state = create_initial_state(batch_id, "batch")
+    batch_state.update(
+        {
+            "status": "failed",
+            "items": [
+                {
+                    "job_id": item_job_id,
+                    "status": "failed",
+                    "video_source": "/tmp/video.mp4",
+                }
+            ],
+        }
+    )
+    write_json_file(tmp_path / "data/jobs/batches" / batch_id / "state.json", batch_state)
+    assert not (job_dir / "state.json").exists()
+
+    app = create_app(project_root=tmp_path)
+    list_response = request_json(app, "GET", f"/api/batches/{batch_id}/items/{item_job_id}/artifacts")
+
+    assert list_response.status_code == 200
+    assert any(
+        item["id"] == "transcribe-text" and item["exists"]
+        for item in list_response.json()["items"]
+    )
+
+    content_response = request_json(
+        app,
+        "GET",
+        f"/api/batches/{batch_id}/items/{item_job_id}/artifacts/transcribe-text",
+    )
+
+    assert content_response.status_code == 200
+    assert content_response.json()["content"] == "批量子任务转写文本"
+
+    missing_item_response = request_json(
+        app,
+        "GET",
+        f"/api/batches/{batch_id}/items/not-in-batch/artifacts",
+    )
+
+    assert missing_item_response.status_code == 404
+    assert "批量子任务不存在" in missing_item_response.json()["detail"]
+
+
 def test_download_job_result_returns_generated_markdown(tmp_path: Path) -> None:
     from api_server import create_app
 
