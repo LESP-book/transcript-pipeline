@@ -5,13 +5,16 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
+from http.client import HTTPException, IncompleteRead
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from src.request_trace import RequestTrace, endpoint_metadata, exception_metadata, trace_now_iso
 from src.schemas import CodexLBSettings
 
 
@@ -45,11 +48,31 @@ class CodexLBClient:
         response_payload = self.post_json(self.settings.responses_path, payload, label="Responses API")
         return extract_response_text(response_payload)
 
-    def responses_stream_text(self, payload: dict[str, Any]) -> str:
-        return self.post_event_stream(self.settings.responses_path, payload, label="Responses API")
+    def responses_stream_text(
+        self,
+        payload: dict[str, Any],
+        *,
+        request_trace: RequestTrace | None = None,
+    ) -> str:
+        return self.post_event_stream(
+            self.settings.responses_path,
+            payload,
+            label="Responses API",
+            request_trace=request_trace,
+        )
 
-    def codex_responses_text(self, payload: dict[str, Any]) -> str:
-        return self.post_event_stream(self.settings.codex_responses_path, payload, label="Codex Responses API")
+    def codex_responses_text(
+        self,
+        payload: dict[str, Any],
+        *,
+        request_trace: RequestTrace | None = None,
+    ) -> str:
+        return self.post_event_stream(
+            self.settings.codex_responses_path,
+            payload,
+            label="Codex Responses API",
+            request_trace=request_trace,
+        )
 
     def upload_file(self, file_path: Path, *, use_case: str = "codex") -> str:
         try:
@@ -100,7 +123,14 @@ class CodexLBClient:
             label=label,
         )
 
-    def post_event_stream(self, path: str, payload: dict[str, Any], *, label: str) -> str:
+    def post_event_stream(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        label: str,
+        request_trace: RequestTrace | None = None,
+    ) -> str:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         request = Request(
             endpoint_url(self.base_url, path),
@@ -113,14 +143,27 @@ class CodexLBClient:
                 "User-Agent": "codex_cli_rs/0.130.0 transcript-pipeline",
             },
         )
-        return extract_event_stream_text(
-            read_http_response(
-                request,
-                label=label,
-                timeout_seconds=self.timeout_seconds,
-                use_curl_first=should_use_curl_first(self.base_url),
-            )
+        stream_text = read_http_response(
+            request,
+            label=label,
+            timeout_seconds=self.timeout_seconds,
+            use_curl_first=should_use_curl_first(self.base_url),
+            request_trace=request_trace,
         )
+        if request_trace is not None:
+            request_trace.write_json("sse-summary.json", summarize_event_stream(stream_text))
+        try:
+            output_text = extract_event_stream_text(stream_text)
+        except CodexLBClientError as exc:
+            if request_trace is not None:
+                request_trace.write_json(
+                    "protocol-error.json",
+                    exception_metadata(exc, category="sse_protocol"),
+                )
+            raise
+        if request_trace is not None:
+            request_trace.write_text("extracted-output.txt", output_text)
+        return output_text
 
     def put_file_bytes(self, upload_url: str, file_bytes: bytes, *, label: str) -> None:
         request = Request(
@@ -153,24 +196,134 @@ def read_http_response(
     label: str,
     timeout_seconds: float | None,
     use_curl_first: bool = False,
+    request_trace: RequestTrace | None = None,
 ) -> str:
     if use_curl_first:
-        return read_http_response_with_curl(request, label=label, timeout_seconds=timeout_seconds)
+        return read_http_response_with_curl(
+            request,
+            label=label,
+            timeout_seconds=timeout_seconds,
+            request_trace=request_trace,
+        )
 
+    started_at = trace_now_iso()
+    started = time.monotonic()
     try:
         if timeout_seconds is None:
             with urlopen(request) as response:
-                return response.read().decode("utf-8", errors="replace")
-        with urlopen(request, timeout=timeout_seconds) as response:
-            return response.read().decode("utf-8", errors="replace")
+                response_bytes = response.read()
+                status_code = getattr(response, "status", None)
+                effective_url = response.geturl() if hasattr(response, "geturl") else request.full_url
+        else:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                response_bytes = response.read()
+                status_code = getattr(response, "status", None)
+                effective_url = response.geturl() if hasattr(response, "geturl") else request.full_url
+        response_text = response_bytes.decode("utf-8", errors="replace")
+        record_transport(
+            request_trace,
+            request=request,
+            raw_response=response_text,
+            record={
+                "transport": "urllib",
+                "result": "ok",
+                "started_at": started_at,
+                "finished_at": trace_now_iso(),
+                "duration_seconds": round(time.monotonic() - started, 6),
+                "http_status": status_code,
+                "endpoint": endpoint_metadata(effective_url),
+                "response_chars": len(response_text),
+                "response_utf8_bytes": len(response_text.encode("utf-8")),
+            },
+        )
+        return response_text
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
+        safe_body = redact_request_secrets(body, request)
+        record_transport(
+            request_trace,
+            request=request,
+            raw_response=body,
+            record={
+                "transport": "urllib",
+                "result": "http_error",
+                "started_at": started_at,
+                "finished_at": trace_now_iso(),
+                "duration_seconds": round(time.monotonic() - started, 6),
+                "http_status": exc.code,
+                "endpoint": endpoint_metadata(getattr(exc, "url", request.full_url)),
+                "error_type": type(exc).__name__,
+                "message": str(exc.reason),
+            },
+        )
         if should_retry_with_curl(exc.code, body):
-            return read_http_response_with_curl(request, label=label, timeout_seconds=timeout_seconds)
-        raise CodexLBClientError(f"{label} HTTP {exc.code}: {body or exc.reason}") from exc
+            return read_http_response_with_curl(
+                request,
+                label=label,
+                timeout_seconds=timeout_seconds,
+                request_trace=request_trace,
+            )
+        raise CodexLBClientError(f"{label} HTTP {exc.code}: {safe_body or exc.reason}") from exc
+    except IncompleteRead as exc:
+        partial = exc.partial.decode("utf-8", errors="replace") if isinstance(exc.partial, bytes) else str(exc.partial)
+        record_transport(
+            request_trace,
+            request=request,
+            raw_response=partial,
+            record=transport_exception_record(
+                transport="urllib",
+                result="incomplete_read",
+                started_at=started_at,
+                started=started,
+                request=request,
+                exc=exc,
+            ),
+        )
+        raise CodexLBClientError(f"{label} 响应未完整传输: {exc}") from exc
+    except HTTPException as exc:
+        record_transport(
+            request_trace,
+            request=request,
+            raw_response="",
+            record=transport_exception_record(
+                transport="urllib",
+                result="protocol_error",
+                started_at=started_at,
+                started=started,
+                request=request,
+                exc=exc,
+            ),
+        )
+        raise CodexLBClientError(f"{label} HTTP 协议失败: {exc}") from exc
     except URLError as exc:
+        record_transport(
+            request_trace,
+            request=request,
+            raw_response="",
+            record=transport_exception_record(
+                transport="urllib",
+                result="url_error",
+                started_at=started_at,
+                started=started,
+                request=request,
+                exc=exc,
+            ),
+        )
         raise CodexLBClientError(f"{label} 请求失败: {exc}") from exc
     except OSError as exc:
+        record_transport(
+            request_trace,
+            request=request,
+            raw_response="",
+            record=transport_exception_record(
+                transport="urllib",
+                result="os_error",
+                started_at=started_at,
+                started=started,
+                request=request,
+                exc=exc,
+            ),
+        )
         raise CodexLBClientError(f"{label} 请求失败: {exc}") from exc
 
 
@@ -193,10 +346,18 @@ def should_use_curl_first(url: str) -> bool:
     return host not in {"", "127.0.0.1", "localhost", "::1"} and not host.endswith(".local")
 
 
-def read_http_response_with_curl(request: Request, *, label: str, timeout_seconds: float | None) -> str:
+def read_http_response_with_curl(
+    request: Request,
+    *,
+    label: str,
+    timeout_seconds: float | None,
+    request_trace: RequestTrace | None = None,
+) -> str:
     # 用户的远程 codex-lb 反代域会用 Cloudflare 1010 拦截 Python urllib 的 TLS/客户端指纹；
     # curl 已验证可通过同一 API 入口和远程文件上传 URL，因此远程地址优先使用 curl，本地仍走 urllib。
     body_path: Path | None = None
+    started_at = trace_now_iso()
+    started = time.monotonic()
     try:
         if request.data is not None:
             with tempfile.NamedTemporaryFile(delete=False) as body_file:
@@ -215,7 +376,7 @@ def read_http_response_with_curl(request: Request, *, label: str, timeout_second
             "--output",
             "-",
             "--write-out",
-            "\n%{http_code}",
+            build_curl_write_out_format(),
         ]
         if timeout_seconds is not None:
             command.extend(["--max-time", str(timeout_seconds)])
@@ -223,13 +384,29 @@ def read_http_response_with_curl(request: Request, *, label: str, timeout_second
             command.extend(["--data-binary", f"@{body_path}"])
         command.append(request.full_url)
 
-        completed = subprocess.run(
-            command,
-            input=build_curl_header_config(dict(request.header_items())),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                input=build_curl_header_config(dict(request.header_items())).encode("utf-8"),
+                text=False,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            record_transport(
+                request_trace,
+                request=request,
+                raw_response="",
+                record=transport_exception_record(
+                    transport="curl",
+                    result="curl_launch_error",
+                    started_at=started_at,
+                    started=started,
+                    request=request,
+                    exc=exc,
+                ),
+            )
+            raise CodexLBClientError(f"{label} 无法启动 curl: {exc}") from exc
     finally:
         if body_path is not None:
             try:
@@ -237,18 +414,123 @@ def read_http_response_with_curl(request: Request, *, label: str, timeout_second
             except OSError:
                 pass
 
+    stdout = decode_subprocess_output(completed.stdout)
+    raw_stderr = decode_subprocess_output(completed.stderr)
+    try:
+        response_text, metrics = split_curl_response_metrics(stdout)
+    except CodexLBClientError as exc:
+        response_text = stdout
+        metrics = {}
+        if completed.returncode == 0:
+            record_transport(
+                request_trace,
+                request=request,
+                raw_response=response_text,
+                record={
+                    **transport_exception_record(
+                        transport="curl",
+                        result="curl_metadata_error",
+                        started_at=started_at,
+                        started=started,
+                        request=request,
+                        exc=exc,
+                    ),
+                    "return_code": completed.returncode,
+                    "stderr": redact_request_secrets(raw_stderr.strip(), request),
+                },
+            )
+            raise CodexLBClientError(f"{label} curl 状态信息解析失败: {exc}") from exc
+
+    status_text = str(metrics.get("http_code") or "")
+    status_code = int(status_text) if status_text.isdigit() else None
+    stderr = redact_request_secrets(raw_stderr.strip(), request)
+    common_record = {
+        "transport": "curl",
+        "started_at": started_at,
+        "finished_at": trace_now_iso(),
+        "duration_seconds": round(time.monotonic() - started, 6),
+        "return_code": completed.returncode,
+        "stderr": stderr,
+        "http_status": status_code,
+        "endpoint": endpoint_metadata(request.full_url),
+        "metrics": metrics,
+        "response_chars": len(response_text),
+        "response_utf8_bytes": len(response_text.encode("utf-8")),
+    }
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"curl exited with code {completed.returncode}"
+        record_transport(
+            request_trace,
+            request=request,
+            raw_response=response_text,
+            record={**common_record, "result": "curl_error"},
+        )
+        detail = stderr or response_text.strip() or f"curl exited with code {completed.returncode}"
         raise CodexLBClientError(f"{label} curl 请求失败: {detail}")
 
-    response_text, status_text = split_curl_response(completed.stdout)
-    try:
-        status_code = int(status_text)
-    except ValueError as exc:
-        raise CodexLBClientError(f"{label} curl 状态码解析失败: {status_text}") from exc
+    if status_code is None:
+        record_transport(
+            request_trace,
+            request=request,
+            raw_response=response_text,
+            record={**common_record, "result": "curl_status_error"},
+        )
+        raise CodexLBClientError(f"{label} curl 状态码解析失败: {status_text}")
     if status_code >= 400:
-        raise CodexLBClientError(f"{label} HTTP {status_code}: {response_text}")
+        record_transport(
+            request_trace,
+            request=request,
+            raw_response=response_text,
+            record={**common_record, "result": "http_error"},
+        )
+        raise CodexLBClientError(
+            f"{label} HTTP {status_code}: {redact_request_secrets(response_text, request)}"
+        )
+    record_transport(
+        request_trace,
+        request=request,
+        raw_response=response_text,
+        record={**common_record, "result": "ok"},
+    )
     return response_text
+
+
+CURL_METRIC_FIELDS = (
+    "http_code",
+    "remote_ip",
+    "remote_port",
+    "local_ip",
+    "local_port",
+    "http_version",
+    "time_namelookup",
+    "time_connect",
+    "time_appconnect",
+    "time_starttransfer",
+    "time_total",
+    "size_download",
+)
+
+
+def build_curl_write_out_format() -> str:
+    return "\n" + "\t".join(f"%{{{field}}}" for field in CURL_METRIC_FIELDS)
+
+
+def decode_subprocess_output(value: str | bytes) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def split_curl_response_metrics(stdout: str) -> tuple[str, dict[str, str]]:
+    if "\n" not in stdout:
+        raise CodexLBClientError("curl 响应缺少传输状态信息。")
+    response_text, metadata_text = stdout.rsplit("\n", 1)
+    values = metadata_text.split("\t")
+    # 兼容旧测试桩及旧 curl 输出；真实请求使用上面的完整字段格式。
+    if len(values) == 1:
+        return response_text, {"http_code": values[0]}
+    if len(values) != len(CURL_METRIC_FIELDS):
+        raise CodexLBClientError(f"curl 传输状态字段数量异常: {len(values)}")
+    return response_text, dict(zip(CURL_METRIC_FIELDS, values, strict=True))
 
 
 def build_curl_header_config(headers: dict[str, str]) -> str:
@@ -260,9 +542,58 @@ def build_curl_header_config(headers: dict[str, str]) -> str:
 
 
 def split_curl_response(stdout: str) -> tuple[str, str]:
-    if "\n" not in stdout:
-        raise CodexLBClientError("curl 响应缺少 HTTP 状态码。")
-    return stdout.rsplit("\n", 1)
+    response_text, metrics = split_curl_response_metrics(stdout)
+    return response_text, str(metrics.get("http_code") or "")
+
+
+def transport_exception_record(
+    *,
+    transport: str,
+    result: str,
+    started_at: str,
+    started: float,
+    request: Request,
+    exc: BaseException,
+) -> dict[str, Any]:
+    return {
+        "transport": transport,
+        "result": result,
+        "started_at": started_at,
+        "finished_at": trace_now_iso(),
+        "duration_seconds": round(time.monotonic() - started, 6),
+        "endpoint": endpoint_metadata(request.full_url),
+        "error_type": type(exc).__name__,
+        "message": redact_request_secrets(str(exc), request),
+    }
+
+
+def redact_request_secrets(text: str, request: Request) -> str:
+    redacted = text
+    for key, value in request.header_items():
+        if key.casefold() not in {"authorization", "proxy-authorization", "x-api-key", "api-key"}:
+            continue
+        candidates = [value]
+        if " " in value:
+            candidates.append(value.split(" ", 1)[1])
+        for candidate in candidates:
+            if candidate:
+                redacted = redacted.replace(candidate, "[REDACTED]")
+    return redacted
+
+
+def record_transport(
+    request_trace: RequestTrace | None,
+    *,
+    request: Request,
+    raw_response: str,
+    record: dict[str, Any],
+) -> None:
+    if request_trace is None:
+        return
+    request_trace.record_transport(
+        record,
+        raw_response=redact_request_secrets(raw_response, request),
+    )
 
 
 def parse_json_response(text: str, *, label: str) -> dict[str, Any]:
@@ -376,6 +707,68 @@ def extract_event_stream_text(stream_text: str) -> str:
     if saw_output_text:
         return ""
     raise CodexLBClientError("Codex Responses API 流中未找到 output_text。")
+
+
+def summarize_event_stream(stream_text: str) -> dict[str, Any]:
+    event_counts: dict[str, int] = {}
+    response_ids: list[str] = []
+    malformed_json_events = 0
+    data_events = 0
+    done_markers = 0
+    terminal_event: str | None = None
+    last_event_type: str | None = None
+
+    for block in iter_sse_blocks(stream_text):
+        event_name, data_text = parse_sse_block(block)
+        if not data_text:
+            continue
+        if data_text == "[DONE]":
+            done_markers += 1
+            last_event_type = event_name or "[DONE]"
+            continue
+        data_events += 1
+        try:
+            payload = json.loads(data_text)
+        except json.JSONDecodeError:
+            malformed_json_events += 1
+            event_type = event_name or "malformed_json"
+            event_counts[event_type] = event_counts.get(event_type, 0) + 1
+            last_event_type = event_type
+            continue
+        if not isinstance(payload, dict):
+            event_type = event_name or "non_object_json"
+            event_counts[event_type] = event_counts.get(event_type, 0) + 1
+            last_event_type = event_type
+            continue
+
+        event_type = str(payload.get("type") or event_name or "unknown")
+        event_counts[event_type] = event_counts.get(event_type, 0) + 1
+        last_event_type = event_type
+        if event_type in {"response.completed", "response.failed", "response.incomplete"}:
+            terminal_event = event_type
+
+        id_candidates = [payload.get("response_id"), payload.get("id")]
+        response = payload.get("response")
+        if isinstance(response, dict):
+            id_candidates.append(response.get("id"))
+        for candidate in id_candidates:
+            if isinstance(candidate, str) and candidate and candidate not in response_ids:
+                response_ids.append(candidate)
+
+    return {
+        "schema_version": 1,
+        "recorded_at": trace_now_iso(),
+        "stream_chars": len(stream_text),
+        "stream_utf8_bytes": len(stream_text.encode("utf-8")),
+        "sse_blocks": len(iter_sse_blocks(stream_text)),
+        "data_events": data_events,
+        "event_counts": event_counts,
+        "last_event_type": last_event_type,
+        "terminal_event": terminal_event,
+        "done_markers": done_markers,
+        "malformed_json_events": malformed_json_events,
+        "response_ids": response_ids,
+    }
 
 
 def iter_sse_blocks(stream_text: str) -> list[list[str]]:

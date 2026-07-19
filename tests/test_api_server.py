@@ -191,6 +191,7 @@ def test_get_job_artifacts_lists_and_reads_text_outputs(tmp_path: Path) -> None:
     (job_dir / "intermediate/classified").mkdir(parents=True, exist_ok=True)
     (job_dir / "intermediate/refined").mkdir(parents=True, exist_ok=True)
     (job_dir / "output/final").mkdir(parents=True, exist_ok=True)
+    (job_dir / "output/logs/refine").mkdir(parents=True, exist_ok=True)
     (job_dir / "state.json").write_text(
         json.dumps(
             {
@@ -215,6 +216,10 @@ def test_get_job_artifacts_lists_and_reads_text_outputs(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (job_dir / "output/final/source.md").write_text("# 最终稿\n\n正文", encoding="utf-8")
+    (job_dir / "output/logs/refine/diagnostics.json").write_text(
+        json.dumps({"schema_version": 1, "attempts": [{"status": "accepted"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     app = create_app(project_root=tmp_path)
     list_response = request_json(app, "GET", "/api/jobs/job-test-001/artifacts")
@@ -224,6 +229,7 @@ def test_get_job_artifacts_lists_and_reads_text_outputs(tmp_path: Path) -> None:
     item_ids = {item["id"] for item in items}
     assert any(item["id"] == "transcribe-text" and item["exists"] for item in items)
     assert any(item["id"] == "refine-markdown" and item["exists"] for item in items)
+    assert any(item["id"] == "refine-diagnostics" and item["exists"] for item in items)
     assert "align-json" not in item_ids
     assert "classify-json" not in item_ids
 
@@ -231,6 +237,10 @@ def test_get_job_artifacts_lists_and_reads_text_outputs(tmp_path: Path) -> None:
 
     assert content_response.status_code == 200
     assert content_response.json()["content"] == "# 校对结果\n\n正文"
+
+    diagnostics_response = request_json(app, "GET", "/api/jobs/job-test-001/artifacts/refine-diagnostics")
+    assert diagnostics_response.status_code == 200
+    assert json.loads(diagnostics_response.json()["content"])["attempts"][0]["status"] == "accepted"
 
 
 def test_get_job_artifact_rejects_unknown_artifact_id(tmp_path: Path) -> None:

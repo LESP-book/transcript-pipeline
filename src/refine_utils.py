@@ -13,7 +13,19 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
-from src.codex_lb_client import CodexLBClient, CodexLBClientError
+from src.codex_lb_client import CodexLBClient, CodexLBClientError, endpoint_url
+from src.request_trace import (
+    TRACE_SCHEMA_VERSION,
+    RequestTrace,
+    build_refine_request_trace,
+    create_trace_run_id,
+    endpoint_metadata,
+    exception_metadata,
+    sanitized_proxy_environment,
+    text_fingerprint,
+    trace_now_iso,
+    update_refine_diagnostics_summary,
+)
 from src.runtime_utils import ensure_directory, relativize_path
 from src.schemas import LoadedSettings
 
@@ -957,15 +969,24 @@ def run_codex_cli_payload(prompt: str, loaded_settings: LoadedSettings) -> dict[
         return extract_json_payload(output_file.read())
 
 
-def run_codex_api_payload(prompt: str, loaded_settings: LoadedSettings) -> dict[str, Any]:
+def run_codex_api_payload(
+    prompt: str,
+    loaded_settings: LoadedSettings,
+    *,
+    request_trace: RequestTrace | None = None,
+) -> dict[str, Any]:
     llm_settings = loaded_settings.settings.llm
     configured_model = llm_settings.model.strip()
     if not configured_model:
-        raise CLIBackendError("codex_api 需要配置 llm.model。")
+        exc = CLIBackendError("codex_api 需要配置 llm.model。")
+        if request_trace is not None:
+            request_trace.write_json("backend-error.json", exception_metadata(exc, category="configuration"))
+        raise exc
 
+    instructions = "你是阶段 6 文稿校对助手。严格遵守用户输入中的 JSON 输出要求，只返回最终 JSON。"
     payload: dict[str, Any] = {
         "model": configured_model,
-        "instructions": "你是阶段 6 文稿校对助手。严格遵守用户输入中的 JSON 输出要求，只返回最终 JSON。",
+        "instructions": instructions,
         "input": prompt,
         "stream": True,
         "store": False,
@@ -976,9 +997,53 @@ def run_codex_api_payload(prompt: str, loaded_settings: LoadedSettings) -> dict[
 
     client = CodexLBClient(loaded_settings.settings.codex_lb, timeout_seconds=llm_settings.timeout_seconds)
     try:
-        result = extract_json_payload(client.codex_responses_text(payload))
+        request_endpoint = endpoint_url(client.base_url, client.settings.codex_responses_path)
     except CodexLBClientError as exc:
+        if request_trace is not None:
+            request_trace.write_json("backend-error.json", exception_metadata(exc, category="configuration"))
         raise CLIBackendError(f"codex_api 调用失败: {exc}") from exc
+
+    if request_trace is not None:
+        prompt_meta = text_fingerprint(prompt)
+        instruction_meta = text_fingerprint(instructions)
+        request_trace.write_json(
+            "request-meta.json",
+            {
+                "schema_version": TRACE_SCHEMA_VERSION,
+                "stage": "refine",
+                "recorded_at": trace_now_iso(),
+                "model": configured_model,
+                "reasoning_effort": configured_reasoning_effort,
+                "stream": True,
+                "store": False,
+                "timeout_seconds": llm_settings.timeout_seconds,
+                "endpoint": endpoint_metadata(request_endpoint),
+                "api_key_env": client.settings.api_key_env,
+                "payload_fields": sorted(payload),
+                "prompt_chars": prompt_meta["chars"],
+                "prompt_utf8_bytes": prompt_meta["utf8_bytes"],
+                "prompt_sha256": prompt_meta["sha256"],
+                "instructions_chars": instruction_meta["chars"],
+                "instructions_utf8_bytes": instruction_meta["utf8_bytes"],
+                "instructions_sha256": instruction_meta["sha256"],
+                "proxy_environment": sanitized_proxy_environment(),
+            },
+        )
+
+    try:
+        output_text = client.codex_responses_text(payload, request_trace=request_trace)
+    except CodexLBClientError as exc:
+        if request_trace is not None:
+            request_trace.write_json("backend-error.json", exception_metadata(exc, category="transport_or_protocol"))
+        raise CLIBackendError(f"codex_api 调用失败: {exc}") from exc
+    try:
+        result = extract_json_payload(output_text)
+    except CLIBackendError as exc:
+        if request_trace is not None:
+            request_trace.write_json("parse-error.json", exception_metadata(exc, category="model_output_json"))
+        raise
+    if request_trace is not None:
+        request_trace.write_json("parsed-output.json", result)
     result.setdefault("model_name", configured_model)
     return result
 
@@ -1075,9 +1140,15 @@ def run_backend_cli(backend: str, prompt: str, loaded_settings: LoadedSettings) 
     raise CLIBackendError(f"未知阶段 6 后端: {backend}")
 
 
-def run_backend_payload(backend: str, prompt: str, loaded_settings: LoadedSettings) -> dict[str, Any]:
+def run_backend_payload(
+    backend: str,
+    prompt: str,
+    loaded_settings: LoadedSettings,
+    *,
+    request_trace: RequestTrace | None = None,
+) -> dict[str, Any]:
     if backend == BACKEND_CODEX_API:
-        return run_codex_api_payload(prompt, loaded_settings)
+        return run_codex_api_payload(prompt, loaded_settings, request_trace=request_trace)
     if backend == BACKEND_CODEX:
         return run_codex_cli_payload(prompt, loaded_settings)
     if backend == BACKEND_AGY:
@@ -1326,7 +1397,32 @@ def run_single_pass_backend_refinement(
     asr_full_text: str,
     reference_full_text: str,
     logger: logging.Logger | None = None,
+    diagnostic_run_id: str | None = None,
+    diagnostic_attempt: int = 1,
 ) -> BackendDocumentRefinementResult:
+    run_id = diagnostic_run_id or create_trace_run_id()
+    request_trace = build_refine_request_trace(
+        loaded_settings.path_for("logs_dir"),
+        basename=input_paths.basename,
+        backend=backend,
+        run_id=run_id,
+        attempt=diagnostic_attempt,
+    )
+    request_trace.write_json(
+        "attempt-meta.json",
+        {
+            "schema_version": TRACE_SCHEMA_VERSION,
+            "stage": "refine",
+            "recorded_at": trace_now_iso(),
+            "run_id": run_id,
+            "attempt": diagnostic_attempt,
+            "file": input_paths.basename,
+            "requested_backend": backend,
+            "fallback_backend": fallback_backend,
+            "source_asr_file": relativize_path(input_paths.asr_text_path, loaded_settings.project_root),
+            "source_reference_file": relativize_optional_reference(input_paths, loaded_settings),
+        },
+    )
     pre_replaced_segments = build_pre_replaced_document(
         asr_full_text=asr_full_text,
         reference_full_text=reference_full_text,
@@ -1342,8 +1438,20 @@ def run_single_pass_backend_refinement(
             pre_replaced_segments=pre_replaced_segments,
             reference_full_text=reference_full_text,
         )
-        payload = run_backend_payload(target_backend, prompt, loaded_settings)
-        return parse_backend_document_result(target_backend, payload)
+        payload = run_backend_payload(
+            target_backend,
+            prompt,
+            loaded_settings,
+            request_trace=request_trace if target_backend == BACKEND_CODEX_API else None,
+        )
+        try:
+            return parse_backend_document_result(target_backend, payload)
+        except CLIBackendError as exc:
+            request_trace.write_json(
+                "result-contract-error.json",
+                exception_metadata(exc, category="backend_result_contract"),
+            )
+            raise
 
     def build_programmatic_fallback_result(target_backend: str) -> BackendDocumentRefinementResult:
         return BackendDocumentRefinementResult(
@@ -1361,20 +1469,59 @@ def run_single_pass_backend_refinement(
     fallback_from_backend: str | None = None
     try:
         document_result = run_backend_attempt(backend)
-    except CLIBackendError:
+    except CLIBackendError as primary_exc:
+        request_trace.write_json(
+            "primary-backend-error.json",
+            exception_metadata(primary_exc, category="primary_backend"),
+        )
         if fallback_backend:
             try:
                 document_result = run_backend_attempt(fallback_backend)
                 fallback_from_backend = backend
-            except CLIBackendError:
-                return build_programmatic_fallback_result(backend)
+            except CLIBackendError as fallback_exc:
+                request_trace.write_json(
+                    "fallback-backend-error.json",
+                    exception_metadata(fallback_exc, category="fallback_backend"),
+                )
+                fallback_result = build_programmatic_fallback_result(backend)
+                request_trace.write_json(
+                    "attempt-outcome.json",
+                    {
+                        "schema_version": TRACE_SCHEMA_VERSION,
+                        "recorded_at": trace_now_iso(),
+                        "status": "programmatic_fallback",
+                        "refinement_strategy": fallback_result.refinement_strategy,
+                        "refinement_reason": fallback_result.refinement_reason,
+                    },
+                )
+                return fallback_result
         else:
-            return build_programmatic_fallback_result(backend)
+            fallback_result = build_programmatic_fallback_result(backend)
+            request_trace.write_json(
+                "attempt-outcome.json",
+                {
+                    "schema_version": TRACE_SCHEMA_VERSION,
+                    "recorded_at": trace_now_iso(),
+                    "status": "programmatic_fallback",
+                    "refinement_strategy": fallback_result.refinement_strategy,
+                    "refinement_reason": fallback_result.refinement_reason,
+                },
+            )
+            return fallback_result
 
     refinement_notes = list(document_result.refinement_notes)
     final_markdown = document_result.final_markdown
     if not locked_quotes_preserved(final_markdown, pre_replaced_segments):
         refinement_notes.append("locked_quote_changed_use_programmatic_fallback")
+        request_trace.write_json(
+            "locked-quote-validation.json",
+            {
+                "schema_version": TRACE_SCHEMA_VERSION,
+                "recorded_at": trace_now_iso(),
+                "passed": False,
+                "reason": "locked_quote_changed",
+            },
+        )
         final_markdown = build_simple_markdown(input_paths.basename, edited_plain_text)
         document_result = BackendDocumentRefinementResult(
             backend=document_result.backend,
@@ -1406,7 +1553,7 @@ def run_single_pass_backend_refinement(
             len(pre_replaced_segments),
         )
 
-    return BackendDocumentRefinementResult(
+    final_result = BackendDocumentRefinementResult(
         backend=document_result.backend,
         model_name=document_result.model_name or document_result.backend,
         final_markdown=final_markdown,
@@ -1427,6 +1574,23 @@ def run_single_pass_backend_refinement(
         section_map=document_result.section_map,
         backend_statuses=backend_statuses,
     )
+    request_trace.write_json(
+        "attempt-outcome.json",
+        {
+            "schema_version": TRACE_SCHEMA_VERSION,
+            "recorded_at": trace_now_iso(),
+            "status": (
+                "programmatic_fallback"
+                if final_result.refinement_strategy == "programmatic_markdown_fallback"
+                else "backend_result"
+            ),
+            "actual_backend": final_result.backend,
+            "model_name": final_result.model_name,
+            "refinement_strategy": final_result.refinement_strategy,
+            "refinement_reason": final_result.refinement_reason,
+        },
+    )
+    return final_result
 
 
 def validate_final_markdown_contract(
@@ -1487,19 +1651,120 @@ def run_validated_single_pass_backend_refinement(
     retry_count = 0
     validation_failures: list[str] = []
     current_prompt = markdown_prompt_text
+    run_id = create_trace_run_id()
+    logs_dir = loaded_settings.path_for("logs_dir")
+
+    def persist_validation_attempt(
+        *,
+        attempt: int,
+        status: str,
+        reasons: list[str],
+        result: BackendDocumentRefinementResult | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        request_trace = build_refine_request_trace(
+            logs_dir,
+            basename=input_paths.basename,
+            backend=backend,
+            run_id=run_id,
+            attempt=attempt,
+        )
+        validation_payload: dict[str, Any] = {
+            "schema_version": TRACE_SCHEMA_VERSION,
+            "recorded_at": trace_now_iso(),
+            "run_id": run_id,
+            "attempt": attempt,
+            "status": status,
+            "validation_reasons": list(reasons),
+        }
+        if result is not None:
+            validation_payload.update(
+                {
+                    "actual_backend": result.backend,
+                    "model_name": result.model_name,
+                    "refinement_strategy": result.refinement_strategy,
+                    "refinement_reason": result.refinement_reason,
+                }
+            )
+        if error is not None:
+            validation_payload["error"] = exception_metadata(error, category="refine_attempt")
+        request_trace.write_json("validation.json", validation_payload)
+
+        sse_summary = request_trace.read_json("sse-summary.json")
+        transport_payload = request_trace.read_json("transport.json")
+        raw_transports = transport_payload.get("transports", [])
+        transports = (
+            [item for item in raw_transports if isinstance(item, dict)]
+            if isinstance(raw_transports, list)
+            else []
+        )
+        summary_entry: dict[str, Any] = {
+            "schema_version": TRACE_SCHEMA_VERSION,
+            "recorded_at": trace_now_iso(),
+            "run_id": run_id,
+            "file": input_paths.basename,
+            "backend": backend,
+            "attempt": attempt,
+            "status": status,
+            "validation_reasons": list(reasons),
+            "response_ids": sse_summary.get("response_ids", []),
+            "terminal_event": sse_summary.get("terminal_event"),
+            "transport_results": [
+                {
+                    "sequence": item.get("sequence"),
+                    "transport": item.get("transport"),
+                    "result": item.get("result"),
+                    "http_status": item.get("http_status"),
+                    "return_code": item.get("return_code"),
+                    "metrics": item.get("metrics", {}),
+                }
+                for item in transports
+            ],
+            "diagnostic_directory": str(request_trace.directory.relative_to(logs_dir)),
+        }
+        if result is not None:
+            summary_entry.update(
+                {
+                    "actual_backend": result.backend,
+                    "model_name": result.model_name,
+                    "refinement_strategy": result.refinement_strategy,
+                    "refinement_reason": result.refinement_reason,
+                }
+            )
+        if error is not None:
+            summary_entry["error"] = exception_metadata(error, category="refine_attempt")
+        update_refine_diagnostics_summary(logs_dir, summary_entry)
 
     while True:
-        result = run_single_pass_backend_refinement(
-            backend=backend,
-            fallback_backend=fallback_backend,
-            input_paths=input_paths,
-            loaded_settings=loaded_settings,
-            markdown_prompt_text=current_prompt,
-            asr_full_text=asr_full_text,
-            reference_full_text=reference_full_text,
-            logger=logger,
-        )
+        attempt = retry_count + 1
+        try:
+            result = run_single_pass_backend_refinement(
+                backend=backend,
+                fallback_backend=fallback_backend,
+                input_paths=input_paths,
+                loaded_settings=loaded_settings,
+                markdown_prompt_text=current_prompt,
+                asr_full_text=asr_full_text,
+                reference_full_text=reference_full_text,
+                logger=logger,
+                diagnostic_run_id=run_id,
+                diagnostic_attempt=attempt,
+            )
+        except CLIBackendError as exc:
+            persist_validation_attempt(
+                attempt=attempt,
+                status="backend_error",
+                reasons=[],
+                error=exc,
+            )
+            raise
         reasons = validate_final_markdown_contract(result)
+        persist_validation_attempt(
+            attempt=attempt,
+            status="accepted" if not reasons else "rejected",
+            reasons=reasons,
+            result=result,
+        )
         if not reasons:
             if retry_count == 0:
                 return result

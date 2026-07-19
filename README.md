@@ -726,6 +726,17 @@ http://127.0.0.1:5173
   - `## 提问环节`
 - 如果所有请求后端都失败，会回退到本地保守整理逻辑
 
+阶段 6 的 `codex_api` 调用会保留可追踪诊断：
+
+- 汇总文件默认位于 `data/output/logs/refine/diagnostics.json`；单任务目录中对应
+  `data/jobs/<job_id>/output/logs/refine/diagnostics.json`，也可通过任务产物中的“阶段 6 调用诊断”读取
+- 每次尝试的完整证据位于汇总文件所列的 `diagnostic_directory`，包括脱敏请求摘要、传输指标、
+  完整或中断时已收到的 SSE、SSE 事件摘要、提取正文、JSON 解析结果、错误和最终校验原因
+- 请求摘要不保存 API Key、Authorization 或 Prompt 正文，只保存模型、端点、代理地址以及长度和
+  SHA-256；模型响应正文会完整保存，因此诊断目录仍应按任务数据的权限保护
+- 为保证失败证据完整，当前不截断 SSE，也不自动清理历史诊断；长文稿和多次重跑会增加磁盘占用，
+  需要由部署方根据实际用量制定备份或清理策略
+
 直接运行阶段 7 写入最终 Markdown：
 
 ```bash

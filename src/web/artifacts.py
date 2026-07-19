@@ -93,6 +93,14 @@ def _main_artifacts(job_root: Path) -> list[ArtifactEntry]:
             content_type="json",
         ),
         ArtifactEntry(
+            id="refine-diagnostics",
+            stage="refine",
+            label="阶段 6 调用诊断",
+            path=job_root / "output/logs/refine/diagnostics.json",
+            kind="file",
+            content_type="json",
+        ),
+        ArtifactEntry(
             id="final-markdown",
             stage="export-markdown",
             label="最终 Markdown",

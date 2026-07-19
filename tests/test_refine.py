@@ -410,7 +410,7 @@ def test_refine_batch_uses_single_codex_call_with_reference_context(
 
     prompts: list[str] = []
 
-    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+    def fake_run_codex_payload(prompt: str, _loaded_settings, **_kwargs) -> dict[str, object]:
         prompts.append(prompt)
         if "当前块正文" in prompt:
             current_text = prompt.split("当前块正文：\n", 1)[1].split("\n\n后文锚点：", 1)[0].strip()
@@ -456,7 +456,7 @@ def test_refine_batch_without_reference_writes_null_source_reference(
 
     prompts: list[str] = []
 
-    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+    def fake_run_codex_payload(prompt: str, _loaded_settings, **_kwargs) -> dict[str, object]:
         prompts.append(prompt)
         return {
             "final_markdown": "# conversation-demo\n\n今天我们先聊这个问题。\n\n对，我补充一点。",
@@ -937,7 +937,7 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     asr_path = write_refine_inputs(tmp_path)
     loaded_settings = load_settings(project_root=tmp_path)
 
-    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+    def fake_run_codex_payload(prompt: str, _loaded_settings, **_kwargs) -> dict[str, object]:
         return {
             "final_markdown": "# demo\n\n> 久有凌云志，重上井冈山。\n\n这里 的意思 是 作者在说明情绪变化。",
             "section_map": [{"section": "quote", "source_blocks": [0]}],
@@ -1147,6 +1147,13 @@ def test_refine_batch_retries_programmatic_fallback_and_persists_validation_meta
     assert result["final_markdown"] == "# 可交付章节\n\n这是重新润色后的正文。"
     assert result["model_results"]["codex_api"]["validation_retry_count"] == 1
     assert "programmatic_markdown_fallback" in result["model_results"]["codex_api"]["validation_failure_reasons"]
+    diagnostics_path = loaded_settings.path_for("logs_dir") / "refine/diagnostics.json"
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    attempts = diagnostics["attempts"]
+    assert [item["status"] for item in attempts] == ["rejected", "accepted"]
+    assert attempts[0]["validation_reasons"] == ["programmatic_markdown_fallback"]
+    assert attempts[1]["validation_reasons"] == []
+    assert attempts[0]["run_id"] == attempts[1]["run_id"]
 
 
 def test_refine_batch_rejects_result_that_stays_invalid_after_configured_retry(
@@ -1173,6 +1180,14 @@ def test_refine_batch_rejects_result_that_stays_invalid_after_configured_retry(
     with pytest.raises(RefinementOutputValidationError, match="contains_unicode_replacement_character"):
         refine_batch(loaded_settings)
 
+    diagnostics_path = loaded_settings.path_for("logs_dir") / "refine/diagnostics.json"
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert [item["status"] for item in diagnostics["attempts"]] == ["rejected", "rejected"]
+    assert diagnostics["attempts"][-1]["validation_reasons"] == [
+        "contains_unicode_replacement_character",
+        "uses_canonical_source_placeholder_title",
+    ]
+
 
 def test_refine_batch_falls_back_to_codex_when_single_agy_backend_fails(
     tmp_path: Path,
@@ -1185,7 +1200,7 @@ def test_refine_batch_falls_back_to_codex_when_single_agy_backend_fails(
     def fake_run_agy_payload(_prompt: str, _loaded_settings) -> dict[str, object]:
         raise CLIBackendError("agy failed")
 
-    def fake_run_codex_payload(_prompt: str, _loaded_settings) -> dict[str, object]:
+    def fake_run_codex_payload(_prompt: str, _loaded_settings, **_kwargs) -> dict[str, object]:
         return {
             "model_name": BACKEND_CODEX,
             "final_markdown": "# demo\n\nCodex 回退结果",
@@ -1228,7 +1243,7 @@ def test_refine_batch_uses_single_codex_api_call_for_long_line_based_asr(
 
     prompts: list[str] = []
 
-    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+    def fake_run_codex_payload(prompt: str, _loaded_settings, **_kwargs) -> dict[str, object]:
         prompts.append(prompt)
         return {
             "final_markdown": "# long-demo\n\n" + "\n\n".join(f"第{i:04d}行转写文本" for i in range(line_count)),
@@ -1283,7 +1298,7 @@ def test_refine_batch_does_not_use_block_concurrency_in_single_pass_mode(
         def __exit__(self, exc_type, exc, tb) -> None:
             _ = exc_type, exc, tb
 
-    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+    def fake_run_codex_payload(prompt: str, _loaded_settings, **_kwargs) -> dict[str, object]:
         return {
             "final_markdown": "# parallel-demo\n\n正文",
             "section_map": [],
@@ -1315,7 +1330,7 @@ def test_refine_batch_logs_single_pass_progress(
     (reference_dir / "progress-demo.txt").write_text("参考原文", encoding="utf-8")
     loaded_settings = load_settings(project_root=tmp_path)
 
-    def fake_run_codex_payload(prompt: str, _loaded_settings) -> dict[str, object]:
+    def fake_run_codex_payload(prompt: str, _loaded_settings, **_kwargs) -> dict[str, object]:
         return {
             "final_markdown": "# progress-demo\n\n正文",
             "section_map": [],
