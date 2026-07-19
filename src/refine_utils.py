@@ -1596,7 +1596,7 @@ def run_single_pass_backend_refinement(
 def validate_final_markdown_contract(
     result: BackendDocumentRefinementResult,
 ) -> list[str]:
-    """验证最终稿是否仍是占位/损坏结果，而非要求模型判断文稿内容优劣。"""
+    """只拒绝可确定的占位/损坏结果，不把标题或段落样式当成交付契约。"""
     final_markdown = result.final_markdown.strip()
     reasons: list[str] = []
     if result.refinement_strategy == "programmatic_markdown_fallback":
@@ -1607,16 +1607,10 @@ def validate_final_markdown_contract(
     lines = final_markdown.splitlines()
     first_line = next((line.strip() for line in lines if line.strip()), "")
     heading_match = re.fullmatch(r"#\s+(.+)", first_line)
-    if heading_match is None:
-        reasons.append("missing_h1_title")
-    else:
+    if heading_match is not None:
         title = normalize_inline_text(heading_match.group(1))
         if title.casefold() == "source":
             reasons.append("uses_canonical_source_placeholder_title")
-
-    body_start = final_markdown.find("\n\n")
-    if body_start < 0 or not final_markdown[body_start:].strip():
-        reasons.append("missing_separated_markdown_body")
     return reasons
 
 
@@ -1625,10 +1619,10 @@ def build_validation_retry_prompt(markdown_prompt_text: str, reasons: list[str])
     return "\n\n".join(
         [
             markdown_prompt_text.strip(),
-            "## 上一次校对结果未通过格式校验，必须重新完整润色",
+            "## 上一次校对结果未通过交付校验，必须重新完整润色",
             f"检测原因：{rendered_reasons}。",
             "这不是让你解释错误；请重新输出完整 JSON，且 final_markdown 必须是可直接交付的 Markdown。",
-            "final_markdown 必须以有意义的一级章节标题开头，不能使用 `# source` 等内部占位标题；标题后必须有空行和正文。",
+            "final_markdown 不得使用 `# source` 等内部占位标题；如果输出一级标题，必须使用真实内容标题。",
             "不得保留 Unicode 替换字符 `�`，应结合 ASR 和参考原文纠正明显损坏的文字。",
             "除 JSON 外不要输出任何说明、道歉或分析。",
         ]

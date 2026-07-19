@@ -39,6 +39,7 @@ from src.refine_utils import (
     resolve_refinement_input_paths,
     run_codex_cli,
     run_agy,
+    validate_final_markdown_contract,
     validate_minimal_edit_result,
 )
 from tests.helpers import write_minimal_settings
@@ -500,6 +501,11 @@ def test_parse_backend_document_result_requires_fulltext() -> None:
     assert result.final_markdown == "# 标题\n\n> 完整精修文本"
     assert result.needs_review_sections[0]["excerpt"] == "片段"
     assert result.refinement_notes == ["note"]
+
+
+def test_parse_backend_document_result_rejects_empty_final_markdown() -> None:
+    with pytest.raises(CLIBackendError, match="缺少 final_markdown"):
+        parse_backend_document_result(BACKEND_CODEX_API, {"final_markdown": ""})
 
 
 def test_extract_event_stream_text_raises_on_failed_event() -> None:
@@ -1044,7 +1050,10 @@ def test_refine_batch_writes_dual_backend_outputs_without_selected_result(
             section_map=[{"backend": backend}],
         )
 
-    monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
+    monkeypatch.setattr(
+        "src.refine_utils.run_single_pass_backend_refinement",
+        fake_run_single_pass_backend_refinement,
+    )
 
     summary = refine_batch(loaded_settings, requested_backends=[BACKEND_CODEX, BACKEND_AGY])
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
@@ -1099,6 +1108,91 @@ def test_refine_batch_supports_single_agy_backend_via_override(
     assert result["selected_backend"] == BACKEND_AGY
     assert result["final_markdown"] == "# demo\n\nagy 单跑结果"
     assert result["model_results"][BACKEND_AGY]["model_name"] == "Gemini 3.1 Pro (High)"
+
+
+def test_validate_final_markdown_contract_accepts_content_without_h1_or_blank_line() -> None:
+    result = BackendDocumentRefinementResult(
+        backend=BACKEND_CODEX_API,
+        model_name="gpt-5.6-terra",
+        final_markdown="哲学是世界观的理论形态。",
+        refinement_strategy="single_pass_safe_replace",
+        refinement_reason="single_pass_codex_api",
+        needs_review_sections=[],
+        refinement_notes=[],
+    )
+
+    assert validate_final_markdown_contract(result) == []
+
+
+def test_validate_final_markdown_contract_keeps_known_damage_checks() -> None:
+    fallback_result = BackendDocumentRefinementResult(
+        backend=BACKEND_CODEX_API,
+        model_name=BACKEND_CODEX_API,
+        final_markdown="# 正常标题\n\n程序回退稿",
+        refinement_strategy="programmatic_markdown_fallback",
+        refinement_reason="single_pass_backend_failed",
+        needs_review_sections=[],
+        refinement_notes=[],
+    )
+    damaged_result = BackendDocumentRefinementResult(
+        backend=BACKEND_CODEX_API,
+        model_name="gpt-5.6-terra",
+        final_markdown="# source\n\n仍然包含损坏字符 �",
+        refinement_strategy="single_pass_safe_replace",
+        refinement_reason="single_pass_codex_api",
+        needs_review_sections=[],
+        refinement_notes=[],
+    )
+
+    assert validate_final_markdown_contract(fallback_result) == ["programmatic_markdown_fallback"]
+    assert validate_final_markdown_contract(damaged_result) == [
+        "contains_unicode_replacement_character",
+        "uses_canonical_source_placeholder_title",
+    ]
+
+
+def test_refine_batch_accepts_backend_result_without_h1_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_minimal_settings(tmp_path)
+    asr_path = write_refine_inputs(tmp_path)
+    loaded_settings = load_settings(project_root=tmp_path)
+    calls = 0
+    final_markdown = "哲学是世界观的理论形态。\n\n## 历史语境\n\n这里继续展开正文。"
+
+    def fake_run_single_pass_backend_refinement(**_kwargs) -> BackendDocumentRefinementResult:
+        nonlocal calls
+        calls += 1
+        return BackendDocumentRefinementResult(
+            backend=BACKEND_CODEX_API,
+            model_name="gpt-5.6-terra",
+            final_markdown=final_markdown,
+            refinement_strategy="single_pass_safe_replace",
+            refinement_reason="single_pass_codex_api",
+            needs_review_sections=[],
+            refinement_notes=[],
+            edited_plain_text="哲学是世界观的理论形态。\n\n历史语境\n\n这里继续展开正文。",
+        )
+
+    monkeypatch.setattr(
+        "src.refine_utils.run_single_pass_backend_refinement",
+        fake_run_single_pass_backend_refinement,
+    )
+
+    summary = refine_batch(loaded_settings)
+    output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
+    persisted = json.loads(output_path.json_path.read_text(encoding="utf-8"))
+    diagnostics = json.loads(
+        (loaded_settings.path_for("logs_dir") / "refine/diagnostics.json").read_text(encoding="utf-8")
+    )
+
+    assert summary.success == 1
+    assert calls == 1
+    assert persisted["final_markdown"] == final_markdown
+    assert persisted["model_results"][BACKEND_CODEX_API]["validation_retry_count"] == 0
+    assert diagnostics["attempts"][0]["status"] == "accepted"
+    assert diagnostics["attempts"][0]["validation_reasons"] == []
 
 
 def test_refine_batch_retries_programmatic_fallback_and_persists_validation_metadata(
