@@ -774,7 +774,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
 
       <n-collapse-transition :show="expanded">
         <n-flex vertical :size="20" class="status-detail">
-          <div class="pipeline-section">
+          <div v-if="kind !== 'batch'" class="pipeline-section">
             <h4 class="pipeline-title">流水线处理进度 (Pipeline Progress)</h4>
             <div class="pipeline-flow">
               <div
