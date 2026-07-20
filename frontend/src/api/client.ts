@@ -16,6 +16,7 @@ export interface FrontendSettings {
   codex_lb_base_url: string;
   codex_lb_api_key: string;
   has_codex_lb_api_key: boolean;
+  codex_lb_bypass_proxy: boolean;
   profile: string;
   backend: string;
   remote_concurrency: number;
@@ -37,6 +38,7 @@ export interface FrontendSettingsPayload {
   codex_lb_base_url?: string | null;
   codex_lb_api_key?: string | null;
   clear_codex_lb_api_key?: boolean;
+  codex_lb_bypass_proxy?: boolean | null;
   profile?: string | null;
   backend?: string | null;
   remote_concurrency?: number | null;

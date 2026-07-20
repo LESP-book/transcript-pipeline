@@ -10,6 +10,7 @@ import {
   NInput,
   NSelect,
   NSpace,
+  NSwitch,
   NTag,
   useMessage,
 } from "naive-ui";
@@ -26,6 +27,7 @@ const form = reactive({
   codex_lb_base_url: "",
   codex_lb_api_key: "",
   clear_codex_lb_api_key: false,
+  codex_lb_bypass_proxy: false,
   model: "",
   reasoning_effort: "high",
   ocr_model: "",
@@ -64,6 +66,7 @@ function applySettings(settings: FrontendSettings) {
   form.codex_lb_base_url = settings.codex_lb_base_url;
   form.codex_lb_api_key = "";
   form.clear_codex_lb_api_key = false;
+  form.codex_lb_bypass_proxy = settings.codex_lb_bypass_proxy ?? false;
   form.model = settings.model;
   form.reasoning_effort = settings.reasoning_effort;
   form.ocr_model = settings.ocr_model;
@@ -88,6 +91,7 @@ async function saveSettings() {
       codex_lb_base_url: form.codex_lb_base_url,
       codex_lb_api_key: form.codex_lb_api_key || null,
       clear_codex_lb_api_key: form.clear_codex_lb_api_key,
+      codex_lb_bypass_proxy: form.codex_lb_bypass_proxy,
       model: form.model,
       reasoning_effort: form.reasoning_effort,
       ocr_model: form.ocr_model,
@@ -137,6 +141,14 @@ onMounted(loadSettings);
                 show-password-on="click"
                 placeholder="留空则保持现有 key"
               />
+            </n-form-item>
+            <n-form-item label="API 直连（绕过代理）">
+              <n-space vertical :size="4" style="width: 100%;">
+                <n-switch v-model:value="form.codex_lb_bypass_proxy" />
+                <div style="font-size: 12px; color: var(--n-text-color-3, #8c8c8c); line-height: 1.5;">
+                  开启后仅 Codex API 地址绕过系统代理；其他网站仍使用原代理。保存后对新任务生效。
+                </div>
+              </n-space>
             </n-form-item>
             <div class="settings-card__meta">
               <n-tag :type="loadedSettings?.has_codex_lb_api_key ? 'success' : 'warning'" round>

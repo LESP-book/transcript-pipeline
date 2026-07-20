@@ -5,6 +5,7 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +17,7 @@ SETTINGS_RELATIVE_PATH = Path("data/jobs/frontend-settings.json")
 class FrontendSettings(BaseModel):
     codex_lb_base_url: str = ""
     codex_lb_api_key: str = ""
+    codex_lb_bypass_proxy: bool = False
     profile: str = ""
     backend: str = ""
     remote_concurrency: int = Field(default=2, ge=1)
@@ -33,6 +35,7 @@ class FrontendSettingsUpdate(BaseModel):
     codex_lb_base_url: str | None = None
     codex_lb_api_key: str | None = None
     clear_codex_lb_api_key: bool = False
+    codex_lb_bypass_proxy: bool | None = None
     profile: str | None = None
     backend: str | None = None
     remote_concurrency: int | None = Field(default=None, ge=1)
@@ -89,6 +92,8 @@ def save_frontend_settings(project_root: Path, update: FrontendSettingsUpdate) -
             payload[field_name] = normalize_setting_value(raw_value)
     if update.remote_concurrency is not None:
         payload["remote_concurrency"] = update.remote_concurrency
+    if update.codex_lb_bypass_proxy is not None:
+        payload["codex_lb_bypass_proxy"] = update.codex_lb_bypass_proxy
 
     if update.clear_codex_lb_api_key:
         payload["codex_lb_api_key"] = ""
@@ -141,6 +146,7 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         "codex_lb_base_url": settings.codex_lb_base_url or default_base_url,
         "codex_lb_api_key": "",
         "has_codex_lb_api_key": bool(settings.codex_lb_api_key or has_env_api_key),
+        "codex_lb_bypass_proxy": settings.codex_lb_bypass_proxy,
         "profile": settings.profile or default_profile,
         "backend": settings.backend or default_backend,
         "remote_concurrency": settings.remote_concurrency,
@@ -161,13 +167,28 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
 
 @contextmanager
 def codex_lb_environment(settings: FrontendSettings) -> Iterator[None]:
-    keys = ("CODEX_LB_BASE_URL", "CODEX_LB_API_KEY")
+    keys = ("CODEX_LB_BASE_URL", "CODEX_LB_API_KEY", "NO_PROXY", "no_proxy")
     previous = {key: os.environ.get(key) for key in keys}
     try:
         if settings.codex_lb_base_url:
             os.environ["CODEX_LB_BASE_URL"] = settings.codex_lb_base_url
         if settings.codex_lb_api_key:
             os.environ["CODEX_LB_API_KEY"] = settings.codex_lb_api_key
+        if settings.codex_lb_bypass_proxy:
+            effective_base_url = os.environ.get("CODEX_LB_BASE_URL", "").strip()
+            bypass_host = urlparse(effective_base_url).hostname or ""
+            if bypass_host:
+                entries = [
+                    entry.strip()
+                    for value in (os.environ.get("NO_PROXY", ""), os.environ.get("no_proxy", ""))
+                    for entry in value.split(",")
+                    if entry.strip()
+                ]
+                if bypass_host not in entries:
+                    entries.append(bypass_host)
+                merged_no_proxy = ",".join(dict.fromkeys(entries))
+                os.environ["NO_PROXY"] = merged_no_proxy
+                os.environ["no_proxy"] = merged_no_proxy
         yield
     finally:
         for key, value in previous.items():

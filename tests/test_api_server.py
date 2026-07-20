@@ -100,6 +100,7 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
         json_body={
             "codex_lb_base_url": "https://api.example.test",
             "codex_lb_api_key": "sk-test-secret",
+            "codex_lb_bypass_proxy": True,
             "profile": "local_cpu",
             "backend": "agy",
             "remote_concurrency": 4,
@@ -119,6 +120,7 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
     assert payload["codex_lb_base_url"] == "https://api.example.test"
     assert payload["codex_lb_api_key"] == ""
     assert payload["has_codex_lb_api_key"] is True
+    assert payload["codex_lb_bypass_proxy"] is True
     assert payload["profile"] == "local_cpu"
     assert payload["backend"] == "agy"
     assert payload["remote_concurrency"] == 4
@@ -134,6 +136,7 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
     settings_path = tmp_path / "data/jobs/frontend-settings.json"
     persisted = json.loads(settings_path.read_text(encoding="utf-8"))
     assert persisted["codex_lb_api_key"] == "sk-test-secret"
+    assert persisted["codex_lb_bypass_proxy"] is True
     assert persisted["backend"] == "agy"
     assert persisted["remote_concurrency"] == 4
 
@@ -146,6 +149,16 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
 
     assert clear_response.status_code == 200
     assert clear_response.json()["has_codex_lb_api_key"] is False
+
+    proxy_response = request_json(
+        app,
+        "PUT",
+        "/api/frontend-settings",
+        json_body={"codex_lb_bypass_proxy": False},
+    )
+    assert proxy_response.status_code == 200
+    assert proxy_response.json()["codex_lb_bypass_proxy"] is False
+    assert json.loads(settings_path.read_text(encoding="utf-8"))["codex_lb_bypass_proxy"] is False
 
 
 def test_get_job_status_returns_current_state(tmp_path: Path) -> None:
