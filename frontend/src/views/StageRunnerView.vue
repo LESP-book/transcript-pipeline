@@ -153,7 +153,7 @@ const ocrBackendOptions = [
 ];
 const reasoningOptions = ["low", "medium", "high", "xhigh"].map((value) => ({ label: value, value }));
 const modelOptions = [
-  { label: "GPT-5.6 Sol", value: "gpt-5.6" },
+  { label: "GPT-5.6 Sol", value: "gpt-5.6-sol" },
   { label: "GPT-5.6 Terra", value: "gpt-5.6-terra" },
   { label: "GPT-5.6 Luna", value: "gpt-5.6-luna" },
   { label: "GPT-5.5", value: "gpt-5.5" },

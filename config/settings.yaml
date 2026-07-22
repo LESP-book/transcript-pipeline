@@ -173,7 +173,7 @@ classification:
 llm:
   enabled: true
   provider: local_cli
-  model: gpt-5.6
+  model: gpt-5.6-sol
   gemini_model: Gemini 3.1 Pro (High)
   gemini_fallback_model: ""
   backends:

@@ -19,7 +19,7 @@ def test_load_settings_success() -> None:
     assert loaded_settings.settings_path == (PROJECT_ROOT / "config/settings.yaml").resolve()
     assert loaded_settings.active_profile_name == "wsl2_gpu_high_accuracy"
     assert loaded_settings.settings.llm.backends == ["codex_api"]
-    assert loaded_settings.settings.llm.model == "gpt-5.6"
+    assert loaded_settings.settings.llm.model == "gpt-5.6-sol"
     assert loaded_settings.settings.llm.gemini_model == "Gemini 3.1 Pro (High)"
     assert loaded_settings.settings.llm.gemini_fallback_model == ""
     assert loaded_settings.settings.llm.reasoning_effort == "high"

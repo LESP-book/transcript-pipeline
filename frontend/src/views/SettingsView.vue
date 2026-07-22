@@ -40,7 +40,7 @@ const reasoningOptions = ["low", "medium", "high", "xhigh"].map((value) => ({
 }));
 
 const modelOptions = [
-  { label: "GPT-5.6 Sol（推荐：阶段 6 精修）", value: "gpt-5.6" },
+  { label: "GPT-5.6 Sol（推荐：阶段 6 精修）", value: "gpt-5.6-sol" },
   { label: "GPT-5.6 Terra（推荐：PDF OCR）", value: "gpt-5.6-terra" },
   { label: "GPT-5.6 Luna（成本优先）", value: "gpt-5.6-luna" },
   { label: "GPT-5.5（兼容旧设置）", value: "gpt-5.5" },

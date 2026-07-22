@@ -243,7 +243,7 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
   --manifest "/path/to/jobs.yaml" \
   --remote-concurrency 2 \
   --backend "codex_api" \
-  --model "gpt-5.6" \
+  --model "gpt-5.6-sol" \
   --reasoning-effort "high" \
   --ocr-model "gpt-5.6-terra" \
   --ocr-reasoning-effort "high"
@@ -267,7 +267,7 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 ```bash
 .venv/bin/python scripts/06_refine.py \
   --backend codex_api \
-  --model "gpt-5.6" \
+  --model "gpt-5.6-sol" \
   --reasoning-effort "high"
 ```
 
@@ -287,7 +287,7 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
   --reference "/path/to/reference.pdf" \
   --output-dir "/path/to/output" \
   --backend "codex_api" \
-  --model "gpt-5.6" \
+  --model "gpt-5.6-sol" \
   --reasoning-effort "high" \
   --ocr-model "gpt-5.6-terra" \
   --ocr-reasoning-effort "high"
@@ -689,7 +689,7 @@ http://127.0.0.1:5173
 ```bash
 .venv/bin/python scripts/06_refine.py \
   --backend codex_api \
-  --model "gpt-5.6" \
+  --model "gpt-5.6-sol" \
   --reasoning-effort "high"
 ```
 
@@ -826,7 +826,7 @@ http://127.0.0.1:5173
   --reference "/path/to/reference.pdf" \
   --output-dir "/path/to/output" \
   --backend "codex_api" \
-  --model "gpt-5.6" \
+  --model "gpt-5.6-sol" \
   --reasoning-effort "high" \
   --ocr-model "gpt-5.6-terra" \
   --ocr-reasoning-effort "high"
@@ -884,7 +884,7 @@ manifest 模式：
   --manifest "/path/to/jobs.yaml" \
   --remote-concurrency 2 \
   --backend "codex_api" \
-  --model "gpt-5.6" \
+  --model "gpt-5.6-sol" \
   --reasoning-effort "high" \
   --ocr-model "gpt-5.6-terra" \
   --ocr-reasoning-effort "high"

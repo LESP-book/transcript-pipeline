@@ -148,7 +148,7 @@ class ClassificationSettings(AppBaseModel):
 class LLMSettings(AppBaseModel):
     enabled: bool = True
     provider: str = "local_cli"
-    model: str = "gpt-5.6"
+    model: str = "gpt-5.6-sol"
     gemini_model: str = "Gemini 3.1 Pro (High)"
     gemini_fallback_model: str = ""
     backends: list[str] = Field(default_factory=lambda: ["codex_api"])
