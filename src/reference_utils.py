@@ -289,7 +289,8 @@ def is_meta_line(text: str) -> bool:
 
 
 def strip_leading_ascii_noise(text: str) -> str:
-    return re.sub(r"^[A-Za-z0-9`~!@#$%^&*()_+\-=\[\]{}|\\:;\"'<>,.?/\s]+(?=[\u3400-\u9fff])", "", text).strip()
+    # 年份、日期等数字属于正文，不能和模型偶发输出的 ASCII 噪声一起删除。
+    return re.sub(r"^[A-Za-z`~!@#$%^&*()_+\-=\[\]{}|\\:;\"'<>,.?/\s]+(?=[\u3400-\u9fff])", "", text).strip()
 
 
 def normalize_ocrmypdf_edge_line(text: str) -> str:
