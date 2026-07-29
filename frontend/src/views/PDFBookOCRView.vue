@@ -24,6 +24,7 @@ import {
   getFrontendSettings,
   getPDFBookOCRTask,
   listPDFBookOCRTasks,
+  pdfBookOCREpubUrl,
   pdfBookOCRResultUrl,
   retryPDFBookOCR,
   submitPDFBookOCR,
@@ -228,6 +229,14 @@ function openResult(item: PDFBookOCRItem) {
   window.location.href = pdfBookOCRResultUrl(currentTask.value.id, item.output_file);
 }
 
+function openEpubResult(item: PDFBookOCRItem) {
+  if (!currentTask.value || !item.output_file) {
+    message.error("当前结果不可下载。");
+    return;
+  }
+  window.location.href = pdfBookOCREpubUrl(currentTask.value.id, item.output_file);
+}
+
 async function submit() {
   if (!form.input_path) {
     message.warning("请先选择并上传 PDF 书籍或 PDF 目录。");
@@ -294,7 +303,7 @@ onBeforeUnmount(stopPolling);
       <div>
         <p class="view-hero__eyebrow">独立工具</p>
         <h2 class="view-hero__title">PDF 书籍 OCR</h2>
-        <p class="view-hero__copy">上传一本书或整套 PDF，逐页识别后直接下载干净的 TXT 文本。</p>
+        <p class="view-hero__copy">上传一本书或整套 PDF，逐页识别后直接下载 TXT 或 EPUB。</p>
       </div>
       <div class="pdf-book-ocr-view__hero-mark" aria-hidden="true">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
@@ -305,7 +314,7 @@ onBeforeUnmount(stopPolling);
     </section>
 
     <n-alert type="info" :bordered="false" class="pdf-book-ocr-view__notice">
-      本页只接收 PDF。目录上传会保留原有子目录层级；每本书的 TXT 仅在全部页面成功后才会出现。
+      本页只接收 PDF。目录上传会保留原有子目录层级；每本书的 TXT 和 EPUB 仅在全部页面成功后才会出现。
     </n-alert>
 
     <n-grid :cols="2" :x-gap="20" :y-gap="20" responsive="screen" item-responsive>
@@ -464,7 +473,10 @@ onBeforeUnmount(stopPolling);
                     </li>
                   </ul>
                 </details>
-                <n-button v-if="item.success" tertiary type="primary" size="small" @click="openResult(item)">下载 TXT</n-button>
+                <n-space v-if="item.success" :size="8" class="pdf-book-ocr-result-item__actions">
+                  <n-button tertiary type="primary" size="small" @click="openResult(item)">下载 TXT</n-button>
+                  <n-button tertiary type="primary" size="small" @click="openEpubResult(item)">下载 EPUB</n-button>
+                </n-space>
               </div>
             </div>
           </template>
@@ -726,6 +738,10 @@ onBeforeUnmount(stopPolling);
   margin-left: auto;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.pdf-book-ocr-result-item__actions {
+  justify-content: flex-end;
 }
 
 .pdf-book-ocr-result-item__error {

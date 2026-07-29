@@ -1,0 +1,135 @@
+feature: 2026-07-30-ocr-epub-export
+created: 2026-07-30
+
+steps:
+  - action: "按稳定自然顺序把 OCR 单页/片段整合为独立 UTF-8 TXT"
+    exit_signal: "目录片段按页码自然顺序合并，片段边界保留明确换行，源片段和单个源 TXT 不被覆盖"
+    status: done
+  - action: "建立 OCR 书籍语义模型：正文块、章节、脚注、尾注、引用和 warning"
+    exit_signal: "解析结果不改动源文本，脚注/尾注/引用具有可测试的源位置和唯一目标 ID"
+    status: done
+  - action: "实现圆圈数字脚注识别与局部 occurrence 配对"
+    exit_signal: "重复圆圈数字按局部范围区分；同一行粘连的后续正文不会进入脚注正文"
+    status: done
+  - action: "实现普通数字全书尾注区识别与整书索引"
+    exit_signal: "正文引用可配对到书末唯一尾注定义；年份、日期和无定义数字不误链"
+    status: done
+  - action: "实现未配对、歧义和注释终点不确定的保守处理"
+    exit_signal: "可见源文本保留，不生成失效链接，warning 包含类型、位置和原因"
+    status: done
+  - action: "生成 EPUB 3 包：正文 XHTML、notes.xhtml、OPF、nav.xhtml、CSS 和标准 ZIP"
+    exit_signal: "mimetype 首项且未压缩，目录可导航，noteref、footnote/endnote 和 backlink 全部可解析"
+    status: done
+  - action: "增加 TXT 整合 CLI、独立 EPUB CLI 并验证真实 OCR 样例"
+    exit_signal: "先从 OCR TXT/片段生成整合 TXT，再从整合 TXT 生成默认或显式路径 EPUB；共产党宣言样例可打开且注释统计/警告可追踪"
+    status: done
+  - action: "运行全量测试、真实输出检查和 REVIEW_CHECKLIST 自我评审"
+    exit_signal: "现有测试与新增测试通过，真实输出基本符合目标，无上游结构回归"
+    status: done
+
+checks:
+  - item: "单个 OCR TXT 可被规范化输出为独立整合 TXT，输入目录可按自然数字顺序合并"
+    source: OCR 文本整合
+    status: done
+  - item: "片段之间保留明确换行，整合输出不覆盖任何源片段"
+    source: OCR 文本整合
+    status: done
+  - item: "源 TXT 不被覆盖，现有 Markdown/TXT 导出行为不变"
+    source: 范围守护
+    status: done
+  - item: "解析层先收集注释定义，再解析正文引用"
+    source: 编排骨架
+    status: done
+  - item: "圆圈数字定义支持行首/块首候选，并保留局部范围与 occurrence 信息"
+    source: 圆圈数字脚注规则
+    status: done
+  - item: "全书不同章节重复使用同一圆圈数字时生成不同 note ID"
+    source: 圆圈数字脚注规则
+    status: done
+  - item: "脚注结束后粘连的标题或正文被重新识别为正文块"
+    source: 圆圈数字脚注规则
+    status: done
+  - item: "脚注没有可靠终点时不静默吞掉后续文本"
+    source: 圆圈数字脚注规则
+    status: done
+  - item: "普通数字尾注扫描范围覆盖整本输入文本，不局限于同页或同段"
+    source: 普通数字全书尾注规则
+    status: done
+  - item: "有明确尾注标题时从结构化数字定义建立全书索引"
+    source: 普通数字全书尾注规则
+    status: done
+  - item: "无标题时只有具备连续格式和正文引用支持才启用尾注区"
+    source: 普通数字全书尾注规则
+    status: done
+  - item: "普通数字定义 label 唯一时，正文同 label 引用全部指向同一 endnote"
+    source: 普通数字全书尾注规则
+    status: done
+  - item: "普通数字定义缺失或重复时保留引用并输出 warning"
+    source: 普通数字全书尾注规则
+    status: done
+  - item: "当前截取 TXT 没有全集尾注时不伪造普通数字尾注链接"
+    source: 普通数字全书尾注规则
+    status: done
+  - item: "年份、日期、数值、页码和章节编号不被误判为尾注引用"
+    source: 普通数字全书尾注规则
+    status: done
+  - item: "紧贴正文的 OCR 普通数字引用（如社会主义者报91）可被识别"
+    source: 普通数字全书尾注规则
+    status: done
+  - item: "未配对引用的可见字符与正文位置保留"
+    source: 未配对引用
+    status: done
+  - item: "正文引用使用 epub:type=noteref，注释区使用 footnote/endnote 语义"
+    source: EPUB 结构规则
+    status: done
+  - item: "每个已链接注释都有 backlink，且 backlink 指向现存正文引用"
+    source: EPUB 结构规则
+    status: done
+  - item: "EPUB 包含合法 mimetype、container.xml、content.opf、nav.xhtml、正文和 notes.xhtml"
+    source: EPUB 结构规则
+    status: done
+  - item: "mimetype 是 ZIP 第一项且未压缩"
+    source: EPUB 结构规则
+    status: done
+  - item: "中文语言元数据和书名元数据写入 OPF"
+    source: EPUB 结构规则
+    status: done
+  - item: "正文目录来自保守识别的章节标题，无法识别的正文仍然保留"
+    source: 输入与切分规则
+    status: done
+  - item: "不新增无依据的文本长度、页数、条数、重试或截断限制"
+    source: 范围守护
+    status: done
+  - item: "输入不存在、编码失败、输出不可写和 EPUB 构建失败时明确报错"
+    source: 错误和可观测性契约
+    status: done
+  - item: "无注释文本也能生成可阅读 EPUB"
+    source: 验收场景
+    status: done
+  - item: "OCR 片段目录按 1、2、10 的自然顺序整合为 TXT"
+    source: 验收场景
+    status: done
+  - item: "正文普通数字引用在书末尾定义时可以全书级配对"
+    source: 验收场景
+    status: done
+  - item: "年份 1847、1848、1888 等不生成尾注链接"
+    source: 验收场景
+    status: done
+  - item: "普通数字无定义或定义重复时不产生坏链接"
+    source: 验收场景
+    status: done
+  - item: "重复圆圈数字不跨章节串注"
+    source: 验收场景
+    status: done
+  - item: "脚注与下一标题同一行时标题不丢失且不进入脚注"
+    source: 验收场景
+    status: done
+  - item: "源文本正文和注释内容满足移动式文本守恒"
+    source: 验收场景
+    status: done
+  - item: "共产党宣言真实 OCR TXT 可生成 EPUB，并报告当前缺失/未配对尾注情况"
+    source: 真实样例验证
+    status: done
+  - item: "全量 pytest 使用 .venv/bin/python -m pytest 且通过"
+    source: 项目 REVIEW_CHECKLIST
+    status: done

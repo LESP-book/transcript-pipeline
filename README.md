@@ -579,7 +579,7 @@ http://127.0.0.1:5173
 - `单任务`：对应 `scripts/08_run_job.py`
 - `批量任务`：对应 `scripts/09_run_batch_jobs.py`
 - `单阶段`：对应 `scripts/run_pipeline.py --stage`
-- `PDF OCR`：独立上传单本 PDF 或 PDF 目录，识别完成后逐本下载 TXT；失败页会单独列出，任务历史可重试缺失页并沿用成功页检查点
+- `PDF OCR`：独立上传单本 PDF 或 PDF 目录，识别完成后逐本下载 TXT 或 EPUB；失败页会单独列出，任务历史可重试缺失页并沿用成功页检查点
 - `任务列表`：查看 `data/jobs/` 下已有任务状态，下载单任务结果、批量结果 ZIP 和批量子任务结果
 - `设置`：配置 Codex API 的 base URL、API key、阶段 6 模型和 PDF OCR 模型；“API 直连
   （绕过代理）”默认关闭，开启并保存后只把当前 Codex API 主机加入新任务的 `NO_PROXY`，不会清除或
@@ -1046,6 +1046,24 @@ PDF 支持边界：
 - OCR sidecar 默认写入 `data/intermediate/ocr/*.codex_api_ocr.txt`
 - 当前 OCR 路线面向中文扫描版 PDF
 - 如果 OCR 结果仍为空或接近空，会提示当前 PDF 质量可能较差
+
+## OCR 文本整合与 EPUB 导出
+
+EPUB 导出采用两步流程：先把单页/片段 OCR TXT 按自然顺序整合为一个独立 TXT，再以这个整合后的 TXT 生成 EPUB。这样尾注是否可用取决于整合 TXT 是否包含全集尾注区；缺少定义的普通数字会保留原文，不会被猜测成链接。
+
+```bash
+.venv/bin/python scripts/11_integrate_ocr_txt.py \
+  /path/to/ocr-pages/ \
+  --output /path/to/book.integrated.txt
+
+.venv/bin/python scripts/12_export_epub.py \
+  /path/to/book.integrated.txt \
+  --output /path/to/book.epub \
+  --title "书名" \
+  --author "作者"
+```
+
+目录片段会按文件名中的数字自然排序，例如 `page-1.txt`、`page-2.txt`、`page-10.txt`。EPUB 使用 reflowable 排版，支持章节目录、圆圈数字脚注、全书普通数字尾注以及正文与注释之间的返回链接。
 
 ## 对齐与分段行为
 

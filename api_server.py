@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, Response
 import uvicorn
 
 from src.config_loader import ConfigLoadError, load_settings
+from src.epub_export import EpubExportError, export_epub
 from src.job_runner import create_batch_id, create_job_id, supported_reference_extensions, supported_video_extensions
 from src.refine_utils import PromptLoadError, VALID_REFINEMENT_BACKENDS, load_markdown_assemble_prompt
 from src.runtime_utils import normalize_stage_name
@@ -428,7 +429,11 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         return {"task_id": task_id}
 
     @app.get("/api/pdf-book-ocr/{task_id}/results/{result_path:path}")
-    async def download_pdf_book_ocr_result(task_id: str, result_path: str) -> FileResponse:
+    async def download_pdf_book_ocr_result(
+        task_id: str,
+        result_path: str,
+        format: Literal["txt", "epub"] = Query("txt"),
+    ) -> FileResponse:
         try:
             task_paths = build_pdf_book_ocr_task_paths(root, task_id)
         except PDFBookOCRTaskError as exc:
@@ -440,8 +445,17 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         except PDFBookOCRTaskError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not output_file.is_file():
-            raise HTTPException(status_code=404, detail="PDF OCR TXT 结果不存在。")
-        return FileResponse(output_file, filename=output_file.name, media_type="text/plain; charset=utf-8")
+            detail = "PDF OCR EPUB 的 TXT 源结果不存在。" if format == "epub" else "PDF OCR TXT 结果不存在。"
+            raise HTTPException(status_code=404, detail=detail)
+        if format == "txt":
+            return FileResponse(output_file, filename=output_file.name, media_type="text/plain; charset=utf-8")
+
+        epub_path = output_file.with_suffix(".epub")
+        try:
+            export_epub(output_file, epub_path, title=output_file.stem)
+        except EpubExportError as exc:
+            raise HTTPException(status_code=422, detail=f"PDF OCR EPUB 导出失败：{exc}") from exc
+        return FileResponse(epub_path, filename=epub_path.name, media_type="application/epub+zip")
 
     @app.get("/api/jobs")
     async def list_jobs() -> dict[str, list[dict]]:

@@ -973,6 +973,19 @@ def test_pdf_book_ocr_api_creates_task_and_serves_task_result(tmp_path: Path) ->
     assert result_response.content == "OCR 文本".encode("utf-8")
     assert "book.txt" in result_response.headers["content-disposition"]
 
+    epub_response = request_json(
+        app,
+        "GET",
+        f"/api/pdf-book-ocr/{task_id}/results/book.txt",
+        params={"format": "epub"},
+    )
+    assert epub_response.status_code == 200
+    assert epub_response.headers["content-type"] == "application/epub+zip"
+    assert "book.epub" in epub_response.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(epub_response.content)) as archive:
+        assert archive.read("mimetype") == b"application/epub+zip"
+        assert "OEBPS/text/book.xhtml" in archive.namelist()
+
 
 def test_pdf_book_ocr_api_rejects_input_outside_uploaded_pdf_area(tmp_path: Path) -> None:
     from api_server import create_app
