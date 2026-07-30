@@ -493,6 +493,8 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
         content = response_payload["input"][0]["content"]
         assert len(content) == 2
         assert "单页图片做 OCR 提取" in content[0]["text"]
+        assert "脚注" not in content[0]["text"]
+        assert "尾注" not in content[0]["text"]
         assert f"当前页：{page_number}" in content[0]["text"]
         assert "PDF 总页数：2" in content[0]["text"]
         assert content[1] == {"type": "input_image", "image_url": image_url}

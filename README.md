@@ -1051,6 +1051,8 @@ PDF 支持边界：
 
 EPUB 导出采用两步流程：先把单页/片段 OCR TXT 按自然顺序整合为一个独立 TXT，再以这个整合后的 TXT 生成 EPUB。这样尾注是否可用取决于整合 TXT 是否包含全集尾注区；缺少定义的普通数字会保留原文，不会被猜测成链接。
 
+独立 PDF OCR 后台使用专用 OCR 提示词，要求识别正文、脚注、尾注及其编号；提示词不在前端页面展示。校对流程中的参考文本准备仍使用原有的纯文本 OCR 提示词，不会套用独立书籍 OCR 的注释要求。
+
 ```bash
 .venv/bin/python scripts/11_integrate_ocr_txt.py \
   /path/to/ocr-pages/ \

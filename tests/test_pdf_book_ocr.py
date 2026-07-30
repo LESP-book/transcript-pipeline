@@ -11,7 +11,7 @@ from src.pdf_book_ocr import (
     ocr_pdf_book_batch,
     summarize_pdf_book_ocr,
 )
-from src.reference_utils import CodexOCRError
+from src.reference_utils import CodexOCRError, build_pdf_book_ocr_image_prompt
 
 
 def test_iter_pdf_book_files_recursively_sorts_and_ignores_non_pdf(tmp_path: Path) -> None:
@@ -62,6 +62,7 @@ def test_ocr_pdf_book_batch_uses_explicit_output_paths_and_continues_after_failu
     bad_source.write_bytes(b"pdf")
     output_dir = tmp_path / "ocr-output"
     seen_sidecar_paths: list[Path] = []
+    seen_prompt_builders: list[object] = []
 
     def fake_run_codex_api_pdf_ocr(
         source_pdf: Path,
@@ -70,9 +71,11 @@ def test_ocr_pdf_book_batch_uses_explicit_output_paths_and_continues_after_failu
         sidecar_path: Path | None = None,
         checkpoint_dir: Path | None = None,
         progress_callback=None,
+        prompt_builder=None,
     ) -> tuple[str, list[str]]:
         _ = checkpoint_dir, progress_callback
         assert sidecar_path is not None
+        seen_prompt_builders.append(prompt_builder)
         seen_sidecar_paths.append(sidecar_path)
         if source_pdf.name == "bad.pdf":
             raise CodexOCRError("远程服务不可用")
@@ -91,5 +94,9 @@ def test_ocr_pdf_book_batch_uses_explicit_output_paths_and_continues_after_failu
         output_dir.resolve() / "part-01" / "good.txt",
         output_dir.resolve() / "part-02" / "bad.txt",
     ]
+    assert seen_prompt_builders == [build_pdf_book_ocr_image_prompt, build_pdf_book_ocr_image_prompt]
+    assert "脚注" in build_pdf_book_ocr_image_prompt("book.pdf", 1, 2)
+    assert "尾注" in build_pdf_book_ocr_image_prompt("book.pdf", 1, 2)
+    assert "编号" in build_pdf_book_ocr_image_prompt("book.pdf", 1, 2)
     assert (output_dir / "part-01" / "good.txt").read_text(encoding="utf-8") == "识别后的书籍内容"
     assert not (output_dir / "part-02" / "bad.txt").exists()

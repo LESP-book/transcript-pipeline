@@ -549,6 +549,29 @@ def build_codex_api_image_ocr_prompt(reference_path: str | Path, page_number: in
     )
 
 
+def build_pdf_book_ocr_image_prompt(reference_path: str | Path, page_number: int, page_count: int) -> str:
+    """构造独立 PDF 书籍 OCR 使用的注释友好提示词。"""
+    return "\n".join(
+        [
+            "你现在要对一份中文 PDF 书籍的单页图片做 OCR 提取。",
+            "任务要求：",
+            "1. 只输出当前页面识别出的纯文本，不要解释、总结或添加说明。",
+            "2. 按页面自然阅读顺序输出，尽量保留章节标题、自然段和原文换行。",
+            "3. 必须识别页面中所有可见的书籍文字，包括正文、脚注、尾注、边注、编者注、译者注，以及这些注释对应的编号或符号。",
+            "4. 必须保留脚注和尾注编号，包括圆圈数字、上标数字、普通数字等；正文中的引用编号和注释定义前的编号都不能省略。",
+            "5. 不要因为脚注或尾注字号较小、位于页面底部或边缘而省略；注释标题、注释分隔线附近的文字和注释正文都要尽量完整识别。",
+            "6. 脚注、尾注与正文之间尽量保留明确换行，避免把注释和正文粘成无法区分的一段。",
+            "7. 只删除明确属于页码、分页标记、统一页眉、统一页尾或 Page 1 之类的版面提示；如果无法判断底部文字是脚注、尾注还是页尾，保留它，不要删除。",
+            "8. 不要根据上下文补写、猜测或改写看不清的文字；能辨认的内容按原文转写。",
+            "9. 不要输出 Markdown，不要输出 JSON。",
+            "",
+            f"PDF 文件名：{Path(reference_path).name}",
+            f"当前页：{page_number}",
+            f"PDF 总页数：{page_count}",
+        ]
+    )
+
+
 def get_pdf_page_count(reference_path: Path) -> int:
     PdfReader = import_pdf_reader()
     try:
@@ -683,6 +706,7 @@ def run_codex_api_pdf_ocr(
     sidecar_path: Path | None = None,
     checkpoint_dir: Path | None = None,
     progress_callback: Callable[[CodexOCRPageProgress], None] | None = None,
+    prompt_builder: Callable[[str | Path, int, int], str] = build_codex_api_image_ocr_prompt,
 ) -> tuple[str, list[str]]:
     reference_settings = loaded_settings.settings.reference
     configured_model = reference_settings.codex_ocr_model.strip()
@@ -720,7 +744,7 @@ def run_codex_api_pdf_ocr(
         content: list[dict[str, str]] = [
             {
                 "type": "input_text",
-                "text": build_codex_api_image_ocr_prompt(reference_path.name, task.page_number, page_count),
+                "text": prompt_builder(reference_path.name, task.page_number, page_count),
             },
             {"type": "input_image", "image_url": image_url},
         ]

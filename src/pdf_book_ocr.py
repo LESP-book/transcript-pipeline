@@ -8,6 +8,7 @@ from src.reference_utils import (
     CodexOCRError,
     CodexOCRPageProgress,
     CodexOCRPagesIncompleteError,
+    build_pdf_book_ocr_image_prompt,
     run_codex_api_pdf_ocr,
 )
 from src.pdf_ocr_workflow import (
@@ -147,6 +148,7 @@ def ocr_pdf_book(
             sidecar_path=resolved_output_text_path,
             checkpoint_dir=checkpoint_dir,
             progress_callback=page_progress,
+            prompt_builder=build_pdf_book_ocr_image_prompt,
         )
     except CodexOCRPagesIncompleteError as exc:
         return PDFBookOCRItem(
