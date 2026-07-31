@@ -725,8 +725,8 @@ def test_run_codex_api_uses_responses_api_payload(
     write_minimal_settings(
         tmp_path,
         llm_overrides={
-            "model": "gpt-5.4",
-            "reasoning_effort": "high",
+            "model": "gpt-5.6-sol",
+            "reasoning_effort": "max",
             "temperature": 0.9,
             "max_output_tokens": 99,
             "timeout_seconds": 1800,
@@ -775,7 +775,7 @@ def test_run_codex_api_uses_responses_api_payload(
     result = run_codex_api("prompt", loaded_settings)
 
     assert result.backend == BACKEND_CODEX_API
-    assert result.model_name == "gpt-5.4"
+    assert result.model_name == "gpt-5.6-sol"
     assert "完整精修文本" in result.final_markdown
     assert seen["url"] == "http://127.0.0.1:2455/backend-api/codex/responses"
     assert seen["method"] == "POST"
@@ -783,10 +783,10 @@ def test_run_codex_api_uses_responses_api_payload(
     assert seen["timeout"] == 1800
     payload = seen["payload"]
     assert isinstance(payload, dict)
-    assert payload["model"] == "gpt-5.4"
+    assert payload["model"] == "gpt-5.6-sol"
     assert payload["instructions"]
     assert payload["input"] == "prompt"
-    assert payload["reasoning"] == {"effort": "high"}
+    assert payload["reasoning"] == {"effort": "max"}
     assert "text" not in payload
     assert payload["stream"] is True
     assert payload["store"] is False

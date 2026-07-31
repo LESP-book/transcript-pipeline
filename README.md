@@ -253,7 +253,7 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 
 - 阶段 6：`llm.backends = ["codex_api"]`
 - 阶段 6 默认模型：`llm.model = gpt-5.6`（GPT-5.6 Sol）
-- 阶段 6 默认 reasoning：`llm.reasoning_effort = high`
+- 阶段 6 reasoning 支持 `low`、`medium`、`high`、`xhigh`、`max`；默认值为 `llm.reasoning_effort = high`
 - PDF OCR：`reference.ai_ocr_backend = codex_api`
 - PDF OCR 模型：`reference.codex_ocr_model = gpt-5.6-terra`（GPT-5.6 Terra）
 - PDF OCR reasoning：`reference.codex_ocr_reasoning_effort = high`

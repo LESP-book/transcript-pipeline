@@ -34,7 +34,7 @@ const form = reactive({
   ocr_reasoning_effort: "high",
 });
 
-const reasoningOptions = ["low", "medium", "high", "xhigh"].map((value) => ({
+const reasoningOptions = ["low", "medium", "high", "xhigh", "max"].map((value) => ({
   label: value,
   value,
 }));

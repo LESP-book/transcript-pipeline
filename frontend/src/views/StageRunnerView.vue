@@ -151,7 +151,7 @@ const ocrBackendOptions = [
   { label: "agy（Gemini）", value: "agy" },
   { label: "Codex CLI", value: "codex_cli" },
 ];
-const reasoningOptions = ["low", "medium", "high", "xhigh"].map((value) => ({ label: value, value }));
+const reasoningOptions = ["low", "medium", "high", "xhigh", "max"].map((value) => ({ label: value, value }));
 const modelOptions = [
   { label: "GPT-5.6 Sol", value: "gpt-5.6-sol" },
   { label: "GPT-5.6 Terra", value: "gpt-5.6-terra" },
