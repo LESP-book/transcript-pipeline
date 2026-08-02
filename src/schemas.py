@@ -162,7 +162,8 @@ class LLMSettings(AppBaseModel):
     reasoning_effort: str = "high"
     temperature: float = 0.1
     max_output_tokens: int = 4000
-    timeout_seconds: int = 1800
+    # 对谈阶段 6 可能需要超过 30 分钟完成整篇输出，默认允许等待 60 分钟。
+    timeout_seconds: int = 3600
     # 用户要求不合格的校对稿自动重新润色；默认仅重试一次，避免同一坏输入无限占用远程任务，可按部署情况调整。
     refinement_validation_retry_count: int = Field(default=1, ge=0)
     safe_replace_min_score: float = 88.0
