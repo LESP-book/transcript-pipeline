@@ -2,6 +2,12 @@ import { onMounted, ref } from "vue";
 
 import { getConfig, getFrontendSettings } from "../api/client";
 
+const codexApiBackend = "codex_api";
+
+function normalizeCodexApiBackend(value: string | null | undefined): string {
+  return value === codexApiBackend ? value : codexApiBackend;
+}
+
 export function useConfigOptions() {
   const profiles = ref<string[]>([]);
   const backends = ref<string[]>([]);
@@ -25,16 +31,19 @@ export function useConfigOptions() {
     try {
       const config = await getConfig();
       profiles.value = config.profiles;
-      backends.value = config.backends;
+      backends.value = [codexApiBackend];
       videoExtensions.value = config.video_extensions;
       referenceExtensions.value = config.reference_extensions;
       activeProfile.value = config.active_profile;
-      defaultBackend.value = config.default_backend || config.configured_backends[0] || "";
+      defaultBackend.value = normalizeCodexApiBackend(config.default_backend || config.configured_backends[0]);
+      defaultOcrBackend.value = normalizeCodexApiBackend(config.default_ocr_backend);
       defaultOutputDir.value = config.default_output_dir;
       uploadDir.value = config.upload_dir;
 
       const settings = await getFrontendSettings();
-      defaultOcrBackend.value = config.default_ocr_backend || settings.ocr_backend;
+      if (!config.default_ocr_backend) {
+        defaultOcrBackend.value = normalizeCodexApiBackend(settings.ocr_backend);
+      }
       defaultOcrModel.value = settings.ocr_model;
       defaultOcrReasoningEffort.value = settings.ocr_reasoning_effort;
       defaultOcrMaxConcurrency.value = settings.ocr_max_concurrency;

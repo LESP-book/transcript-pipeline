@@ -34,10 +34,13 @@ const form = reactive({
   ocr_reasoning_effort: "high",
 });
 
-const reasoningOptions = ["low", "medium", "high", "xhigh", "max"].map((value) => ({
-  label: value,
-  value,
-}));
+const reasoningOptions = [
+  { label: "低", value: "low" },
+  { label: "中", value: "medium" },
+  { label: "高", value: "high" },
+  { label: "很高", value: "xhigh" },
+  { label: "最高", value: "max" },
+];
 
 const modelOptions = [
   { label: "GPT-5.6 Sol（推荐：阶段 6 精修）", value: "gpt-5.6-sol" },
@@ -115,7 +118,7 @@ onMounted(loadSettings);
       <div>
         <p class="view-hero__eyebrow">运行设置</p>
         <h2 class="view-hero__title">连接与模型默认值</h2>
-        <p class="view-hero__copy">这里维护全局连接和模型默认值；每次任务的 Profile、后端、OCR 后端等流水线配置在任务页选择。</p>
+        <p class="view-hero__copy">这里维护全局连接和模型默认值；每次任务的配置方案、推理服务和 OCR 服务在任务页选择。</p>
       </div>
       <n-button type="primary" ghost :loading="loading" @click="loadSettings">刷新</n-button>
     </section>
@@ -168,13 +171,13 @@ onMounted(loadSettings);
             <n-form-item label="阶段 6 模型">
               <n-select v-model:value="form.model" :options="modelOptions" />
             </n-form-item>
-            <n-form-item label="阶段 6 推理模式">
+            <n-form-item label="阶段 6 推理强度">
               <n-select v-model:value="form.reasoning_effort" :options="reasoningOptions" />
             </n-form-item>
             <n-form-item label="PDF OCR 模型">
               <n-select v-model:value="form.ocr_model" :options="modelOptions" />
             </n-form-item>
-            <n-form-item label="PDF OCR 推理模式">
+            <n-form-item label="PDF OCR 推理强度">
               <n-select v-model:value="form.ocr_reasoning_effort" :options="reasoningOptions" />
             </n-form-item>
           </n-form>

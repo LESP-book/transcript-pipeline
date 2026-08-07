@@ -13,7 +13,19 @@ const emit = defineEmits<{
   "update:modelValue": [value: string | null];
 }>();
 
-const selectOptions = computed(() => props.options.map((value) => ({ label: value, value })));
+const profileLabels: Record<string, string> = {
+  local_cpu: "本机 CPU（标准）",
+  local_cpu_high_accuracy: "本机 CPU（高精度）",
+  wsl2_gpu: "WSL2 GPU（标准）",
+  wsl2_gpu_high_accuracy: "WSL2 GPU（高精度）",
+  wsl2_gpu_max_accuracy: "WSL2 GPU（最高精度）",
+};
+
+function profileLabel(value: string): string {
+  return profileLabels[value] ?? `自定义配置（${value}）`;
+}
+
+const selectOptions = computed(() => props.options.map((value) => ({ label: profileLabel(value), value })));
 </script>
 
 <template>
@@ -21,7 +33,7 @@ const selectOptions = computed(() => props.options.map((value) => ({ label: valu
     :value="modelValue"
     :options="selectOptions"
     :loading="loading"
-    :placeholder="placeholder ?? '选择 profile'"
+    :placeholder="placeholder ?? '选择配置方案'"
     clearable
     @update:value="emit('update:modelValue', $event)"
   />

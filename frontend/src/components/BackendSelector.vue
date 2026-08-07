@@ -14,7 +14,12 @@ const emit = defineEmits<{
   "update:modelValue": [value: string | null];
 }>();
 
-const selectOptions = computed(() => props.options.map((value) => ({ label: value, value })));
+const codexApiBackend = "codex_api";
+const selectOptions = computed(() =>
+  props.options
+    .filter((value) => value === codexApiBackend)
+    .map((value) => ({ label: "Codex API", value })),
+);
 </script>
 
 <template>
@@ -22,7 +27,7 @@ const selectOptions = computed(() => props.options.map((value) => ({ label: valu
     :value="modelValue"
     :options="selectOptions"
     :loading="loading"
-    :placeholder="placeholder ?? '选择 backend'"
+    :placeholder="placeholder ?? '选择推理服务'"
     :disabled="disabled"
     clearable
     @update:value="emit('update:modelValue', $event)"

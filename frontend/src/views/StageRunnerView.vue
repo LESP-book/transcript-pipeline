@@ -40,6 +40,7 @@ import { useConfigOptions } from "../composables/useConfigOptions";
 const message = useMessage();
 const {
   backends,
+  defaultBackend,
   error: configError,
   loading: configLoading,
   profiles,
@@ -97,7 +98,7 @@ const stageGuides: StageGuide[] = [
     description: "对当前音频目录执行 ASR 转录。",
     input: "data/input/audio/",
     output: "data/intermediate/asr/",
-    testHint: "适合检查 ASR Profile、模型与转录中间结果。",
+    testHint: "适合检查语音转写配置方案、模型与转录中间结果。",
   },
   {
     label: "准备参考 (prepare-reference)",
@@ -105,7 +106,7 @@ const stageGuides: StageGuide[] = [
     description: "提取当前参考目录中的 TXT、Markdown 或 PDF 原文。",
     input: "data/input/reference/",
     output: "data/intermediate/extracted_text/ 与 data/intermediate/ocr/",
-    testHint: "测试 PDF OCR 时，在这里覆盖 OCR 后端、模型和推理强度。",
+    testHint: "测试 PDF OCR 时，在这里覆盖 OCR 服务、模型和推理强度。",
   },
   {
     label: "文本对齐 (align)",
@@ -129,7 +130,7 @@ const stageGuides: StageGuide[] = [
     description: "基于 ASR 和参考原文执行阶段 6 精修。",
     input: "data/intermediate/asr/ 与 data/intermediate/extracted_text/",
     output: "data/intermediate/refined/",
-    testHint: "测试模型或推理后端时，在这里覆盖推理后端、模型和推理强度。",
+    testHint: "测试模型或推理服务时，在这里覆盖推理服务、模型和推理强度。",
   },
   {
     label: "导出文档 (export-markdown)",
@@ -148,10 +149,14 @@ const usesOcrOverrides = computed(() => form.stage === "prepare-reference");
 const usesRefineOverrides = computed(() => form.stage === "refine");
 const ocrBackendOptions = [
   { label: "Codex API", value: "codex_api" },
-  { label: "agy（Gemini）", value: "agy" },
-  { label: "Codex CLI", value: "codex_cli" },
 ];
-const reasoningOptions = ["low", "medium", "high", "xhigh", "max"].map((value) => ({ label: value, value }));
+const reasoningOptions = [
+  { label: "低", value: "low" },
+  { label: "中", value: "medium" },
+  { label: "高", value: "high" },
+  { label: "很高", value: "xhigh" },
+  { label: "最高", value: "max" },
+];
 const modelOptions = [
   { label: "GPT-5.6 Sol", value: "gpt-5.6-sol" },
   { label: "GPT-5.6 Terra", value: "gpt-5.6-terra" },
@@ -338,6 +343,11 @@ watch(defaultOcrBackend, (value) => {
     form.ocr_backend = value;
   }
 });
+watch(defaultBackend, (value) => {
+  if (!form.backend && value) {
+    form.backend = value;
+  }
+});
 watch(defaultOcrModel, (value) => {
   if (!form.ocr_model && value) {
     form.ocr_model = value;
@@ -411,7 +421,7 @@ onBeforeUnmount(stopPolling);
 
       <n-form label-placement="top">
         <n-space vertical :size="14">
-          <n-form-item label="要运行的指定流水线阶段 (Pipeline Stage)">
+          <n-form-item label="指定流水线阶段">
             <n-select v-model:value="form.stage" :options="stageOptions" class="w-full select-stage" />
           </n-form-item>
 
@@ -500,19 +510,19 @@ onBeforeUnmount(stopPolling);
 
             <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
               <n-grid-item span="2 m:1">
-                <n-form-item label="配置 Profile">
+                <n-form-item label="配置方案">
                   <ProfileSelector v-model="form.profile" :options="profiles" :loading="configLoading" />
                 </n-form-item>
               </n-grid-item>
 
               <template v-if="usesOcrOverrides">
                 <n-grid-item span="2 m:1">
-                  <n-form-item label="PDF OCR 后端">
+                  <n-form-item label="PDF OCR 服务">
                     <n-select
                       v-model:value="form.ocr_backend"
                       :options="ocrBackendOptions"
                       clearable
-                      placeholder="使用默认 OCR 后端"
+                      placeholder="使用默认 OCR 服务"
                     />
                   </n-form-item>
                 </n-grid-item>
@@ -560,7 +570,7 @@ onBeforeUnmount(stopPolling);
 
               <template v-else-if="usesRefineOverrides">
                 <n-grid-item span="2 m:1">
-                  <n-form-item label="推理后端">
+                  <n-form-item label="推理服务">
                     <BackendSelector v-model="form.backend" :options="backends" :loading="configLoading" />
                   </n-form-item>
                 </n-grid-item>

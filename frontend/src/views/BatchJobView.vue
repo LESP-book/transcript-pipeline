@@ -106,10 +106,13 @@ const form = reactive<{
 
 const ocrBackendOptions = [
   { label: "Codex API", value: "codex_api" },
-  { label: "agy（Gemini）", value: "agy" },
-  { label: "Codex CLI", value: "codex_cli" },
 ];
-const ocrReasoningOptions = ["low", "medium", "high", "xhigh"].map((value) => ({ label: value, value }));
+const ocrReasoningOptions = [
+  { label: "低", value: "low" },
+  { label: "中", value: "medium" },
+  { label: "高", value: "high" },
+  { label: "很高", value: "xhigh" },
+];
 const contentTypeOptions = [
   { label: "读书会整理", value: "book_club" },
   { label: "对谈转录", value: "conversation" },
@@ -549,7 +552,7 @@ onBeforeUnmount(stopPolling);
                 </n-form-item>
 
                 <template v-else>
-                  <n-form-item label="视频源目录 (Videos Directory)" required>
+                  <n-form-item label="视频源目录" required>
                     <n-space vertical class="w-full">
                       <RemoteDirectoryUpload
                         v-model="form.videos_dir"
@@ -562,7 +565,7 @@ onBeforeUnmount(stopPolling);
                     </n-space>
                   </n-form-item>
                   
-                  <n-form-item v-if="form.mode === 'paired-dir'" label="参考源目录 (Reference Directory)" required>
+                  <n-form-item v-if="form.mode === 'paired-dir'" label="参考源目录" required>
                     <n-space vertical class="w-full">
                       <RemoteDirectoryUpload
                         v-model="form.reference_dir"
@@ -605,7 +608,7 @@ onBeforeUnmount(stopPolling);
                 <h4 class="form-section-title">流水线配置</h4>
                 <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
                   <n-grid-item span="2">
-                    <n-form-item label="术语词表 (Glossary File)">
+                    <n-form-item label="术语词表">
                       <n-space vertical class="w-full">
                         <RemoteFileUpload
                           v-model="form.glossary_file"
@@ -619,22 +622,22 @@ onBeforeUnmount(stopPolling);
                     </n-form-item>
                   </n-grid-item>
                   <n-grid-item span="2 m:1">
-                    <n-form-item label="配置 Profile">
+                    <n-form-item label="配置方案">
                       <ProfileSelector v-model="form.profile" :options="profiles" :loading="loading" />
                     </n-form-item>
                   </n-grid-item>
                   <n-grid-item span="2 m:1">
-                    <n-form-item label="推理后端 (Backend)">
+                    <n-form-item label="推理服务">
                       <BackendSelector v-model="form.backend" :options="backends" :loading="loading" />
                     </n-form-item>
                   </n-grid-item>
                   <n-grid-item span="2 m:1">
-                    <n-form-item label="PDF OCR 后端">
+                    <n-form-item label="PDF OCR 服务">
                       <n-select
                         v-model:value="form.ocr_backend"
                         :options="ocrBackendOptions"
                         clearable
-                        placeholder="使用默认 OCR 后端"
+                        placeholder="使用默认 OCR 服务"
                       />
                     </n-form-item>
                   </n-grid-item>
@@ -674,17 +677,17 @@ onBeforeUnmount(stopPolling);
                     </n-form-item>
                   </n-grid-item>
                   <n-grid-item span="2 m:1">
-                    <n-form-item label="书籍名称 (Book Name)">
+                    <n-form-item label="书籍名称">
                       <n-input v-model:value="form.book_name" placeholder="可选，用于 ASR 提示词" />
                     </n-form-item>
                   </n-grid-item>
                   <n-grid-item span="2">
-                    <n-form-item label="章节名称 (Chapter)">
+                    <n-form-item label="章节名称">
                       <n-input v-model:value="form.chapter" placeholder="可选，用于 ASR 提示词" />
                     </n-form-item>
                   </n-grid-item>
                   <n-grid-item span="2">
-                    <n-form-item label="阶段六指令 (Refine Prompt)">
+                    <n-form-item label="阶段六指令">
                       <n-space vertical class="w-full">
                         <n-input
                           v-model:value="form.refine_prompt"
