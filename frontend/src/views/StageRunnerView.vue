@@ -706,10 +706,10 @@ onBeforeUnmount(stopPolling);
 .run-mode-panel,
 .file-input-panel,
 .file-result-panel {
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  border: 1px solid var(--border-strong);
   border-radius: 12px;
   padding: 16px;
-  background: rgba(248, 250, 252, 0.72);
+  background: var(--surface-subtle);
 }
 
 .run-mode-panel {

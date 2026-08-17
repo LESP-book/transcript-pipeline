@@ -1114,9 +1114,9 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
 .summary-cell {
   min-width: 0;
   padding: 10px 12px;
-  border: 1px solid rgba(226, 232, 240, 0.78);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--surface-subtle);
 }
 
 .summary-cell.is-wide {

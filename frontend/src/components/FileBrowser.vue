@@ -161,9 +161,9 @@ watch(showHidden, () => {
       :placeholder="`${label} 路径，可直接粘贴`"
       clearable
       @update:value="emit('update:modelValue', $event)"
-      style="border-radius: 10px 0 0 10px;"
+      class="file-browser-field__input"
     />
-    <n-button type="primary" @click="open" style="border-radius: 0 10px 10px 0;">
+    <n-button type="primary" @click="open" class="file-browser-field__button">
       {{ buttonText ?? `选择${label}` }}
     </n-button>
   </div>
@@ -244,15 +244,15 @@ watch(showHidden, () => {
 
 <style scoped>
 .modal-card {
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--surface-overlay);
   backdrop-filter: blur(24px);
 }
 
 .browser-toolbar {
-  background: rgba(248, 250, 252, 0.5);
+  background: var(--surface-subtle);
   padding: 10px 14px;
   border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.6);
+  border: 1px solid var(--border-subtle);
 }
 
 .breadcrumbs-container {
@@ -289,8 +289,8 @@ watch(showHidden, () => {
 
 .current-path-display {
   font-family: monospace;
-  background: #f8fafc;
-  color: #475569;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
 }
 
 .item-icon-wrapper {
@@ -309,8 +309,8 @@ watch(showHidden, () => {
 }
 
 .item-icon-wrapper.is-file {
-  background: rgba(100, 116, 139, 0.08);
-  color: #64748b;
+  background: var(--primary-alpha-10);
+  color: var(--text-muted);
 }
 
 .file-browser__item:hover .item-icon-wrapper.is-dir {
@@ -345,5 +345,32 @@ watch(showHidden, () => {
 .footer-btn {
   font-weight: 600;
   border-radius: 8px;
+}
+
+@media (max-width: 640px) {
+  .file-browser-field__input,
+  .file-browser-field__button {
+    width: 100%;
+    border-radius: 10px !important;
+  }
+
+  .browser-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .browser-footer :deep(.n-flex) {
+    width: 100%;
+  }
+
+  .browser-footer :deep(.n-button) {
+    flex: 1 1 0;
+  }
+
+  .file-browser__item {
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+  }
 }
 </style>

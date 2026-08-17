@@ -24,11 +24,8 @@ function toggleTheme() {
 }
 
 function updateClass() {
-  if (isDark.value) {
-    document.documentElement.classList.add("dark-mode");
-  } else {
-    document.documentElement.classList.remove("dark-mode");
-  }
+  document.documentElement.classList.toggle("dark-mode", isDark.value);
+  document.documentElement.style.colorScheme = isDark.value ? "dark" : "light";
 }
 
 onMounted(updateClass);
@@ -116,6 +113,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
               @click="toggleTheme"
               class="theme-toggle-btn"
               title="切换主题"
+              :aria-label="isDark ? '切换至浅色模式' : '切换至深色模式'"
             >
               <template #icon>
                 <svg v-if="isDark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="theme-btn-icon">
