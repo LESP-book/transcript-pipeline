@@ -96,14 +96,45 @@ async function loadSelectedArtifact() {
   }
 }
 
+async function writeClipboardText(content: string) {
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(content);
+      return;
+    } catch {
+      // HTTPS 页面也可能因浏览器权限策略拒绝 Clipboard API，继续尝试兼容方案。
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = content;
+  textarea.setAttribute("readonly", "");
+  textarea.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+  document.body.append(textarea);
+  textarea.select();
+
+  try {
+    if (!document.execCommand("copy")) {
+      throw new Error("浏览器未允许复制到剪贴板");
+    }
+  } finally {
+    textarea.remove();
+  }
+}
+
 async function copyContent() {
   const content = selectedArtifact.value?.content ?? "";
   if (!content) {
     message.warning("当前没有可复制的产物内容。");
     return;
   }
-  await navigator.clipboard.writeText(content);
-  message.success("已复制当前产物内容");
+
+  try {
+    await writeClipboardText(content);
+    message.success("已复制当前产物内容");
+  } catch {
+    message.error("复制失败，请检查浏览器的剪贴板权限后重试。");
+  }
 }
 
 watch(() => [props.batchId, props.jobId], loadArtifacts, { immediate: true });
