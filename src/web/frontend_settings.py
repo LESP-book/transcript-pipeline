@@ -12,6 +12,11 @@ from pydantic import BaseModel, Field
 from src.config_loader import ConfigLoadError, load_settings
 
 SETTINGS_RELATIVE_PATH = Path("data/jobs/frontend-settings.json")
+RETIRED_MODEL_PREFIXES = ("gpt-5.4", "gpt-5.5", "gpt-5.6")
+
+
+def is_retired_model(value: str) -> bool:
+    return any(value == prefix or value.startswith(prefix + "-") for prefix in RETIRED_MODEL_PREFIXES)
 
 
 class FrontendSettings(BaseModel):
@@ -67,7 +72,12 @@ def load_frontend_settings(project_root: Path) -> FrontendSettings:
         return FrontendSettings()
     if not isinstance(payload, dict):
         return FrontendSettings()
-    return FrontendSettings.model_validate(payload)
+    settings = FrontendSettings.model_validate(payload)
+    # 旧的前端默认值不能再覆盖新版项目默认值；保留磁盘快照和其他自定义模型不变。
+    for field_name in ("model", "ocr_model"):
+        if is_retired_model(getattr(settings, field_name)):
+            setattr(settings, field_name, "")
+    return settings
 
 
 def save_frontend_settings(project_root: Path, update: FrontendSettingsUpdate) -> FrontendSettings:

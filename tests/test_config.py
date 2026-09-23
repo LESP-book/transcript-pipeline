@@ -19,7 +19,7 @@ def test_load_settings_success() -> None:
     assert loaded_settings.settings_path == (PROJECT_ROOT / "config/settings.yaml").resolve()
     assert loaded_settings.active_profile_name == "wsl2_gpu_high_accuracy"
     assert loaded_settings.settings.llm.backends == ["codex_api"]
-    assert loaded_settings.settings.llm.model == "gpt-5.6-sol"
+    assert loaded_settings.settings.llm.model == "gpt-6-sol"
     assert loaded_settings.settings.llm.gemini_model == "Gemini 3.1 Pro (High)"
     assert loaded_settings.settings.llm.gemini_fallback_model == ""
     assert loaded_settings.settings.llm.reasoning_effort == "high"
@@ -27,7 +27,7 @@ def test_load_settings_success() -> None:
     assert loaded_settings.settings.reference.ai_ocr_backend == "codex_api"
     assert loaded_settings.settings.reference.gemini_ocr_model == "Gemini 3.5 Flash (High)"
     assert loaded_settings.settings.reference.gemini_ocr_fallback_model == ""
-    assert loaded_settings.settings.reference.codex_ocr_model == "gpt-5.6-terra"
+    assert loaded_settings.settings.reference.codex_ocr_model == "gpt-6-luna"
     assert loaded_settings.settings.reference.codex_ocr_reasoning_effort == "high"
     assert loaded_settings.settings.reference.codex_ocr_max_concurrency == 40
     assert loaded_settings.settings.reference.codex_ocr_submit_interval_seconds == 5.0

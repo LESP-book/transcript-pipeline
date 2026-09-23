@@ -107,10 +107,10 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
             "book_name": "测试书",
             "chapter": "第一章",
             "glossary_file": str(tmp_path / "glossary.txt"),
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-sol",
             "reasoning_effort": "max",
             "ocr_backend": "codex_api",
-            "ocr_model": "gpt-5.4-mini",
+            "ocr_model": "gpt-6-luna",
             "ocr_reasoning_effort": "high",
         },
     )
@@ -127,10 +127,10 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
     assert payload["book_name"] == "测试书"
     assert payload["chapter"] == "第一章"
     assert payload["glossary_file"].endswith("glossary.txt")
-    assert payload["model"] == "gpt-5.6-sol"
+    assert payload["model"] == "gpt-6-sol"
     assert payload["reasoning_effort"] == "max"
     assert payload["ocr_backend"] == "codex_api"
-    assert payload["ocr_model"] == "gpt-5.4-mini"
+    assert payload["ocr_model"] == "gpt-6-luna"
     assert payload["ocr_max_concurrency"] == 40
     assert payload["ocr_submit_interval_seconds"] == 5.0
 
@@ -1494,11 +1494,11 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
         "PUT",
         "/api/frontend-settings",
         json_body={
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-sol",
             "reasoning_effort": "max",
             "backend": "agy",
             "ocr_backend": "agy",
-            "ocr_model": "gpt-5.4-mini",
+            "ocr_model": "gpt-6-luna",
             "ocr_reasoning_effort": "high",
         },
     )
@@ -1517,10 +1517,10 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
     assert response.status_code == 202
     assert seen == {
         "backend_override": "agy",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "reasoning_effort": "max",
         "ocr_backend": "agy",
-        "ocr_model": "gpt-5.4-mini",
+        "ocr_model": "gpt-6-luna",
         "ocr_reasoning_effort": "high",
         "refine_prompt": "# 单任务自定义阶段六指令\n\n请保留讲解原话。",
     }

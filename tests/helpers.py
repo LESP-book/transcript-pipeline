@@ -87,7 +87,7 @@ def write_minimal_settings(
             "ai_ocr_backend": "codex_api",
             "gemini_ocr_model": "Gemini 3.5 Flash (High)",
             "gemini_ocr_fallback_model": "",
-            "codex_ocr_model": "gpt-5.6-terra",
+            "codex_ocr_model": "gpt-6-luna",
             "codex_ocr_reasoning_effort": "high",
             "codex_ocr_max_concurrency": 40,
             "codex_ocr_submit_interval_seconds": 5.0,
@@ -127,7 +127,7 @@ def write_minimal_settings(
         "llm": {
             "enabled": True,
             "provider": "local_cli",
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-sol",
             "gemini_model": "Gemini 3.1 Pro (High)",
             "gemini_fallback_model": "",
             "backends": ["codex_api"],
