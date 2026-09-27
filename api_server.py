@@ -258,6 +258,10 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             error_message="PDF OCR 任务已中断；已完成页面仍保留，可重试缺失页。",
         )
 
+    @app.get("/api/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
     @app.get("/api/config")
     async def get_config() -> dict[str, object]:
         try:
@@ -920,6 +924,30 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"无法删除阶段任务目录: {exc}")
         return {"success": True}
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def serve_frontend(path: str = "") -> Response:
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+
+        dist_dir = (root / "frontend" / "dist").resolve()
+        index_path = dist_dir / "index.html"
+        if not index_path.is_file():
+            raise HTTPException(status_code=404, detail="Frontend build not found")
+
+        requested_path = (dist_dir / path).resolve()
+        try:
+            requested_path.relative_to(dist_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Not Found") from exc
+
+        if requested_path.is_file():
+            return FileResponse(requested_path)
+
+        # Do not turn missing static resources (especially Vite assets) into the SPA shell.
+        if Path(path).suffix or path.startswith("assets/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return FileResponse(index_path)
 
     return app
 

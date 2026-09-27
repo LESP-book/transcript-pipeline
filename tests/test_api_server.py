@@ -39,6 +39,86 @@ def request_raw(
     return asyncio.run(send_request())
 
 
+def test_api_health_and_unknown_api_routes(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    app = create_app(project_root=tmp_path)
+
+    health_response = request_json(app, "GET", "/api/health")
+    unknown_response = request_json(app, "GET", "/api/not-a-route")
+
+    assert health_response.status_code == 200
+    assert health_response.json() == {"status": "ok"}
+    assert unknown_response.status_code == 404
+    assert "<html" not in unknown_response.text.lower()
+
+
+def test_frontend_static_files_and_deep_links(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    dist_dir = tmp_path / "frontend/dist"
+    (dist_dir / "assets").mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<!doctype html><div id=app>frontend</div>", encoding="utf-8")
+    (dist_dir / "assets/app.js").write_text("console.log('built')", encoding="utf-8")
+
+    app = create_app(project_root=tmp_path)
+    root_response = request_json(app, "GET", "/")
+    deep_link_response = request_json(app, "GET", "/jobs")
+    asset_response = request_json(app, "GET", "/assets/app.js")
+    missing_asset_response = request_json(app, "GET", "/assets/missing.js")
+    missing_file_response = request_json(app, "GET", "/missing.txt")
+    docs_response = request_json(app, "GET", "/docs")
+    unknown_api_response = request_json(app, "GET", "/api/not-a-route")
+
+    assert root_response.status_code == 200
+    assert root_response.text == "<!doctype html><div id=app>frontend</div>"
+    assert deep_link_response.status_code == 200
+    assert deep_link_response.text == root_response.text
+    assert asset_response.status_code == 200
+    assert asset_response.text == "console.log('built')"
+    assert "javascript" in asset_response.headers["content-type"]
+    assert missing_asset_response.status_code == 404
+    assert "frontend" not in missing_asset_response.text
+    assert missing_file_response.status_code == 404
+    assert "frontend" not in missing_file_response.text
+    assert docs_response.status_code == 200
+    assert "swagger-ui" in docs_response.text
+    assert unknown_api_response.status_code == 404
+    assert "frontend" not in unknown_api_response.text
+
+
+def test_frontend_static_serving_rejects_paths_outside_dist(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    dist_dir = tmp_path / "frontend/dist"
+    dist_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text("frontend", encoding="utf-8")
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("secret", encoding="utf-8")
+    (dist_dir / "leak.txt").symlink_to(outside_file)
+
+    app = create_app(project_root=tmp_path)
+    symlink_response = request_json(app, "GET", "/leak.txt")
+    traversal_response = request_json(app, "GET", "/%2e%2e/outside.txt")
+
+    assert symlink_response.status_code == 404
+    assert traversal_response.status_code == 404
+    assert "secret" not in symlink_response.text
+    assert "secret" not in traversal_response.text
+
+
+def test_missing_frontend_dist_does_not_disable_api(tmp_path: Path) -> None:
+    from api_server import create_app
+
+    app = create_app(project_root=tmp_path)
+
+    health_response = request_json(app, "GET", "/api/health")
+    frontend_response = request_json(app, "GET", "/single-job")
+
+    assert health_response.status_code == 200
+    assert frontend_response.status_code == 404
+
+
 def test_get_config_returns_profiles_and_backends(tmp_path: Path) -> None:
     from api_server import create_app
 

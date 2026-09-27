@@ -1,0 +1,44 @@
+# Repository and local developer state
+.git
+.gitignore
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.idea/
+.vscode/
+
+# Only reviewed default config/prompt/glossary files enter the build context.
+# Local custom settings and credentials belong in read-only runtime mounts, never the image.
+config/*
+!config/settings.yaml
+!config/prompts/
+config/prompts/*
+!config/prompts/classify_and_correct.md
+!config/prompts/conversation_cleanup.md
+!config/prompts/final_cleanup.md
+!config/glossaries/
+config/glossaries/*
+!config/glossaries/marxism_common.txt
+
+# Frontend build outputs and installed packages (the build stage uses npm ci)
+frontend/node_modules/
+frontend/dist/
+
+# Runtime data and local secrets must never enter an image build context
+.env
+.env.*
+**/.env
+**/.env.*
+compose.override.yaml
+compose.override.yml
+docker-compose.override.yaml
+docker-compose.override.yml
+custom-settings.yaml
+data/
+tmp/
+*.tmp
+*.pyc
+
+# Local machine artifacts
+.DS_Store

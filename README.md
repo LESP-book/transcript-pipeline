@@ -149,9 +149,13 @@ bash scripts/install_wsl2_env.sh
 
 详细步骤见 `docs/INSTALL_NEW_MACHINE.md`。该脚本只处理 WSL2 Linux 内部环境，不处理 Windows 宿主机安装。
 
+## Docker 部署
+
+本项目提供单服务 `trans` 的 FastAPI + Vue Docker 部署（宿主默认端口 8080）。WSL2 Debian/Ubuntu 原生 Docker 可先执行 `bash scripts/deploy_docker_wsl2.sh --check` 只读预检，再由管理员确认风险后执行 `bash scripts/deploy_docker_wsl2.sh` 安装缺失依赖并后台部署。旧 `app` 容器须在任务结束后人工停止和移除；脚本不会擅自中断它。其他操作、GPU 验收、WSL 网络、持久化和密钥边界见 [`docs/DOCKER.md`](docs/DOCKER.md)。
+
 ## Codex API 模式
 
-当前默认 AI 后端已经切到 `codex_api`。使用前先启动 `codex-lb`，再在当前 shell 配置 API 地址和 key：
+当前默认 AI 后端已经切到 `codex_api`。下列环境变量示例用于原有本地脚本开发；Docker 部署的 codex-lb 位于外部互联网，优先在现有 Web「运行设置」中配置 HTTPS Base URL、API Key 和直连开关，无需在本机启动 codex-lb、也无需填写 `.env`。本地脚本方式使用前请确保目标 codex-lb 服务已启动/可达，再在当前 shell 配置 API 地址和 key：
 
 本地 `codex-lb`：
 

@@ -1,0 +1,49 @@
+name: transcript-pipeline
+
+services:
+  trans:
+    image: transcript-pipeline:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      - HOME=/home/app
+      - TRANSCRIPT_PROFILE=${TRANSCRIPT_PROFILE:-wsl2_gpu_high_accuracy}
+      - CODEX_LB_BASE_URL
+      - CODEX_LB_API_KEY
+    ports:
+      - "${DOCKER_BIND_IP:-0.0.0.0}:${APP_PORT:-8080}:8000"
+    volumes:
+      - ./data:/app/data
+      - model-cache:/home/app/.cache/transcript-pipeline
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, http://127.0.0.1:8000/api/health]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  model-cache:
