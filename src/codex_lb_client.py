@@ -700,7 +700,8 @@ def extract_event_stream_text(stream_text: str) -> str:
 
     if failed_payload is not None:
         raise CodexLBClientError(f"Codex Responses API 返回失败事件: {failed_payload}")
-    text = "".join(parts).strip() or (completed_text or "").strip()
+    # 完成事件提供最终全文；增量事件可能缺失开头片段，不能优先用于最终结果。
+    text = (completed_text or "").strip() or "".join(parts).strip()
     if text:
         return text
     # 空白扫描页会正常完成并明确返回空的 output_text；这与响应结构缺失 output_text 是两种情况。

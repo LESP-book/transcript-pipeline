@@ -568,7 +568,19 @@ def test_extract_event_stream_text_reads_nested_output_from_completed_response()
     assert extract_event_stream_text(f"event: response.completed\ndata: {completed_event}\n\n") == "嵌套 output 中的完整正文。"
 
 
-def test_extract_event_stream_text_prefers_deltas_without_duplicating_done_text() -> None:
+def test_extract_event_stream_text_uses_complete_done_text_when_deltas_miss_prefix() -> None:
+    full_text = '{"final_markdown":"完整正文。"}'
+    delta = json.dumps({"type": "response.output_text.delta", "delta": full_text[18:]}, ensure_ascii=False)
+    done = json.dumps({"type": "response.output_text.done", "text": full_text}, ensure_ascii=False)
+    stream_text = (
+        f"event: response.output_text.delta\ndata: {delta}\n\n"
+        f"event: response.output_text.done\ndata: {done}\n\n"
+    )
+
+    assert extract_event_stream_text(stream_text) == full_text
+
+
+def test_extract_event_stream_text_does_not_duplicate_done_text() -> None:
     delta = json.dumps({"type": "response.output_text.delta", "delta": "完整正文。"}, ensure_ascii=False)
     done = json.dumps({"type": "response.output_text.done", "text": "完整正文。"}, ensure_ascii=False)
     stream_text = (
