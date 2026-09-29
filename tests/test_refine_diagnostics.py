@@ -7,7 +7,7 @@ import pytest
 
 from src.config_loader import load_settings
 from src.refine_utils import CLIBackendError, run_codex_api_payload
-from src.request_trace import RequestTrace
+from src.request_trace import RequestTrace, describe_refine_attempt
 from tests.helpers import write_minimal_settings
 
 
@@ -188,6 +188,53 @@ def test_codex_api_trace_keeps_completed_sse_when_model_output_is_not_json(
     sse_summary = json.loads((trace.directory / "sse-summary.json").read_text(encoding="utf-8"))
     assert sse_summary["terminal_event"] == "response.completed"
     assert sse_summary["response_ids"] == ["resp_invalid_json"]
+
+
+@pytest.mark.parametrize(
+    ("filename", "category"),
+    [("parse-error.json", "model_output_json"),
+     ("backend-error.json", "transport_or_protocol"),
+     ("result-contract-error.json", "result_contract")],
+)
+def test_attempt_summary_exposes_backend_cause_not_fallback(
+    tmp_path: Path, filename: str, category: str,
+) -> None:
+    trace = RequestTrace(tmp_path)
+    trace.write_json(filename, {"message": "底层错误详情"})
+    trace.write_json("request-meta.json", {"model": "configured-model"})
+    details = describe_refine_attempt(
+        trace, reasons=["programmatic_markdown_fallback", "uses_canonical_source_placeholder_title"],
+        markdown="# source\n\n回退稿",
+    )
+    assert details["failure_category"] == category
+    assert "底层错误详情" in details["failure_summary"]
+    assert details["requested_model"] == "configured-model"
+    assert "candidate_file" not in details
+    assert not (tmp_path / "candidate-review.md").exists()
+
+
+def test_attempt_summary_preserves_candidate_and_locates_damage(tmp_path: Path) -> None:
+    trace = RequestTrace(tmp_path)
+    markdown = "# 标题\n\n第一处�，第二处�。"
+    details = describe_refine_attempt(
+        trace, reasons=["contains_unicode_replacement_character"], markdown=markdown,
+    )
+    assert details["failure_category"] == "content_validation"
+    assert details["replacement_character_count"] == 2
+    assert details["replacement_character_examples"][0]["line"] == 3
+    assert (tmp_path / details["candidate_file"]).read_text() == markdown
+    assert details["candidate_status"] == "needs_review_not_accepted"
+
+
+def test_attempt_summary_does_not_claim_candidate_when_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RequestTrace, "write_text", lambda *args: False)
+    details = describe_refine_attempt(
+        RequestTrace(tmp_path), reasons=["contains_unicode_replacement_character"], markdown="�",
+    )
+    assert "candidate_file" not in details
+    assert details["failure_category"] == "content_validation"
 
 
 def test_codex_api_trace_write_failure_does_not_change_successful_result(

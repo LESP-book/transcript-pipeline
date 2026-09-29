@@ -19,6 +19,7 @@ from src.request_trace import (
     RequestTrace,
     build_refine_request_trace,
     create_trace_run_id,
+    describe_refine_attempt,
     endpoint_metadata,
     exception_metadata,
     sanitized_proxy_environment,
@@ -1655,7 +1656,7 @@ def run_validated_single_pass_backend_refinement(
         reasons: list[str],
         result: BackendDocumentRefinementResult | None = None,
         error: BaseException | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         request_trace = build_refine_request_trace(
             logs_dir,
             basename=input_paths.basename,
@@ -1682,6 +1683,13 @@ def run_validated_single_pass_backend_refinement(
             )
         if error is not None:
             validation_payload["error"] = exception_metadata(error, category="refine_attempt")
+        diagnostic_details = describe_refine_attempt(
+            request_trace,
+            reasons=reasons,
+            markdown=result.final_markdown if result is not None else "",
+            error=error,
+        )
+        validation_payload.update(diagnostic_details)
         request_trace.write_json("validation.json", validation_payload)
 
         sse_summary = request_trace.read_json("sse-summary.json")
@@ -1727,7 +1735,9 @@ def run_validated_single_pass_backend_refinement(
             )
         if error is not None:
             summary_entry["error"] = exception_metadata(error, category="refine_attempt")
+        summary_entry.update(diagnostic_details)
         update_refine_diagnostics_summary(logs_dir, summary_entry)
+        return summary_entry
 
     while True:
         attempt = retry_count + 1
@@ -1753,7 +1763,7 @@ def run_validated_single_pass_backend_refinement(
             )
             raise
         reasons = validate_final_markdown_contract(result)
-        persist_validation_attempt(
+        attempt_diagnostics = persist_validation_attempt(
             attempt=attempt,
             status="accepted" if not reasons else "rejected",
             reasons=reasons,
@@ -1773,18 +1783,21 @@ def run_validated_single_pass_backend_refinement(
         if retry_count >= retry_limit:
             detail = "、".join(reasons)
             raise RefinementOutputValidationError(
-                f"阶段 6 输出未通过交付校验: file={input_paths.basename}; reasons={detail}"
+                f"阶段 6 输出未通过交付校验: file={input_paths.basename}; reasons={detail}; "
+                f"原因={attempt_diagnostics['failure_summary']}; "
+                f"诊断目录={attempt_diagnostics['diagnostic_directory']}"
             )
 
         retry_count += 1
         current_prompt = build_validation_retry_prompt(markdown_prompt_text, reasons)
         if logger is not None:
             logger.warning(
-                "阶段 6 输出校验失败，准备自动重试 | file=%s | backend=%s | attempt=%s | reasons=%s",
+                "阶段 6 输出校验失败，准备自动重试 | file=%s | backend=%s | attempt=%s | reasons=%s | 原因=%s",
                 input_paths.basename,
                 backend,
                 retry_count,
                 ",".join(reasons),
+                attempt_diagnostics["failure_summary"],
             )
 
 

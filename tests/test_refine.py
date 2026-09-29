@@ -1289,6 +1289,11 @@ def test_refine_batch_rejects_result_that_stays_invalid_after_configured_retry(
     diagnostics_path = loaded_settings.path_for("logs_dir") / "refine/diagnostics.json"
     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
     assert [item["status"] for item in diagnostics["attempts"]] == ["rejected", "rejected"]
+    for attempt in diagnostics["attempts"]:
+        assert attempt["failure_category"] == "content_validation"
+        assert "需要人工复核" in attempt["failure_summary"]
+        candidate_path = loaded_settings.path_for("logs_dir") / attempt["diagnostic_directory"] / attempt["candidate_file"]
+        assert candidate_path.read_text(encoding="utf-8") == "# source\n\n仍然包含损坏字符 �"
     assert diagnostics["attempts"][-1]["validation_reasons"] == [
         "contains_unicode_replacement_character",
         "uses_canonical_source_placeholder_title",
