@@ -13,6 +13,8 @@
 | `paraformer-zh` | 官方 SeACo Paraformer `v2.0.4` + ct-punc | 原生毫秒字/词边界转秒、聚合文本段 | FP32；标点模型 CPU |
 | `fun-asr-nano` | Fun-ASR-Nano-2512 | Silero VAD 音频区间，最长 30 秒 PCM 子块 | CUDA encoder FP32/decoder BF16；CPU FP32 |
 
+当前 Web 选择器只展示 Whisper 和两种 Qwen；Paraformer、Fun-ASR-Nano 暂时隐藏，未删除实现，CLI 显式候选和已有任务快照仍可使用。已保存的隐藏候选不再作为 Web 新任务默认选择（回到当前可见配置默认，若配置也隐藏则展示 Whisper），不会改写磁盘设置或历史任务。
+
 Nano **不是字级或句级时间戳**，不能把整个音频区间误读为精确文字边界。普通 HF Paraformer checkpoint 在穿刺中不返回时间戳，所以候选明确绑定官方 SeACo checkpoint，而非静默使用无时间戳模型。
 
 所有新模型和辅助模型在代码中固定 revision；Paraformer 同时校验权重 SHA256。

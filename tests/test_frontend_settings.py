@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 
+import yaml
+
 from src.web.frontend_settings import (
     FrontendSettings,
     codex_lb_environment,
@@ -38,9 +40,40 @@ def test_retired_frontend_models_fall_back_without_changing_saved_settings(tmp_p
 
     assert settings.model == ""
     assert settings.ocr_model == ""
-    assert response["model"] == "gpt-6-sol"
+    assert response["model"] == "gpt-6.1-sol"
     assert response["ocr_model"] == "gpt-6-luna"
     assert json.loads(settings_path.read_text(encoding="utf-8")) == payload
+
+
+def test_old_sol_defaults_are_mapped_without_editing_saved_settings(tmp_path: Path) -> None:
+    write_minimal_settings(tmp_path)
+    path = tmp_path / "data/jobs/frontend-settings.json"
+    path.parent.mkdir(parents=True)
+    payload = {"model": "gpt-6-sol", "ocr_model": "gpt-6-sol"}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    response = frontend_settings_response(tmp_path)
+    assert response["model"] == "gpt-6.1-sol"
+    assert response["ocr_model"] == "gpt-6.1-sol"
+    assert json.loads(path.read_text()) == payload
+
+
+def test_hidden_asr_defaults_are_not_exposed_or_deleted(tmp_path: Path) -> None:
+    from src.asr.registry import get_candidate
+
+    config_path = write_minimal_settings(tmp_path)
+    config = yaml.safe_load(config_path.read_text())
+    config["asr"]["candidate"] = "paraformer-zh"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    path = tmp_path / "data/jobs/frontend-settings.json"
+    path.parent.mkdir(parents=True)
+    payload = {"asr_candidate": "fun-asr-nano", "model": "custom-model"}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    response = frontend_settings_response(tmp_path)
+    assert response["asr_candidate"] == "whisper-existing"
+    assert response["model"] == "custom-model"
+    assert json.loads(path.read_text()) == payload
+    assert get_candidate("fun-asr-nano").id == "fun-asr-nano"
+    assert get_candidate("paraformer-zh").id == "paraformer-zh"
 
 
 def test_custom_frontend_models_remain_unchanged(tmp_path: Path) -> None:

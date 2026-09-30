@@ -128,7 +128,7 @@ def test_get_config_returns_profiles_and_backends(tmp_path: Path) -> None:
     assert response.status_code == 200
     payload = response.json()
     candidates = payload.pop("asr_candidates")
-    assert [item["id"] for item in candidates] == ["whisper-existing", "qwen3-asr-1.7b", "qwen3-asr-0.6b", "paraformer-zh", "fun-asr-nano"]
+    assert [item["id"] for item in candidates] == ["whisper-existing", "qwen3-asr-1.7b", "qwen3-asr-0.6b"]
     assert all(item["runtime_validation"] == "not_checked" for item in candidates)
     assert payload == {
         "profiles": ["local_cpu"],
@@ -191,7 +191,7 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
             "book_name": "测试书",
             "chapter": "第一章",
             "glossary_file": str(tmp_path / "glossary.txt"),
-            "model": "gpt-6-sol",
+            "model": "gpt-6.1-sol",
             "reasoning_effort": "max",
             "ocr_backend": "codex_api",
             "ocr_model": "gpt-6-luna",
@@ -211,7 +211,7 @@ def test_frontend_settings_roundtrip_keeps_api_key_masked(tmp_path: Path, monkey
     assert payload["book_name"] == "测试书"
     assert payload["chapter"] == "第一章"
     assert payload["glossary_file"].endswith("glossary.txt")
-    assert payload["model"] == "gpt-6-sol"
+    assert payload["model"] == "gpt-6.1-sol"
     assert payload["reasoning_effort"] == "max"
     assert payload["ocr_backend"] == "codex_api"
     assert payload["ocr_model"] == "gpt-6-luna"
@@ -1578,7 +1578,7 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
         "PUT",
         "/api/frontend-settings",
         json_body={
-            "model": "gpt-6-sol",
+            "model": "gpt-6.1-sol",
             "reasoning_effort": "max",
             "backend": "agy",
             "ocr_backend": "agy",
@@ -1601,7 +1601,7 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
     assert response.status_code == 202
     assert seen == {
         "backend_override": "agy",
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "reasoning_effort": "max",
         "ocr_backend": "agy",
         "ocr_model": "gpt-6-luna",

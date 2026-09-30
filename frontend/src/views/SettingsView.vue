@@ -47,7 +47,7 @@ const reasoningOptions = [
 ];
 
 const modelOptions = [
-  { label: "GPT-6 Sol（阶段 6 精修）", value: "gpt-6-sol" },
+  { label: "GPT-6.1 Sol（阶段 6 精修）", value: "gpt-6.1-sol" },
   { label: "GPT-6 Luna（PDF OCR）", value: "gpt-6-luna" },
 ];
 

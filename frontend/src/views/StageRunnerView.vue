@@ -162,7 +162,7 @@ const reasoningOptions = [
   { label: "最高", value: "max" },
 ];
 const modelOptions = [
-  { label: "GPT-6 Sol", value: "gpt-6-sol" },
+  { label: "GPT-6.1 Sol", value: "gpt-6.1-sol" },
   { label: "GPT-6 Luna", value: "gpt-6-luna" },
 ];
 

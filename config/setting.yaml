@@ -110,7 +110,7 @@ classification:
 llm:
   enabled: false
   provider: openai
-  model: gpt-6-sol
+  model: gpt-6.1-sol
   gemini_model: Gemini 3.1 Pro (High)
   gemini_fallback_model: ""
   backends:

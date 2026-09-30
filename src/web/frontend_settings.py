@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from src.asr.registry import WEB_CANDIDATE_IDS
 from src.config_loader import ConfigLoadError, load_settings
 from src.schemas import AsrCandidateName
 
@@ -76,10 +77,14 @@ def load_frontend_settings(project_root: Path) -> FrontendSettings:
     if not isinstance(payload, dict):
         return FrontendSettings()
     settings = FrontendSettings.model_validate(payload)
-    # 旧的前端默认值不能再覆盖新版项目默认值；保留磁盘快照和其他自定义模型不变。
+    # 仅迁移 Web 默认值的读取视图，不改磁盘设置或历史任务快照。
     for field_name in ("model", "ocr_model"):
-        if is_retired_model(getattr(settings, field_name)):
+        if getattr(settings, field_name) == "gpt-6-sol":
+            setattr(settings, field_name, "gpt-6.1-sol")
+        elif is_retired_model(getattr(settings, field_name)):
             setattr(settings, field_name, "")
+    if settings.asr_candidate and settings.asr_candidate not in WEB_CANDIDATE_IDS:
+        settings.asr_candidate = ""
     return settings
 
 
@@ -130,7 +135,9 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         codex_lb = loaded_settings.settings.codex_lb
         default_base_url = os.environ.get(codex_lb.base_url_env, "").strip() or codex_lb.base_url
         default_profile = loaded_settings.active_profile_name
-        default_asr_candidate = loaded_settings.settings.asr.candidate or "whisper-existing"
+        configured_asr_candidate = loaded_settings.settings.asr.candidate or "whisper-existing"
+        default_asr_candidate = (configured_asr_candidate if configured_asr_candidate in WEB_CANDIDATE_IDS
+                                 else "whisper-existing")
         configured_backends = loaded_settings.settings.llm.backends
         default_backend = configured_backends[0] if configured_backends else ""
         default_model = loaded_settings.settings.llm.model

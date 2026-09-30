@@ -247,7 +247,7 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
   --manifest "/path/to/jobs.yaml" \
   --remote-concurrency 2 \
   --backend "codex_api" \
-  --model "gpt-6-sol" \
+  --model "gpt-6.1-sol" \
   --reasoning-effort "high" \
   --ocr-model "gpt-6-luna" \
   --ocr-reasoning-effort "high"
@@ -256,7 +256,7 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 相关默认配置：
 
 - 阶段 6：`llm.backends = ["codex_api"]`
-- 阶段 6 默认模型：`llm.model = gpt-6-sol`（GPT-6 Sol）
+- 阶段 6 默认模型：`llm.model = gpt-6.1-sol`（GPT-6.1 Sol）；读取旧 Web 保存的 `gpt-6-sol` 默认值时映射到新 ID，不改写历史任务配置
 - 阶段 6 reasoning 支持 `low`、`medium`、`high`、`xhigh`、`max`；默认值为 `llm.reasoning_effort = high`
 - PDF OCR：`reference.ai_ocr_backend = codex_api`
 - PDF OCR 模型：`reference.codex_ocr_model = gpt-6-luna`（GPT-6 Luna）
@@ -271,7 +271,7 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
 ```bash
 .venv/bin/python scripts/06_refine.py \
   --backend codex_api \
-  --model "gpt-6-sol" \
+  --model "gpt-6.1-sol" \
   --reasoning-effort "high"
 ```
 
@@ -291,7 +291,7 @@ export CODEX_LB_API_KEY="你的 codex-lb API key"
   --reference "/path/to/reference.pdf" \
   --output-dir "/path/to/output" \
   --backend "codex_api" \
-  --model "gpt-6-sol" \
+  --model "gpt-6.1-sol" \
   --reasoning-effort "high" \
   --ocr-model "gpt-6-luna" \
   --ocr-reasoning-effort "high"
@@ -693,7 +693,7 @@ http://127.0.0.1:5173
 ```bash
 .venv/bin/python scripts/06_refine.py \
   --backend codex_api \
-  --model "gpt-6-sol" \
+  --model "gpt-6.1-sol" \
   --reasoning-effort "high"
 ```
 
@@ -830,7 +830,7 @@ http://127.0.0.1:5173
   --reference "/path/to/reference.pdf" \
   --output-dir "/path/to/output" \
   --backend "codex_api" \
-  --model "gpt-6-sol" \
+  --model "gpt-6.1-sol" \
   --reasoning-effort "high" \
   --ocr-model "gpt-6-luna" \
   --ocr-reasoning-effort "high"
@@ -888,7 +888,7 @@ manifest 模式：
   --manifest "/path/to/jobs.yaml" \
   --remote-concurrency 2 \
   --backend "codex_api" \
-  --model "gpt-6-sol" \
+  --model "gpt-6.1-sol" \
   --reasoning-effort "high" \
   --ocr-model "gpt-6-luna" \
   --ocr-reasoning-effort "high"

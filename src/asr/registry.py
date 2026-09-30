@@ -35,6 +35,8 @@ CANDIDATES = {
                   "272c57b82523ada6fd87095e955f8e29100979ab", "funasr"),
     )
 }
+# Presentation only: keep all candidates valid for CLI and saved task snapshots.
+WEB_CANDIDATE_IDS = ("whisper-existing", "qwen3-asr-1.7b", "qwen3-asr-0.6b")
 ALIGNER_MODEL = "Qwen/Qwen3-ForcedAligner-0.6B"
 ALIGNER_REVISION = "c7cbfc2048c462b0d63a45797104fc9db3ad62b7"
 
@@ -67,7 +69,8 @@ def candidate_options(loaded: Any) -> list[dict[str, Any]]:
         except (OSError, ValueError, subprocess.TimeoutExpired):
             availability[interpreter] = {}
     result = []
-    for candidate in CANDIDATES.values():
+    for candidate_id in WEB_CANDIDATE_IDS:
+        candidate = CANDIDATES[candidate_id]
         interpreter = sys.executable if candidate.id == "whisper-existing" else worker_python(loaded)
         dependencies = availability[interpreter]
         missing = [module for module in required_modules(candidate) if not dependencies.get(module)]
