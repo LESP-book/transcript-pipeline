@@ -212,3 +212,15 @@ Docker 默认仍只安装基础 Whisper；可选 `ASR_BACKENDS=all` 隔离环境
 最终镜像：`transcript-pipeline:asr-acceptance`，image ID `sha256:28b0e449ad78c1add2a908d7cad342edc14301d0485b30d14da702bf78b10c7b`。完整日志 `docker-build-verified.log`、`docker-inference-final.log`，输出 `continuation/docker-asr-data/asr-<candidate>/*.{json,txt}`，检查候选身份、device=cuda、非空语音/空静音及 JSON/TXT 一致。没有将此临时镜像部署到现有服务，也没有把短语音容器验收称作容器长录音质量验收。临时 Web 服务已停止，没有留下占用 GPU 的验收任务。
 
 **当前结论：接入实现与本轮工程验收通过，人工识别质量验收未完成。** 下一步提供朗读/讲解/问答的 10–20 分钟样本及人工稿，复核错词、硬切边界、Nano 疑似偏题片段和 ForcedAligner 零时长项；若要迁移服务，再单独批准部署和实际任务长录音验证。保持 Whisper 默认，不因本轮有限样本自动换模型。
+
+### 2026-10-01 用户任务短尾块失败与局部修复
+
+用户真实任务 `90501ce40516`（63.616 分钟朗读/讲解）两次在 Qwen 1.7B 的 `[1002.272,1002.544]` 分块失败：实际 PCM 只有 0.272 秒，ForcedAligner 给出 `[0.48,0.56]`，被原时长校验拒绝。不是 LAN、依赖加载、temperature/pad 提示或 CUDA OOM。重新只读计算原文件 VAD：该父区间为 `[972.272,1002.544]`、30.272 秒，旧固定步长把它切为 `30 + 0.272`；全部原 VAD 区间本身都超过 1 秒，故确认为接入层生成的人工残片。
+
+修复共享分块函数的可选短尾平衡策略，并只在 Qwen 启用：尾块不足 1 秒时，把最后两块平衡切分。该样例变为 `[972.272,987.408]`、`[987.408,1002.544]`（各 15.136 秒）。采样覆盖连续、无重叠、不超 30 秒，不丢尾部、不借另一 VAD 区间、不零填充、不放宽时间戳校验。最初尝试只让尾部达到 1 秒虽结构通过，但转录出现疑似偏题短语，因此最终改成平衡两块以保留足够上下文；初次证据保留，不称作最终通过。
+
+只读截取该原始 30.272 秒区间，复制任务实际术语/候选/profile，在独立目录运行真实 `scripts/02_transcribe.py`。最终 CUDA FP16 Qwen 1.7B 退出 0，5 个文本段，JSON/TXT 一致，时间边界有效；metadata 记录 `[0,15.136]`、`[15.136,30.272]` 和 `balance_last_pair_within_same_vad_region`。真实产物和日志：`data/output/logs/asr-short-tail-20261001/{balanced-asr,balanced-run.log,balanced-settings.yaml,pytest.log}`。
+
+新增精确 30.272 秒回归、不同余数的连续采样覆盖/上限检查及天然短区间不造时长测试。`.venv/bin/python -m pytest`：**348 passed / 6.50 秒**；`git diff --check` 通过。按 REVIEW_CHECKLIST 自评：局部 ASR bug 范围内、真实问题区间已复验、没有覆盖原任务/音频、没有远程 LLM 调用。改动 `src/asr/segmentation.py`、`src/asr/qwen3_backend.py`、`tests/test_asr_backends.py` 与文档；其他后端保持原分块行为。
+
+原任务状态仍 failed，未自动跑其 63.6 分钟全片或后续阶段，也未重启用户 Web 服务/重建部署镜像。这证明已修复并复验该失败区间，**不宣称整项任务已经成功，也不保证未来所有对齐异常不会失败**。下一步由用户在无其他运行任务时重启代码服务并从 transcribe 同候选重试，检查全片真实结果；越界/对齐失败仍明确报错。issue 保持 open，不提交或推送。

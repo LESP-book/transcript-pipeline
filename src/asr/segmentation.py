@@ -9,10 +9,17 @@ def lexical_text(text: str) -> str:
 
 
 def bounded_speech_intervals(regions: list[dict[str, int]], sample_count: int,
-                             max_samples: int) -> list[tuple[int, int]]:
-    """Split real VAD sample ranges without assigning times from text."""
+                             max_samples: int, *, min_tail_samples: int = 0) -> list[tuple[int, int]]:
+    """Split real VAD ranges; optionally rebalance a short artificial tail.
+
+    Only move a boundary within the same real VAD region. Never pad, discard,
+    overlap or borrow speech from a different region to satisfy a duration.
+    Naturally short regions remain short and are still subject to validation.
+    """
     if max_samples <= 0:
         raise ValueError("音频分块长度必须为正数")
+    if not 0 <= min_tail_samples <= max_samples:
+        raise ValueError("尾块最小时长必须在分块上限内")
     intervals = []
     previous_end = 0
     for region in regions:
@@ -20,7 +27,14 @@ def bounded_speech_intervals(regions: list[dict[str, int]], sample_count: int,
         if not (isinstance(start, int) and isinstance(end, int)
                 and previous_end <= start < end <= sample_count):
             raise ValueError("VAD 区间越界、重叠或顺序无效")
-        intervals.extend((begin, min(end, begin + max_samples)) for begin in range(start, end, max_samples))
+        current = [(begin, min(end, begin + max_samples)) for begin in range(start, end, max_samples)]
+        if len(current) > 1 and current[-1][1] - current[-1][0] < min_tail_samples:
+            previous_start = current[-2][0]
+            # Balance the pair, rather than merely making a tiny tail 1s:
+            # the recognizer also needs enough real linguistic context.
+            boundary = previous_start + (end - previous_start) // 2
+            current[-2:] = [(previous_start, boundary), (boundary, end)]
+        intervals.extend(current)
         previous_end = end
     return intervals
 

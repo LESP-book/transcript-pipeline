@@ -212,6 +212,35 @@ def test_zero_duration_phrases_merge_only_with_actual_adjacent_alignment():
         aligned_segments("甲。乙。", [("甲", 1, 1), ("乙", 2, 2)], 3)
 
 
+def test_qwen_short_tail_regression_30_seconds_plus_272_ms():
+    start, end = round(972.272 * 16000), round(1002.544 * 16000)
+    intervals = bounded_speech_intervals([{"start": start, "end": end}], end, 480000,
+                                        min_tail_samples=16000)
+    assert [(a / 16000, b / 16000) for a, b in intervals] == [
+        (972.272, 987.408), (987.408, 1002.544)]
+    assert sum(b - a for a, b in intervals) == end - start
+    assert intervals[0][1] == intervals[1][0]
+    assert all(16000 <= b - a <= 480000 for a, b in intervals)
+
+
+@pytest.mark.parametrize("length", [480000, 480001, 484352, 959999, 960001])
+def test_short_tail_rebalancing_preserves_every_real_sample(length):
+    intervals = bounded_speech_intervals([{"start": 100, "end": 100 + length}],
+                                        length + 100, 480000, min_tail_samples=16000)
+    assert intervals[0][0] == 100 and intervals[-1][1] == length + 100
+    assert sum(b - a for a, b in intervals) == length
+    assert all(a[1] == b[0] for a, b in zip(intervals, intervals[1:]))
+    assert all(0 < b - a <= 480000 for a, b in intervals)
+    assert intervals[-1][1] - intervals[-1][0] >= 16000
+
+
+def test_naturally_short_vad_region_is_not_padded_or_joined_across_silence():
+    regions = [{"start": 10, "end": 20}, {"start": 50, "end": 60}]
+    assert bounded_speech_intervals(regions, 100, 40, min_tail_samples=20) == [(10, 20), (50, 60)]
+    assert bounded_speech_intervals([{"start": 0, "end": 41}], 41, 40,
+                                    min_tail_samples=40) == [(0, 20), (20, 41)]
+
+
 def test_vad_chunks_use_real_sample_boundaries_without_gaps_or_overlap():
     regions = [{"start": 200, "end": 500}, {"start": 900, "end": 1600}]
     assert bounded_speech_intervals(regions, 2000, 400) == [(200, 500), (900, 1300), (1300, 1600)]

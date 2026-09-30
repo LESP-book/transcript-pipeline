@@ -64,7 +64,9 @@ class QwenBackend:
     def transcribe(self, audio: Any, sample_rate: int, duration: float, terms: list[str],
                    speech_regions: list[dict[str, int]]) -> tuple[list[dict], dict]:
         step = round(self.chunk_seconds * sample_rate)
-        intervals = bounded_speech_intervals(speech_regions, len(audio), step)
+        min_tail = min(sample_rate, step)
+        intervals = bounded_speech_intervals(speech_regions, len(audio), step,
+                                            min_tail_samples=min_tail)
         segments = []
         zero_units = 0
         sdk_intervals = []
@@ -101,6 +103,8 @@ class QwenBackend:
                                     "attn_implementation": "sdpa"},
             "chunking": {"strategy": "bounded Silero VAD PCM slices + official SDK", "max_seconds": self.chunk_seconds,
                          "sdk_target_seconds": self.chunk_limit, "overlap": 0,
+                         "short_tail_threshold_seconds": min_tail / sample_rate,
+                         "short_tail_policy": "balance_last_pair_within_same_vad_region",
                          "intervals": [[begin / sample_rate, finish / sample_rate] for begin, finish in intervals],
                          "inference_intervals_including_tail_padding": sdk_intervals},
         }
