@@ -743,11 +743,15 @@ def build_job_initial_prompt(
     chapter: str | None,
     max_chars: int = 400,
 ) -> str:
-    common_terms = load_glossary_terms(resolve_common_glossary_path(project_root))
-    extra_terms = load_glossary_terms(Path(glossary_file).expanduser().resolve()) if glossary_file else []
-    title_terms = [term for term in [book_name or "", chapter or ""] if term.strip()]
-    merged_terms = merge_glossary_terms(title_terms, extra_terms, common_terms)
-    return build_initial_prompt(merged_terms, max_chars=max_chars)
+    return build_initial_prompt(build_job_asr_terms(project_root=project_root, glossary_file=glossary_file,
+                                                   book_name=book_name, chapter=chapter), max_chars=max_chars)
+
+
+def build_job_asr_terms(*, project_root: Path, glossary_file: str | None,
+                        book_name: str | None, chapter: str | None) -> list[str]:
+    common = load_glossary_terms(resolve_common_glossary_path(project_root))
+    extra = load_glossary_terms(Path(glossary_file).expanduser().resolve()) if glossary_file else []
+    return merge_glossary_terms([book_name or "", chapter or ""], extra, common)
 
 
 def write_job_settings(
@@ -765,6 +769,9 @@ def write_job_settings(
 ) -> Path:
     normalized_content_type = normalize_content_type(content_type)
     payload = load_raw_settings(loaded_settings)
+    # Freeze the ASR configuration read for this request, including memory
+    # overrides; do not reread a later global candidate into a task snapshot.
+    payload["asr"] = loaded_settings.settings.asr.model_dump()
     try:
         apply_model_overrides_to_raw_settings(payload, model_overrides or ModelOverrides())
     except SettingsOverrideError as exc:
@@ -778,6 +785,9 @@ def write_job_settings(
         book_name=book_name,
         chapter=chapter,
     )
+    payload["asr"]["terms"] = merge_glossary_terms(
+        build_job_asr_terms(project_root=project_root, glossary_file=glossary_file,
+                            book_name=book_name, chapter=chapter), payload["asr"].get("terms", []))
     if normalized_content_type == CONTENT_TYPE_CONVERSATION:
         reference_payload = payload.setdefault("reference", {})
         if not isinstance(reference_payload, dict):
@@ -872,6 +882,8 @@ def write_job_manifest(
         "glossary_file": str(Path(glossary_file).expanduser().resolve()) if glossary_file else "",
         "generated_settings_path": relativize_path(job_paths.settings_path, loaded_settings.project_root),
     }
+    snapshot = load_settings(settings_path=job_paths.settings_path, project_root=loaded_settings.project_root)
+    payload["asr_candidate"] = snapshot.settings.asr.candidate or "whisper-existing"
     job_paths.manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -1322,6 +1334,7 @@ def run_single_job(
     content_type: str | None = None,
     profile: str | None = None,
     backend: str | None = None,
+    asr_candidate: str | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
     ocr_model: str | None = None,
@@ -1356,6 +1369,7 @@ def run_single_job(
         book_name=book_name,
         chapter=chapter,
         model_overrides=ModelOverrides(
+            asr_candidate=asr_candidate,
             llm_model=model,
             llm_reasoning_effort=reasoning_effort,
             ocr_model=ocr_model,

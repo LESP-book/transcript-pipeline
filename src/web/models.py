@@ -3,9 +3,14 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from src.schemas import AsrCandidateName
 
 
-class SingleJobRequest(BaseModel):
+class AsrSelection(BaseModel):
+    asr_candidate: AsrCandidateName | None = None
+
+
+class SingleJobRequest(AsrSelection):
     video: str
     reference: str | None = None
     output_dir: str
@@ -26,7 +31,7 @@ class SingleJobRequest(BaseModel):
     refine_prompt: str | None = None
 
 
-class BatchJobRequest(BaseModel):
+class BatchJobRequest(AsrSelection):
     manifest: str | None = None
     videos_dir: str | None = None
     reference_dir: str | None = None
@@ -50,7 +55,7 @@ class BatchJobRequest(BaseModel):
     refine_prompt: str | None = None
 
 
-class StageRunRequest(BaseModel):
+class StageRunRequest(AsrSelection):
     config: str | None = None
     profile: str | None = None
     backend: Literal["codex_api", "codex_cli", "agy", "both"] | None = None
@@ -77,7 +82,7 @@ class StageFileRunRequest(StageRunRequest):
     result_name: str
 
 
-class JobRerunRequest(BaseModel):
+class JobRerunRequest(AsrSelection):
     start_stage: str
     profile: str | None = None
     backend: Literal["codex_api", "codex_cli", "agy", "both"] | None = None

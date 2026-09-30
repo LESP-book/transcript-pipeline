@@ -22,6 +22,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { getBatch, getRefineDefaultInstruction, listFs, submitBatchJob, type FileItem, type JobState } from "../api/client";
 import BackendSelector from "../components/BackendSelector.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
+import AsrCandidateSelector from "../components/AsrCandidateSelector.vue";
 import RemoteDirectoryUpload from "../components/RemoteDirectoryUpload.vue";
 import RemoteFileUpload from "../components/RemoteFileUpload.vue";
 import { useConfigOptions } from "../composables/useConfigOptions";
@@ -38,6 +39,8 @@ interface SourcePreview {
 
 const message = useMessage();
 const {
+  asrCandidates,
+  defaultAsrCandidate,
   activeProfile,
   backends,
   defaultBackend,
@@ -71,6 +74,7 @@ const form = reactive<{
   shared_reference: string;
   output_dir: string;
   profile: string;
+  asr_candidate: string;
   backend: string;
   ocr_backend: string;
   ocr_model: string;
@@ -91,6 +95,7 @@ const form = reactive<{
   shared_reference: "",
   output_dir: "",
   profile: "",
+  asr_candidate: "",
   backend: "",
   ocr_backend: "",
   ocr_model: "",
@@ -178,6 +183,8 @@ const effectiveContentType = computed(() => {
   }
   return form.content_type;
 });
+
+watch(defaultAsrCandidate, value => { if (!form.asr_candidate) form.asr_candidate = value; });
 
 watch(activeProfile, (value) => {
   if (!form.profile && value) {
@@ -407,6 +414,7 @@ function buildPayload() {
     output_dir: form.mode === "manifest" ? null : form.output_dir,
     content_type: effectiveContentType.value,
     profile: form.profile || null,
+    asr_candidate: form.asr_candidate || null,
     backend: form.backend || null,
     ocr_backend: form.ocr_backend || null,
     ocr_model: form.ocr_model || null,
@@ -619,6 +627,11 @@ onBeforeUnmount(stopPolling);
                         />
                         <n-input v-model:value="form.glossary_file" readonly placeholder="可选，上传后自动生成服务器路径" />
                       </n-space>
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item span="2 m:1">
+                    <n-form-item label="语音转文字模型">
+                      <AsrCandidateSelector v-model="form.asr_candidate" :options="asrCandidates" :loading="loading" />
                     </n-form-item>
                   </n-grid-item>
                   <n-grid-item span="2 m:1">

@@ -17,6 +17,9 @@ import {
 import { computed, onMounted, reactive, ref } from "vue";
 
 import { getFrontendSettings, saveFrontendSettings, type FrontendSettings } from "../api/client";
+import AsrCandidateSelector from "../components/AsrCandidateSelector.vue";
+import { useConfigOptions } from "../composables/useConfigOptions";
+const { asrCandidates, loading: configLoading } = useConfigOptions();
 
 const message = useMessage();
 const loading = ref(false);
@@ -29,6 +32,7 @@ const form = reactive({
   clear_codex_lb_api_key: false,
   codex_lb_bypass_proxy: false,
   model: "",
+  asr_candidate: "",
   reasoning_effort: "high",
   ocr_model: "",
   ocr_reasoning_effort: "high",
@@ -67,6 +71,7 @@ function applySettings(settings: FrontendSettings) {
   form.clear_codex_lb_api_key = false;
   form.codex_lb_bypass_proxy = settings.codex_lb_bypass_proxy ?? false;
   form.model = settings.model;
+  form.asr_candidate = settings.asr_candidate || "whisper-existing";
   form.reasoning_effort = settings.reasoning_effort;
   form.ocr_model = settings.ocr_model;
   form.ocr_reasoning_effort = settings.ocr_reasoning_effort;
@@ -92,6 +97,7 @@ async function saveSettings() {
       clear_codex_lb_api_key: form.clear_codex_lb_api_key,
       codex_lb_bypass_proxy: form.codex_lb_bypass_proxy,
       model: form.model,
+      asr_candidate: form.asr_candidate,
       reasoning_effort: form.reasoning_effort,
       ocr_model: form.ocr_model,
       ocr_reasoning_effort: form.ocr_reasoning_effort,
@@ -164,6 +170,9 @@ onMounted(loadSettings);
       <n-grid-item span="2 m:1">
         <n-card title="模型默认值" class="view-card settings-card">
           <n-form label-placement="top">
+            <n-form-item label="默认语音转文字模型">
+              <AsrCandidateSelector v-model="form.asr_candidate" :options="asrCandidates" :loading="configLoading" />
+            </n-form-item>
             <n-form-item label="阶段 6 模型">
               <n-select v-model:value="form.model" :options="modelOptions" />
             </n-form-item>

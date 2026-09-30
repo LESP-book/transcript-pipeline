@@ -1,4 +1,19 @@
+export interface AsrCandidate {
+  id: string;
+  label: string;
+  engine: string;
+  model: string;
+  supported_devices: string[];
+  dependency_status: "installed" | "missing" | "unknown";
+  unavailable_reason: string;
+  cache_status: string;
+  runtime_validation: string;
+}
+
+export interface AsrSelectionPayload { asr_candidate?: string | null; }
+
 export interface ConfigResponse {
+  asr_candidates: AsrCandidate[];
   profiles: string[];
   backends: string[];
   configured_backends: string[];
@@ -18,6 +33,7 @@ export interface FrontendSettings {
   has_codex_lb_api_key: boolean;
   codex_lb_bypass_proxy: boolean;
   profile: string;
+  asr_candidate: string;
   backend: string;
   remote_concurrency: number;
   book_name: string;
@@ -34,7 +50,7 @@ export interface FrontendSettings {
   settings_path: string;
 }
 
-export interface FrontendSettingsPayload {
+export interface FrontendSettingsPayload extends AsrSelectionPayload {
   codex_lb_base_url?: string | null;
   codex_lb_api_key?: string | null;
   clear_codex_lb_api_key?: boolean;
@@ -126,6 +142,9 @@ export interface JobInputSummary {
 }
 
 export interface JobState {
+  asr_candidate?: string;
+  asr_engine?: string;
+  asr_model?: string;
   id: string;
   kind: string;
   status: string;
@@ -174,7 +193,7 @@ export interface JobArtifactContent extends JobArtifact {
 
 export type ResultDownloadFormat = "markdown" | "txt";
 
-export interface SingleJobPayload {
+export interface SingleJobPayload extends AsrSelectionPayload {
   video: string;
   reference?: string | null;
   output_dir: string;
@@ -195,7 +214,7 @@ export interface SingleJobPayload {
   refine_prompt?: string | null;
 }
 
-export interface BatchJobPayload {
+export interface BatchJobPayload extends AsrSelectionPayload {
   manifest?: string | null;
   videos_dir?: string | null;
   reference_dir?: string | null;
@@ -223,7 +242,7 @@ export interface RefinePromptResponse {
   prompt: string;
 }
 
-export interface StageRunPayload {
+export interface StageRunPayload extends AsrSelectionPayload {
   profile?: string | null;
   backend?: string | null;
   config?: string | null;
@@ -261,7 +280,7 @@ export interface StageInputUploadResponse {
   size: number;
 }
 
-export interface JobRerunPayload {
+export interface JobRerunPayload extends AsrSelectionPayload {
   start_stage: string;
   profile?: string | null;
   backend?: string | null;

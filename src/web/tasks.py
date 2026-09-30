@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -69,9 +70,14 @@ def first_text(*values: str | None) -> str | None:
     return None
 
 
-def request_payload_with_effective_ocr_settings(request, loaded_settings) -> dict[str, object]:
+def request_payload_with_effective_ocr_settings(request, loaded_settings, *, freeze_asr: bool = False) -> dict[str, object]:
     payload = request.model_dump()
     reference_settings = loaded_settings.settings.reference
+    if hasattr(request, "asr_candidate"):
+        payload["asr_candidate"] = loaded_settings.settings.asr.candidate or "whisper-existing"
+    if freeze_asr:
+        payload["profile"] = loaded_settings.active_profile_name
+        payload["config"] = str(loaded_settings.settings_path)
     payload.update(
         {
             "ocr_backend": reference_settings.ai_ocr_backend,
@@ -284,7 +290,9 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
     try:
         request = JobRerunRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
-        effective_profile = first_text(request.profile, frontend_settings.profile)
+        # A changed global profile can change Whisper's model too. Historical
+        # reruns use their snapshot unless this request explicitly overrides it.
+        effective_profile = first_text(request.profile)
         effective_backend = first_text(request.backend, frontend_settings.backend)
         job_paths = build_job_paths(root, job_id)
         if not job_paths.settings_path.exists():
@@ -298,11 +306,15 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
             profile_name=effective_profile or str(manifest.get("profile") or ""),
             project_root=root,
         )
+        saved_candidate = loaded_settings.settings.asr.candidate or "whisper-existing"
+        if request.asr_candidate is not None and request.asr_candidate != saved_candidate:
+            raise JobRunnerError("切换 ASR 候选请新建任务或独立阶段文件运行；历史任务仅允许同候选重试")
         apply_model_overrides(
             loaded_settings,
             ModelOverrides(
                 llm_model=request.model or frontend_settings.model or None,
                 llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+                asr_candidate=request.asr_candidate,
                 # job 的生成配置已经固化首次运行的 OCR 身份；重跑未显式覆盖时必须沿用原值。
                 ocr_backend=request.ocr_backend,
                 ocr_model=request.ocr_model,
@@ -414,6 +426,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
         effective_glossary_file = first_text(request.glossary_file, frontend_settings.glossary_file)
         effective_refine_prompt = first_text(request.refine_prompt)
         model_overrides = ModelOverrides(
+            asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
             llm_model=request.model or frontend_settings.model or None,
             llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
             ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
@@ -470,6 +483,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             project_root=root,
         )
         logger = setup_logging(job_loaded_settings.settings.runtime.log_level)
+        app.state.update_state(state_path, asr_candidate=job_loaded_settings.settings.asr.candidate or "whisper-existing")
         stages = [normalize_stage_name(stage_name) for stage_name in job_loaded_settings.settings.pipeline.stages]
         progress_items: dict[str, dict[str, object]] = {}
 
@@ -681,6 +695,7 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
         effective_refine_prompt = first_text(request.refine_prompt)
         effective_remote_concurrency = request.remote_concurrency or frontend_settings.remote_concurrency
         model_overrides = ModelOverrides(
+            asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
             llm_model=request.model or frontend_settings.model or None,
             llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
             ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
@@ -694,6 +709,7 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
             profile_name=effective_profile,
             project_root=root,
         )
+        app.state.update_state(state_path, asr_candidate=model_overrides.asr_candidate or base_loaded_settings.settings.asr.candidate or "whisper-existing")
         job_specs, failed_runtimes = load_batch_job_specs(
             base_loaded_settings=base_loaded_settings,
             manifest=request.manifest,
@@ -844,6 +860,7 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
         apply_model_overrides(
             loaded_settings,
             ModelOverrides(
+                asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
                 llm_model=request.model or frontend_settings.model or None,
                 llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
                 ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
@@ -853,6 +870,13 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
                 ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
             ),
         )
+        if normalized_stage_name == "transcribe":
+            snapshot_path = state_path.parent / "asr-settings.yaml"
+            snapshot = loaded_settings.settings.model_dump(mode="json")
+            snapshot["runtime"]["default_profile"] = loaded_settings.active_profile_name
+            snapshot_path.write_text(yaml.safe_dump(snapshot, allow_unicode=True, sort_keys=False), encoding="utf-8")
+            loaded_settings = load_settings(settings_path=snapshot_path, project_root=root,
+                                            profile_name=loaded_settings.active_profile_name)
         logger = setup_logging(loaded_settings.settings.runtime.log_level)
         progress_items: dict[str, dict[str, object]] = {}
 
@@ -868,7 +892,9 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
             state_path,
             status="running",
             current_stage=normalized_stage_name,
-            request_payload=request_payload_with_effective_ocr_settings(request, loaded_settings),
+            request_payload=request_payload_with_effective_ocr_settings(request, loaded_settings,
+                freeze_asr=normalized_stage_name == "transcribe"),
+            **({"asr_candidate": loaded_settings.settings.asr.candidate or "whisper-existing"} if normalized_stage_name == "transcribe" else {}),
         )
         with codex_lb_environment(frontend_settings):
             exit_code = run_stage(
@@ -940,6 +966,7 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
             job_paths=workspace.job_paths,
             profile_name=base_loaded_settings.active_profile_name,
             model_overrides=ModelOverrides(
+                asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
                 llm_model=request.model or frontend_settings.model or None,
                 llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
                 ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
@@ -971,7 +998,9 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
             request_payload=request_payload_with_effective_ocr_settings(
                 request,
                 workspace_loaded_settings,
+                freeze_asr=normalized_stage_name == "transcribe",
             ),
+            **({"asr_candidate": workspace_loaded_settings.settings.asr.candidate or "whisper-existing"} if normalized_stage_name == "transcribe" else {}),
         )
         with codex_lb_environment(frontend_settings):
             exit_code = run_stage(

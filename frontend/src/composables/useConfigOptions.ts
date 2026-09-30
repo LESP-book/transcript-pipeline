@@ -1,6 +1,6 @@
 import { onMounted, ref } from "vue";
 
-import { getConfig, getFrontendSettings } from "../api/client";
+import { getConfig, getFrontendSettings, type AsrCandidate } from "../api/client";
 
 const codexApiBackend = "codex_api";
 
@@ -10,6 +10,8 @@ function normalizeCodexApiBackend(value: string | null | undefined): string {
 
 export function useConfigOptions() {
   const profiles = ref<string[]>([]);
+  const asrCandidates = ref<AsrCandidate[]>([]);
+  const defaultAsrCandidate = ref("");
   const backends = ref<string[]>([]);
   const videoExtensions = ref<string[]>([]);
   const referenceExtensions = ref<string[]>([]);
@@ -31,6 +33,7 @@ export function useConfigOptions() {
     try {
       const config = await getConfig();
       profiles.value = config.profiles;
+      asrCandidates.value = config.asr_candidates ?? [];
       backends.value = [codexApiBackend];
       videoExtensions.value = config.video_extensions;
       referenceExtensions.value = config.reference_extensions;
@@ -41,6 +44,7 @@ export function useConfigOptions() {
       uploadDir.value = config.upload_dir;
 
       const settings = await getFrontendSettings();
+      defaultAsrCandidate.value = settings.asr_candidate || "whisper-existing";
       if (!config.default_ocr_backend) {
         defaultOcrBackend.value = normalizeCodexApiBackend(settings.ocr_backend);
       }
@@ -58,6 +62,8 @@ export function useConfigOptions() {
   onMounted(load);
 
   return {
+    asrCandidates,
+    defaultAsrCandidate,
     profiles,
     backends,
     videoExtensions,

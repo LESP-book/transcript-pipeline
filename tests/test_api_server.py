@@ -126,7 +126,11 @@ def test_get_config_returns_profiles_and_backends(tmp_path: Path) -> None:
     response = request_json(create_app(project_root=tmp_path), "GET", "/api/config")
 
     assert response.status_code == 200
-    assert response.json() == {
+    payload = response.json()
+    candidates = payload.pop("asr_candidates")
+    assert [item["id"] for item in candidates] == ["whisper-existing", "qwen3-asr-1.7b", "qwen3-asr-0.6b", "paraformer-zh", "fun-asr-nano"]
+    assert all(item["runtime_validation"] == "not_checked" for item in candidates)
+    assert payload == {
         "profiles": ["local_cpu"],
         "backends": ["codex_api", "agy", "codex_cli", "both"],
         "configured_backends": ["codex_api"],

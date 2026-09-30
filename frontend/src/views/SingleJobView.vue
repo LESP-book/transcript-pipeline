@@ -22,11 +22,14 @@ import { getJob, getRefineDefaultInstruction, type JobState, submitJob } from ".
 import BackendSelector from "../components/BackendSelector.vue";
 import JobStatusCard from "../components/JobStatusCard.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
+import AsrCandidateSelector from "../components/AsrCandidateSelector.vue";
 import RemoteFileUpload from "../components/RemoteFileUpload.vue";
 import { useConfigOptions } from "../composables/useConfigOptions";
 
 const message = useMessage();
 const {
+  asrCandidates,
+  defaultAsrCandidate,
   activeProfile,
   backends,
   defaultBackend,
@@ -54,6 +57,7 @@ const form = reactive({
   reference: "",
   output_dir: "",
   profile: "",
+  asr_candidate: "",
   backend: "",
   ocr_backend: "",
   ocr_model: "",
@@ -83,6 +87,8 @@ const videoAccept = computed(() => videoExtensions.value.join(","));
 const referenceAccept = computed(() => referenceExtensions.value.join(","));
 const glossaryAccept = ".txt,.md";
 const isConversation = computed(() => form.content_type === "conversation");
+
+watch(defaultAsrCandidate, value => { if (!form.asr_candidate) form.asr_candidate = value; });
 
 watch(activeProfile, (value) => {
   if (!form.profile && value) {
@@ -212,6 +218,7 @@ async function submit() {
       output_dir: form.output_dir,
       content_type: form.content_type,
       profile: form.profile || null,
+      asr_candidate: form.asr_candidate || null,
       backend: form.backend || null,
       ocr_backend: form.ocr_backend || null,
       ocr_model: form.ocr_model || null,
@@ -340,6 +347,11 @@ onBeforeUnmount(stopPolling);
                       />
                       <n-input v-model:value="form.glossary_file" readonly placeholder="可选，上传后自动生成服务器路径" />
                     </n-space>
+                  </n-form-item>
+                </n-grid-item>
+                <n-grid-item span="2 m:1">
+                  <n-form-item label="语音转文字模型">
+                    <AsrCandidateSelector v-model="form.asr_candidate" :options="asrCandidates" :loading="loading" />
                   </n-form-item>
                 </n-grid-item>
                 <n-grid-item span="2 m:1">

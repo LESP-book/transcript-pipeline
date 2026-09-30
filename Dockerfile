@@ -42,6 +42,31 @@ RUN python -m venv /app/.venv \
         nvidia-cudnn-cu12 \
     && /app/.venv/bin/python -m pip check
 
+# Optional SDKs live in a separate interpreter: the Web/Whisper environment
+# keeps its existing Pydantic/Hugging Face/CUDA runtime versions.
+ARG ASR_BACKENDS=whisper
+COPY requirements-asr-*.txt ./
+RUN case "${ASR_BACKENDS}" in \
+      whisper) ;; \
+      qwen|funasr|all) \
+        /app/.venv/bin/python -m venv /app/.venv/asr-py312 \
+        && case "${ASR_BACKENDS}" in \
+             qwen) ASR_REQUIREMENTS="-r requirements-asr-qwen.txt" ;; \
+             funasr) ASR_REQUIREMENTS="-r requirements-asr-funasr.txt" ;; \
+             all) ASR_REQUIREMENTS="-r requirements-asr-qwen.txt -r requirements-asr-funasr.txt" ;; \
+           esac \
+        && /app/.venv/asr-py312/bin/python -m pip install --no-cache-dir pip==26.2.1 \
+        && /app/.venv/asr-py312/bin/python -m pip install --no-cache-dir --constraint requirements-asr-constraints.txt setuptools wheel \
+        && /app/.venv/asr-py312/bin/python -m pip install --no-cache-dir --no-build-isolation --resume-retries 10 ${ASR_REQUIREMENTS} \
+        && /app/.venv/asr-py312/bin/python -m pip check ;; \
+      *) echo "ASR_BACKENDS must be whisper, qwen, funasr or all" >&2; exit 2 ;; \
+    esac
+
+# faster-whisper 1.2.1 calls av.open(metadata_errors=...). PyAV 19 removed
+# that API; keep the verified base decoder binding independently of worker av.
+RUN /app/.venv/bin/python -m pip install --no-cache-dir av==16.1.0 \
+    && /app/.venv/bin/python -m pip check
+
 COPY api_server.py ./api_server.py
 COPY config/settings.yaml ./config/settings.yaml
 COPY config/prompts/ ./config/prompts/

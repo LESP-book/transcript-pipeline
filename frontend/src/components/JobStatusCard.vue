@@ -978,6 +978,9 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
             <n-descriptions-item label="任务类型 (Kind)">
               <n-tag size="small" :bordered="false" type="info">{{ String(state.kind ?? "-") || "-" }}</n-tag>
             </n-descriptions-item>
+            <n-descriptions-item v-if="state.asr_engine || state.asr_candidate" label="语音转文字" :span="2">
+              {{ state.asr_engine && state.asr_model ? `${state.asr_engine} / ${state.asr_model}` : state.asr_candidate }}
+            </n-descriptions-item>
             <n-descriptions-item label="服务器保存路径" :span="2">
               <span class="status-card__path">{{ String(state.output_path ?? "-") || "-" }}</span>
             </n-descriptions-item>

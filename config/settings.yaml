@@ -82,6 +82,9 @@ audio:
     - .flac
 
 asr:
+  # 默认仍使用 Whisper。新增候选的 SDK 在独立 Python 3.12 环境运行。
+  # Docker 可用 TRANSCRIPT_ASR_PYTHON 指定容器内可选环境，不影响 Whisper。
+  worker_python: .venv/asr-py312/bin/python
   engine: faster-whisper
   language: zh
   beam_size: 8

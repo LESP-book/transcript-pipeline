@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import ctypes
 import importlib.util
+import importlib.metadata
 import json
 import logging
+import math
 import os
+import subprocess
+import sys
+import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -59,6 +65,7 @@ class AsrFileResult:
     language: str
     segments: list[AsrSegmentResult]
     full_text: str
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -289,6 +296,7 @@ def load_faster_whisper_model(loaded_settings: LoadedSettings) -> Any:
             model_ref,
             **model_kwargs,
         )
+        model._asr_pipeline_model_reference = str(model_ref)
         return model
     except Exception as exc:
         message = str(exc)
@@ -351,6 +359,12 @@ def transcribe_audio_file(
 
     language = getattr(info, "language", settings.asr.language) or settings.asr.language
     full_text = "\n".join(segment.text for segment in segments if segment.text).strip()
+    duration = getattr(info, "duration", None)
+    voiced_duration = getattr(info, "duration_after_vad", None)
+    if not full_text and settings.asr.vad_filter and voiced_duration is not None and voiced_duration > 0:
+        raise AsrTranscriptionError("Whisper VAD 检测到语音但转录为空，拒绝覆盖已有成功产物")
+    audio_kind = "speech" if full_text else (
+        "empty_audio" if duration == 0 else "no_speech_detected" if voiced_duration == 0 else "unclassified_empty_result")
 
     if logger:
         logger.info("转录完成 | %s | segments=%s", audio_path.name, len(segments))
@@ -364,6 +378,19 @@ def transcribe_audio_file(
         language=language,
         segments=segments,
         full_text=full_text,
+        metadata={"candidate": "whisper-existing", "model_id": profile.asr_model_size,
+                  "model_reference": getattr(model, "_asr_pipeline_model_reference", profile.asr_model_size),
+                  "runtime_versions": asr_runtime_versions(),
+                  "timestamp_source": "faster-whisper_segments", "timestamp_granularity": "segment",
+                  "duration_seconds": duration, "audio_kind": audio_kind,
+                  "duration_after_vad": voiced_duration,
+                  "resolved_parameters": {"compute_type": profile.asr_compute_type, "beam_size": beam_size,
+                      "vad_filter": settings.asr.vad_filter, "word_timestamps": settings.asr.word_timestamps,
+                      "condition_on_previous_text": settings.asr.condition_on_previous_text,
+                      "initial_prompt": settings.asr.initial_prompt},
+                  "warnings": (["Whisper 原生尾段略超出音频时长；保留旧时间戳，需人工关注尾部重复/幻觉"]
+                      if getattr(info, "duration", None) is not None and segments
+                      and max(s.end for s in segments) > info.duration + 0.1 else [])},
     )
 
 
@@ -381,11 +408,204 @@ def write_asr_result(result: AsrFileResult, output_paths: AsrOutputPaths) -> Non
         "full_text": result.full_text,
     }
 
-    with output_paths.json_path.open("w", encoding="utf-8") as file:
-        json.dump(payload, file, ensure_ascii=False, indent=2)
+    if result.metadata is not None:
+        payload["metadata"] = result.metadata
+    validate_asr_result(result)
+    encoded = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
+    publish_asr_pair(output_paths, encoded, result.full_text.encode("utf-8"))
 
-    with output_paths.txt_path.open("w", encoding="utf-8") as file:
-        file.write(result.full_text)
+
+def asr_runtime_versions() -> dict[str, str]:
+    versions = {"python": sys.version.split()[0]}
+    for name in ("faster-whisper", "ctranslate2", "numpy"):
+        try:
+            versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    return versions
+
+
+def validate_asr_result(result: AsrFileResult) -> None:
+    ids: set[int] = set()
+    previous_start = -1.0
+    duration = (result.metadata or {}).get("duration_seconds")
+    for segment in result.segments:
+        if segment.id in ids:
+            raise AsrTranscriptionError("ASR segment ID 重复")
+        ids.add(segment.id)
+        if not all(math.isfinite(value) for value in (segment.start, segment.end)):
+            raise AsrTranscriptionError("ASR 时间戳不是有限数值")
+        if not 0 <= segment.start <= segment.end or segment.start < previous_start:
+            raise AsrTranscriptionError("ASR 时间区间或顺序无效")
+        tolerance = 2.0 if result.engine == "faster-whisper" else 0.1
+        if duration is not None and segment.end > duration + tolerance:
+            raise AsrTranscriptionError("ASR 时间戳明显超出音频时长")
+        previous_start = segment.start
+    if result.full_text != "\n".join(s.text for s in result.segments if s.text).strip():
+        raise AsrTranscriptionError("ASR 全文与 segments 不一致")
+
+
+def publish_asr_pair(paths: AsrOutputPaths, json_bytes: bytes, text_bytes: bytes) -> None:
+    targets = [paths.json_path, paths.txt_path]
+    temporary: list[Path] = []
+    old = [p.read_bytes() if p.exists() else None for p in targets]
+    published = 0
+    try:
+        for target, content in zip(targets, [json_bytes, text_bytes]):
+            ensure_directory(target.parent)
+            with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as file:
+                temporary.append(Path(file.name))
+                file.write(content)
+                file.flush()
+                os.fsync(file.fileno())
+        for tmp, target in zip(temporary, targets):
+            os.replace(tmp, target)
+            published += 1
+    except OSError as exc:
+        for target, previous in zip(targets[:published], old[:published]):
+            if previous is None:
+                target.unlink(missing_ok=True)
+            else:
+                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as restore:
+                    restore.write(previous)
+                    restore_path = Path(restore.name)
+                os.replace(restore_path, target)
+        raise AsrTranscriptionError(f"ASR JSON/TXT 发布失败: {exc}") from exc
+    finally:
+        for tmp in temporary:
+            tmp.unlink(missing_ok=True)
+
+
+def check_output_candidate(audio_files: list[Path], output_dir: Path, candidate: str) -> None:
+    for audio in audio_files:
+        path = build_asr_output_paths(audio, output_dir).json_path
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            previous = payload.get("metadata", {}).get("candidate")
+            if previous is None and payload.get("engine") == "faster-whisper":
+                previous = "whisper-existing"
+        except (OSError, ValueError, AttributeError) as exc:
+            raise AsrTranscriptionError(f"无法确认已有 ASR 产物身份，拒绝覆盖: {path}") from exc
+        if previous != candidate:
+            raise AsrTranscriptionError("不同 ASR 候选不得覆盖同一输出；请新建任务或独立阶段工作区")
+
+
+@contextmanager
+def asr_workspace_lock(output_dir: Path):
+    import fcntl
+    with (output_dir.parent / f"._{output_dir.name}-asr.lock").open("a") as file:
+        fcntl.flock(file, fcntl.LOCK_EX)
+        # Closing releases our reference; an inherited worker reference keeps
+        # the lock alive if the parent is killed/cancelled during inference.
+        yield file.fileno()
+
+
+@contextmanager
+def gpu_asr_lock(loaded: LoadedSettings, logger: logging.Logger | None = None):
+    if loaded.active_profile.device.lower() != "cuda":
+        yield None
+        return
+    import fcntl
+    lock_dir = ensure_directory(loaded.project_root / "data/jobs")
+    with (lock_dir / "_asr-gpu.lock").open("a") as file:
+        if logger:
+            logger.info("等待 GPU ASR 进程锁")
+        fcntl.flock(file, fcntl.LOCK_EX)
+        yield file.fileno()
+
+
+def transcribe_optional_backend(audio_files: list[Path], output_dir: Path,
+                                loaded: LoadedSettings, logger: logging.Logger | None,
+                                lock_fds: tuple[int, ...] = ()) -> list[AsrBatchItem]:
+    from src.asr.registry import get_candidate
+    candidate = get_candidate(loaded.settings.asr.candidate)
+    settings = loaded.settings.asr
+    device = loaded.active_profile.device.lower()
+    if device not in candidate.supported_devices:
+        raise InvalidAsrDeviceError(f"候选 {candidate.id} 不支持设备: {device}")
+    if settings.language != "zh":
+        raise AsrTranscriptionError("新增候选首版仅验证中文配置 language=zh；不静默改变语言")
+    from src.asr.registry import required_modules, worker_python
+    interpreter = worker_python(loaded)
+    if not Path(interpreter).is_file():
+        raise AsrDependencyError(f"ASR worker Python 不存在: {interpreter}")
+    try:
+        check = subprocess.run([interpreter, "-c", "import importlib.util,sys; "
+                                f"sys.exit(0 if all(importlib.util.find_spec(n) for n in {required_modules(candidate)!r}) else 1)"],
+                               capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AsrDependencyError(f"无法检查 ASR worker Python: {interpreter} | {exc}") from exc
+    if check.returncode:
+        group = "qwen" if candidate.engine == "qwen-asr" else "funasr"
+        raise AsrDependencyError(f"{interpreter} 缺少 {candidate.package} 或其必要依赖；请安装 requirements-asr-{group}.txt，"
+                                 "或配置 asr.worker_python 指向已安装依赖的隔离环境")
+    from faster_whisper.audio import decode_audio
+    from faster_whisper.vad import get_speech_timestamps
+    import numpy as np
+    inputs = []
+    for audio_path in audio_files:
+        try:
+            pcm = decode_audio(str(audio_path), sampling_rate=16000)
+            if not len(pcm):
+                raise AsrTranscriptionError(f"空音频: {audio_path}")
+            if not np.isfinite(pcm).all():
+                raise AsrTranscriptionError(f"音频包含非有限 PCM 数值: {audio_path}")
+            speech_regions = get_speech_timestamps(pcm)
+            voiced = bool(speech_regions)
+            kind = "speech" if voiced else ("digital_silence" if not bool(pcm.any()) else "no_speech_detected")
+        except Exception as exc:
+            raise AsrTranscriptionError(f"ASR 音频/VAD 检查失败: {audio_path.name} | {exc}") from exc
+        inputs.append({"path": str(audio_path), "source_file": build_source_file_label(audio_path, loaded),
+                       "speech_detected": voiced, "audio_kind": kind,
+                       "speech_regions_samples": speech_regions})
+    terms = list(dict.fromkeys(term.strip() for term in settings.terms if term.strip()))
+    if sum(len(term) for term in terms) > 4096:
+        raise AsrTranscriptionError("结构化 ASR 术语超过首版 4096 字符工程上限；不静默截断")
+    warnings = []
+    if settings.initial_prompt:
+        warnings.append("Whisper initial_prompt 不跨模型复制；新候选使用 asr.terms 结构化术语")
+    request = {"candidate": candidate.id, "device": device,
+               "cache": str(loaded.resolve_path(loaded.active_profile.cache_dir) / settings.backend_cache_subdir),
+               "parameters": {"max_new_tokens": settings.max_new_tokens, "chunk_seconds": settings.chunk_seconds},
+               "terms": terms, "warnings": warnings, "audio": inputs}
+    with tempfile.TemporaryDirectory(prefix="asr-worker-", dir=output_dir) as temporary:
+        root = Path(temporary)
+        request_path = root / "request.json"
+        response_path = root / "response.json"
+        request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+        environment = os.environ.copy()
+        whisper_libraries = {str(path) for path in discover_cuda_runtime_library_dirs()}
+        environment["LD_LIBRARY_PATH"] = ":".join(
+            part for part in environment.get("LD_LIBRARY_PATH", "").split(":")
+            if part and part not in whisper_libraries
+        )
+        process = subprocess.run([interpreter, "-m", "src.asr.worker", "--request", str(request_path),
+                                  "--response", str(response_path)], cwd=Path(__file__).resolve().parents[1],
+                                 capture_output=True, text=True, env=environment, pass_fds=lock_fds)
+        if logger and process.stderr:
+            logger.info("ASR worker | %s", process.stderr[-5000:])
+        if process.returncode:
+            raise AsrTranscriptionError(f"{candidate.id} worker 失败（无模型回退）: {process.stderr[-5000:]}")
+        try:
+            payloads = json.loads(response_path.read_text(encoding="utf-8"))
+            if len(payloads) != len(audio_files):
+                raise ValueError("worker 输出数量与输入不一致")
+            results = []
+            for payload in payloads:
+                payload["segments"] = [AsrSegmentResult(**segment) for segment in payload["segments"]]
+                result = AsrFileResult(**payload)
+                validate_asr_result(result)
+                results.append(result)
+        except (OSError, ValueError, TypeError) as exc:
+            raise AsrTranscriptionError(f"无效 ASR worker 结果: {exc}") from exc
+    outputs = []
+    for audio_path, result in zip(audio_files, results):
+        paths = build_asr_output_paths(audio_path, output_dir)
+        write_asr_result(result, paths)
+        outputs.append(AsrBatchItem(audio_path, paths, len(result.segments)))
+    return outputs
 
 
 def transcribe_batch(
@@ -402,22 +622,25 @@ def transcribe_batch(
             f"输入目录中没有可处理的音频文件: {audio_dir}。支持扩展名: {supported_ext}"
         )
 
-    model = load_faster_whisper_model(loaded_settings)
-    output_files: list[AsrBatchItem] = []
-
-    for audio_path in audio_files:
-        result = transcribe_audio_file(audio_path, model, loaded_settings, logger=logger)
-        output_paths = build_asr_output_paths(audio_path, output_dir)
-        write_asr_result(result, output_paths)
-        output_files.append(
-            AsrBatchItem(
-                source_audio_path=audio_path,
-                output_paths=output_paths,
-                segment_count=len(result.segments),
-            )
-        )
-
-    return output_files
+    from src.asr.registry import get_candidate
+    try:
+        candidate = get_candidate(loaded_settings.settings.asr.candidate)
+    except ValueError as exc:
+        raise UnsupportedAsrEngineError(str(exc)) from exc
+    with asr_workspace_lock(output_dir) as workspace_fd, gpu_asr_lock(loaded_settings, logger) as gpu_fd:
+        check_output_candidate(audio_files, output_dir, candidate.id)
+        if candidate.id != "whisper-existing":
+            return transcribe_optional_backend(audio_files, output_dir, loaded_settings, logger,
+                                               tuple(fd for fd in [workspace_fd, gpu_fd] if fd is not None))
+        model = load_faster_whisper_model(loaded_settings)
+        output_files: list[AsrBatchItem] = []
+        for audio_path in audio_files:
+            result = transcribe_audio_file(audio_path, model, loaded_settings, logger=logger)
+            output_paths = build_asr_output_paths(audio_path, output_dir)
+            write_asr_result(result, output_paths)
+            output_files.append(AsrBatchItem(source_audio_path=audio_path, output_paths=output_paths,
+                                            segment_count=len(result.segments)))
+        return output_files
 
 
 def summarize_transcription_results(output_files: list[AsrBatchItem]) -> str:

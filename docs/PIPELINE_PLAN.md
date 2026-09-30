@@ -81,6 +81,8 @@ text
 * 调用 ASR 引擎
 * 输出结构化转录 JSON 和纯文本 TXT
 
+可选 ASR 扩展已接入：旧配置继续使用 Whisper，可显式选择 Qwen3 1.7B/0.6B、SeACo Paraformer 或 Fun-ASR-Nano。配置/CLI/Web 选择、任务快照、时间戳校验和 metadata 说明见 [ASR_BACKENDS.md](ASR_BACKENDS.md)。各候选已完成真实短片段、10 分钟对话样本和阶段文件 API 运行；这不代表读书会全类型录音的人工质量验收已完成，不自动改默认模型。
+
 ### 输入
 
 * `data/input/audio/`
@@ -276,7 +278,7 @@ Markdown 与 TXT 同时落盘，不再重组正文结构；TXT 由 Markdown 去�
 这些内容只能在用户明确批准后再做：
 
 1. OCR 支持
-2. WhisperX / 更强 ASR 后端
+2. WhisperX 或已接入候选以外的 ASR 后端（不包含本轮已批准的 Qwen3/Paraformer/Nano 接入）
 3. 更复杂对齐策略
 4. docx / html 导出
 5. 规则 + LLM 联合拆分混合块

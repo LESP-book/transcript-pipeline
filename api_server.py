@@ -126,6 +126,29 @@ def batch_job_input_summary(request: BatchJobRequest) -> dict[str, str]:
 
 
 def enrich_state_input_summary(project_root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    # Display actual artifacts or this job's snapshot, never today's defaults.
+    identifier = str(state.get("id") or "")
+    if state.get("kind") == "job" and identifier not in {"", ".", ".."} and "/" not in identifier and "\\" not in identifier:
+        state = dict(state)
+        job_root = project_root / "data/jobs" / identifier
+        asr_files = sorted((job_root / "intermediate/asr").glob("*.json"))
+        if asr_files:
+            try:
+                result = read_json_file(asr_files[0])
+                state["asr_engine"] = result.get("engine", "")
+                state["asr_model"] = result.get("model_size", "")
+                candidate = (result.get("metadata") or {}).get("candidate")
+                if candidate:
+                    state["asr_candidate"] = candidate
+            except (HTTPException, OSError, ValueError, AttributeError):
+                pass
+        elif (job_root / "manifest.json").exists():
+            try:
+                candidate = read_json_file(job_root / "manifest.json").get("asr_candidate")
+                if candidate:
+                    state["asr_candidate"] = candidate
+            except (HTTPException, OSError, ValueError, AttributeError):
+                pass
     if state.get("input_summary"):
         return state
 
@@ -269,7 +292,9 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         except ConfigLoadError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+        from src.asr.registry import candidate_options
         return {
+            "asr_candidates": candidate_options(loaded_settings),
             "profiles": sorted(loaded_settings.settings.profiles.keys()),
             "backends": [*VALID_REFINEMENT_BACKENDS, "both"],
             "configured_backends": list(loaded_settings.settings.llm.backends),

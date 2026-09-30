@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -95,7 +96,16 @@ class ReferenceSettings(AppBaseModel):
     ocr_languages: list[str] = Field(default_factory=list)
 
 
+AsrCandidateName = Literal["whisper-existing", "qwen3-asr-1.7b", "qwen3-asr-0.6b", "paraformer-zh", "fun-asr-nano"]
+
+
 class AsrSettings(AppBaseModel):
+    candidate: AsrCandidateName | None = None
+    worker_python: str = ""
+    backend_cache_subdir: str = "asr-models"
+    max_new_tokens: int = Field(default=2048, ge=1, le=8192)
+    chunk_seconds: float = Field(default=30.0, gt=0, le=30)
+    terms: list[str] = Field(default_factory=list)
     engine: str
     language: str
     beam_size: int = 5

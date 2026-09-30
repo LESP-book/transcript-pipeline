@@ -4,12 +4,13 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from src.config_loader import ConfigLoadError, load_settings
+from src.schemas import AsrCandidateName
 
 SETTINGS_RELATIVE_PATH = Path("data/jobs/frontend-settings.json")
 RETIRED_MODEL_PREFIXES = ("gpt-5.4", "gpt-5.5", "gpt-5.6")
@@ -24,6 +25,7 @@ class FrontendSettings(BaseModel):
     codex_lb_api_key: str = ""
     codex_lb_bypass_proxy: bool = False
     profile: str = ""
+    asr_candidate: AsrCandidateName | Literal[""] = ""
     backend: str = ""
     remote_concurrency: int = Field(default=2, ge=1)
     book_name: str = ""
@@ -42,6 +44,7 @@ class FrontendSettingsUpdate(BaseModel):
     clear_codex_lb_api_key: bool = False
     codex_lb_bypass_proxy: bool | None = None
     profile: str | None = None
+    asr_candidate: AsrCandidateName | Literal[""] | None = None
     backend: str | None = None
     remote_concurrency: int | None = Field(default=None, ge=1)
     book_name: str | None = None
@@ -87,6 +90,7 @@ def save_frontend_settings(project_root: Path, update: FrontendSettingsUpdate) -
     for field_name in (
         "codex_lb_base_url",
         "profile",
+        "asr_candidate",
         "backend",
         "book_name",
         "chapter",
@@ -126,6 +130,7 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         codex_lb = loaded_settings.settings.codex_lb
         default_base_url = os.environ.get(codex_lb.base_url_env, "").strip() or codex_lb.base_url
         default_profile = loaded_settings.active_profile_name
+        default_asr_candidate = loaded_settings.settings.asr.candidate or "whisper-existing"
         configured_backends = loaded_settings.settings.llm.backends
         default_backend = configured_backends[0] if configured_backends else ""
         default_model = loaded_settings.settings.llm.model
@@ -141,6 +146,7 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         # 前端设置接口沿用既有稳定响应结构；配置暂时不可读时使用产品明确指定的 OCR 调度默认值。
         default_base_url = ""
         default_profile = ""
+        default_asr_candidate = "whisper-existing"
         default_backend = ""
         default_model = ""
         default_reasoning_effort = ""
@@ -158,6 +164,7 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         "has_codex_lb_api_key": bool(settings.codex_lb_api_key or has_env_api_key),
         "codex_lb_bypass_proxy": settings.codex_lb_bypass_proxy,
         "profile": settings.profile or default_profile,
+        "asr_candidate": settings.asr_candidate or default_asr_candidate,
         "backend": settings.backend or default_backend,
         "remote_concurrency": settings.remote_concurrency,
         "book_name": settings.book_name,
