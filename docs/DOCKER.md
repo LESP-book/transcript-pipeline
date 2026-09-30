@@ -27,6 +27,8 @@ bash scripts/deploy_docker_wsl2.sh           # 人工确认后安装缺失的 Do
 # 由管理员事先授权时也可显式使用 --yes；不在自动化里无意跳过确认
 ```
 
+Compose 和部署脚本默认 `ASR_BACKENDS=qwen`：保留 Whisper，并在独立 Python 环境安装两款 Qwen3-ASR 的依赖，不改变默认转录模型。首次构建会下载较大的 PyTorch 等依赖，但不下载模型权重；首次转录仍可能下载权重。可用 `ASR_BACKENDS=whisper bash scripts/deploy_docker_wsl2.sh` 构建精简版，或选择 `funasr` / `all`。脚本在使用 sudo 时也会保留此选项。仅设置宿主环境或重启旧容器不会安装依赖，必须重新构建并创建容器；先确认没有运行中任务。
+
 脚本不会执行 `apt upgrade`、给用户加入 Docker 组、递归 chown、启动付费任务或删除数据；当前用户无 Docker socket 权限时仅对 Docker 命令使用 sudo。镜像拉取/编译需联网。Web 设置页的 Key 不作为部署脚本输入；安装/启动/health/GPU 设备检查不调用远端业务或下载模型。若已有 `transcript-pipeline-app-1`，脚本**会停止执行而不会中断任务或自动删除旧容器**；先确认旧任务结束，再人工 `docker stop transcript-pipeline-app-1 && docker rm transcript-pipeline-app-1`（只移除旧容器，不带 `-v`，不要执行 `down -v`），随后重跑脚本。改名后的新容器为 `transcript-pipeline-trans-1`，保留同一 `./data` bind 和 `transcript-pipeline_model-cache` 卷；不要在两个服务上同时运行同一任务。
 
 若环境已准备好，手工部署等价于：
@@ -45,7 +47,7 @@ curl --retry 8 --retry-delay 2 --retry-connrefused --fail http://127.0.0.1:8080/
 
 如果 GPU 尚未就绪，可以仅在独立临时目录做 **CPU 接口验收**：通过一次性 Compose override 清除设备 reservation、设 `TRANSCRIPT_PROFILE=local_cpu` 并将数据挂到独立目录；勿改默认 `compose.yaml` 以伪造 GPU 成功。镜像构建、无 GPU 的健康/上传测试不等于 GPU 验收。
 
-镜像的 Node stage 执行 `npm ci && npm run build`，运行镜像不包含 Node 开发依赖。基础镜像锁定 Node 22 和 Python 3.12 bookworm 的 digest；`docker/constraints.txt` 固定 CTranslate2 4.8.2、cuBLAS-cu12 12.9.2.10、CUDA NVRTC-cu12 12.9.86、cuDNN-cu12 9.26.0.51；这些是本次构建验证的 Linux x86_64 Python wheels，不代表当前硬件已完成推理验收。镜像不装 PyTorch、Linux NVIDIA 驱动或完整 CUDA 工具链。运行镜像包含 `ffmpeg`、`poppler-utils`、`curl`、`ca-certificates`、`libgomp1`。日志 `json-file` 每文件最多 10 MiB、保留 3 个；`stop_grace_period: 30s`，`init: true`。视频/PDF 临时工作文件在容器可写层或项目路径，需为 Docker 存储预留空间；不默认使用大容量 tmpfs。
+镜像的 Node stage 执行 `npm ci && npm run build`，运行镜像不包含 Node 开发依赖。基础镜像锁定 Node 22 和 Python 3.12 bookworm 的 digest；`docker/constraints.txt` 固定 CTranslate2 4.8.2、cuBLAS-cu12 12.9.2.10、CUDA NVRTC-cu12 12.9.86、cuDNN-cu12 9.26.0.51；这些是本次构建验证的 Linux x86_64 Python wheels，不代表当前硬件已完成推理验收。基础 Whisper 环境不装 PyTorch；Compose 默认启用的 Qwen worker 在独立环境安装 PyTorch。镜像不装 Linux NVIDIA 驱动或完整 CUDA 工具链。运行镜像包含 `ffmpeg`、`poppler-utils`、`curl`、`ca-certificates`、`libgomp1`。日志 `json-file` 每文件最多 10 MiB、保留 3 个；`stop_grace_period: 30s`，`init: true`。视频/PDF 临时工作文件在容器可写层或项目路径，需为 Docker 存储预留空间；不默认使用大容量 tmpfs。
 
 ## 存储与权限
 

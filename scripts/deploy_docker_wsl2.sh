@@ -12,6 +12,7 @@ usage() {
 用法：bash scripts/deploy_docker_wsl2.sh [--check | --yes]
   --check  只读检查环境和旧容器，不安装、重启、构建或启动
   --yes    明确同意安装宿主软件、配置 daemon 并按需重启共享 Docker（供人工批准后使用）
+环境变量 ASR_BACKENDS：qwen（默认，Whisper + Qwen）、whisper、funasr 或 all。
 默认交互式确认，部署 Compose 服务 trans。只支持 WSL2 内原生 Docker Engine；不改 Windows 驱动、网络或防火墙。
 USAGE
 }
@@ -28,6 +29,11 @@ while (($#)); do
   shift
 done
 ((!CHECK_ONLY || !ASSUME_YES)) || fail '--check 与 --yes 不能同时使用'
+export ASR_BACKENDS="${ASR_BACKENDS:-qwen}"
+case "$ASR_BACKENDS" in
+  whisper|qwen|funasr|all) ;;
+  *) fail 'ASR_BACKENDS 必须是 whisper、qwen、funasr 或 all' ;;
+esac
 [[ $EUID -ne 0 ]] || fail '请以普通 WSL 用户运行，本脚本只在必要步骤使用 sudo'
 [[ -r /proc/sys/kernel/osrelease ]] && grep -qi 'microsoft.*WSL2' /proc/sys/kernel/osrelease \
   || fail '只支持 WSL2；不能在 Windows、Docker Desktop 或普通 Linux 上运行'
@@ -88,6 +94,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   fi
 fi
 info "环境: $ID $VERSION_CODENAME / WSL2; 目标 Compose 服务: trans"
+info "ASR 依赖: $ASR_BACKENDS（所有选项均保留 Whisper；不会改变默认转录模型）"
 info '将使用可信局域网端口 8080（默认 0.0.0.0）；不提供登录或 HTTPS，不应暴露公网'
 if ((CHECK_ONLY)); then
   info '只读检查结束；没有安装软件、修改 daemon 或启动容器'
@@ -156,7 +163,7 @@ export APP_UID="${APP_UID:-$(id -u)}" APP_GID="${APP_GID:-$(id -g)}"
 dc() {
   if ((USE_SUDO)); then
     # Only non-secret Compose knobs cross sudo; configure codex-lb in the Web UI.
-    sudo env APP_UID="$APP_UID" APP_GID="$APP_GID" \
+    sudo env APP_UID="$APP_UID" APP_GID="$APP_GID" ASR_BACKENDS="$ASR_BACKENDS" \
       APP_PORT="${APP_PORT:-8080}" DOCKER_BIND_IP="${DOCKER_BIND_IP:-0.0.0.0}" \
       TRANSCRIPT_PROFILE="${TRANSCRIPT_PROFILE:-wsl2_gpu_high_accuracy}" docker compose "$@"
   else

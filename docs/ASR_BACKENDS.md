@@ -99,11 +99,13 @@ API 请求字段为 `asr_candidate`。Web 设置页保存默认候选；单任�
 
 ## Docker 可选镜像
 
-默认 Docker build 仍只安装基础 Whisper。选择可选环境：
+直接运行 `docker build` 默认仍只安装基础 Whisper；`docker compose build trans` 和 `scripts/deploy_docker_wsl2.sh` 默认安装 Whisper + Qwen（`ASR_BACKENDS=qwen`），不改变默认转录模型。Compose 可通过环境变量选择，例如 `ASR_BACKENDS=whisper docker compose build trans`；部署脚本同样支持此环境变量，包含 sudo 路径。已有容器须在任务结束后重新构建并用 `docker compose up -d --no-build trans` 更新，仅重启不会补装依赖。
+
+直接构建可选环境：
 
 ```bash
 docker build --build-arg ASR_BACKENDS=all -t transcript-pipeline:asr .
-# ASR_BACKENDS: whisper（默认）、qwen、funasr、all
+# ASR_BACKENDS: whisper（直接 docker build 默认）、qwen（Compose 默认）、funasr、all
 ```
 
 新 SDK 安装到 `/app/.venv/asr-py312`，基础应用依赖不与 PyTorch SDK 混装。基础 decoder 单独固定 `av==16.1.0`，避免 PyAV 19 移除 `metadata_errors` API 导致 faster-whisper 1.2.1 无法打开音频。可选环境固定 pip 26.2.1 以支持大包断线续传和哈希校验，为 FunASR 的旧 sdist 预装 setuptools/wheel，再关闭临时 build isolation；构建仍执行 pip check。不绕过包哈希验证。

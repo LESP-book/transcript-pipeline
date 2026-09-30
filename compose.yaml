@@ -9,6 +9,7 @@ services:
       args:
         APP_UID: ${APP_UID:-1000}
         APP_GID: ${APP_GID:-1000}
+        ASR_BACKENDS: ${ASR_BACKENDS:-qwen}
     init: true
     restart: unless-stopped
     stop_grace_period: 30s
