@@ -92,13 +92,6 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
   <n-config-provider :theme="isDark ? darkTheme : null" :theme-overrides="themeOverrides">
     <n-dialog-provider>
       <n-message-provider>
-        <!-- Fluid Ambient Floating Glow Background -->
-        <div class="bg-glow-container">
-          <div class="glow-orb glow-orb-1"></div>
-          <div class="glow-orb glow-orb-2"></div>
-          <div class="glow-orb glow-orb-3"></div>
-        </div>
-
         <n-layout class="app-shell">
           <n-layout-header class="app-shell__header">
             <div class="app-shell__brand">

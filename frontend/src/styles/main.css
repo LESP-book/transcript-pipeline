@@ -78,17 +78,6 @@
   border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
-/* Flow Ambient Orbs Adjustment for Dark Mode */
-.dark-mode .glow-orb-1 {
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.12) 0%, rgba(168, 85, 247, 0.04) 70%, transparent 100%);
-}
-.dark-mode .glow-orb-2 {
-  background: radial-gradient(circle, rgba(45, 212, 191, 0.12) 0%, rgba(59, 130, 246, 0.06) 70%, transparent 100%);
-}
-.dark-mode .glow-orb-3 {
-  background: radial-gradient(circle, rgba(244, 63, 94, 0.06) 0%, rgba(249, 115, 22, 0.02) 70%, transparent 100%);
-}
-
 /* Dark Mode Scrollbars */
 .dark-mode ::-webkit-scrollbar-track {
   background: rgba(255, 255, 255, 0.01);
@@ -371,65 +360,6 @@ body {
   overflow-x: hidden;
   position: relative;
   background: var(--surface-canvas);
-}
-
-/* Global Glowing Background Elements */
-.bg-glow-container {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: -1;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.glow-orb {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(80px);
-  opacity: 0.45;
-  mix-blend-mode: multiply;
-  animation: float-orb 20s infinite ease-in-out alternate;
-}
-
-.glow-orb-1 {
-  top: -10%;
-  left: -10%;
-  width: 50vw;
-  height: 50vw;
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.3) 0%, rgba(168, 85, 247, 0.1) 70%, transparent 100%);
-  animation-duration: 25s;
-}
-
-.glow-orb-2 {
-  bottom: -15%;
-  right: -10%;
-  width: 60vw;
-  height: 60vw;
-  background: radial-gradient(circle, rgba(45, 212, 191, 0.3) 0%, rgba(59, 130, 246, 0.15) 70%, transparent 100%);
-  animation-duration: 30s;
-  animation-delay: -5s;
-}
-
-.glow-orb-3 {
-  top: 40%;
-  left: 50%;
-  width: 35vw;
-  height: 35vw;
-  background: radial-gradient(circle, rgba(244, 63, 94, 0.15) 0%, rgba(249, 115, 22, 0.05) 70%, transparent 100%);
-  animation-duration: 20s;
-  animation-delay: -10s;
-}
-
-@keyframes float-orb {
-  0% {
-    transform: translate(0, 0) scale(1) rotate(0deg);
-  }
-  100% {
-    transform: translate(8%, 12%) scale(1.15) rotate(120deg);
-  }
 }
 
 /* Custom Scrollbar */
